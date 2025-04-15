@@ -1,0 +1,13 @@
+name: nudel  # can change this to any name
+channels:
+  - conda-forge
+  - nvidia
+dependencies:
+  - python=3.8.6
+  - gdal
+  - rasterio
+  - geopandas
+  - matplotlib
+  - scikit-learn
+  - imgaug
+  - tqdm
