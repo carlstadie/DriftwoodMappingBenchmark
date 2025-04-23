@@ -61,7 +61,7 @@ class FrameInfo:
         im = image_normalize(im, axis=(0, 1))
         an = self.annotations[i:i + img_size[0], j:j + img_size[1]]
         an = np.expand_dims(an, axis=-1)
-        comb_img = np.concatenate((im, an, we), axis=-1)
+        comb_img = np.concatenate((im, an), axis=-1)
         patch[:img_size[0], :img_size[1], ] = comb_img
         return (patch)
 

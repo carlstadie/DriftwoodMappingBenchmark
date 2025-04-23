@@ -73,7 +73,7 @@ class DataGenerator:
         return (img, ann)
 
     # Return a batch of training and label images, generated randomly
-    def random_patch(self, BATCH_SIZE, normalize):
+    def random_patch(self, BATCH_SIZE):
         """Generate patches from random location in randomly chosen frames.
 
         Args:
@@ -83,7 +83,7 @@ class DataGenerator:
         for i in range(BATCH_SIZE):
             fn = np.random.choice(self.frame_list, p=self.frame_list_weights)
             frame = self.frames[fn]
-            patch = frame.random_patch(self.patch_size, normalize)
+            patch = frame.random_patch(self.patch_size)
             patches.append(patch)
         data = np.array(patches)
 

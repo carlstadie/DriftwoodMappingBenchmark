@@ -29,9 +29,7 @@ class Configuration:
 
         # Path to preprocessed data to use for this training
         # Preprocessed frames are a tif file per area, with bands [normalised img bands + label band]
-        self.preprocessed_dir_MACS = None               # if set to None, it will use the most recent preprocessing data
-        self.preprocessed_dir_PS = None                # if set to None, it will use the most recent preprocessing data
-        self.preprocessed_dir_S2 = None                # if set to None, it will use the most recent preprocessing data
+        self.preprocessed_dir = None               # if set to None, it will use the most recent preprocessing data
 
         # Path to existing model to be used to continue training on [optional]
         self.continue_model_path = None 
@@ -59,12 +57,12 @@ class Configuration:
         self.val_ratio = 0.2
 
         # Model configuration
-        self.patch_size = (512, 512)
+        self.patch_size = (256, 256)
         self.tversky_alphabeta = (0.5, 0.5)        # alpha is weight of false positives, beta weight of false negatives
 
         # Batch and epoch numbers
-        self.train_batch_size = 8
-        self.num_epochs = 500
+        self.train_batch_size = 32
+        self.num_epochs = 100
         self.num_training_steps = 500
         self.num_validation_images = 50
 
@@ -76,7 +74,7 @@ class Configuration:
         # ------ ADVANCED SETTINGS ------
         # GPU selection, if you have multiple GPUS.
         # Used for both training and prediction, so use multiple config files to run on two GPUs in parallel.
-        self.selected_GPU = -1 # =CUDA id, 0 is first.    -1 to disable GPU and use CPU
+        self.selected_GPU = 7 # =CUDA id, 0 is first.    -1 to disable GPU and use CPU
 
         # Preprocessing
         self.train_image_type = self.image_file_type           # used to find training images
@@ -84,19 +82,12 @@ class Configuration:
         self.preprocessing_bands = np.where(self.channels_used)[0]         # [0, 1, 2, 3] etc
         self.preprocessed_name = self.run_name
         self.rasterize_borders = False             # whether to include borders when rasterizing label polygons
- # =============================================================================
-        # # adding density counting branch
-        
-        self.counting_branch = False
-        self.counting_kernel_size = 5
-        self.counting_kernel_sigma = 1.5
-        
-# =============================================================================
 
 
         # Training
         self.loss_fn = 'tversky'                   # selection of loss function
         self.optimizer_fn = 'adaDelta'             # selection of optimizer function
+        self.dilation_rate = 1                  # dilation rate for dilated convolutions, 1 is no dilation
         self.model_name = self.run_name            # this is used as saved model name (concat with timestamp)
         self.boundary_weight = 5                  # weighting applied to boundaries, (rest of image is 1)
         self.model_save_interval = None            # [optional] save model every N epochs. If None, only best is saved

@@ -35,19 +35,16 @@ def tversky(y_true, y_pred, alpha=0.40, beta=0.60):
     
     y_t = y_true[...,0]
     y_t = y_t[...,np.newaxis]
-    # weights
-    y_weights = y_true[...,1]
-    y_weights = y_weights[...,np.newaxis]
     
     ones = 1 
-    p0 = y_pred  # proba that voxels are class i
-    p1 = ones - y_pred  # proba that voxels are not class i
+    p0 = y_pred  # prob that pixels are class i
+    p1 = ones - y_pred  # prob that pixels are not class i
     g0 = y_t
     g1 = ones - y_t
 
-    tp = tf.reduce_sum(y_weights * p0 * g0)
-    fp = alpha * tf.reduce_sum(y_weights * p0 * g1)
-    fn = beta * tf.reduce_sum(y_weights * p1 * g0)
+    tp = tf.reduce_sum(p0 * g0)
+    fp = alpha * tf.reduce_sum(p0 * g1)
+    fn = beta * tf.reduce_sum(p1 * g0)
 
     EPSILON = 0.00001
     numerator = tp

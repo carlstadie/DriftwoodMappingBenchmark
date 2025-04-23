@@ -4,7 +4,7 @@ from tensorflow.keras import backend as K
 #from keras import backend as k
 
 
-def UNet(input_shape, input_label_channels, layer_count=64, regularizers=regularizers.l2(0.0001), weight_file=None,
+def UNet(input_shape, input_label_channels, dilation_rate = 1, layer_count=64, regularizers=regularizers.l2(0.0001), weight_file=None,
          summary=False):
     """ Method to declare the UNet model.
     Args:
@@ -12,6 +12,8 @@ def UNet(input_shape, input_label_channels, layer_count=64, regularizers=regular
             Shape of the input in the format (batch, height, width, channels).
         input_label_channels: list([int])
             list of index of label channels, used for calculating the number of channels in model output.
+        dilation_rate: int
+            Dilation rate for the convolutional layers.
         layer_count: (int, optional)
             Count of kernels in first layer. Number of kernels in other layers grows with a fixed factor.
         regularizers: keras.regularizers
@@ -25,28 +27,28 @@ def UNet(input_shape, input_label_channels, layer_count=64, regularizers=regular
     input_img = layers.Input(input_shape[1:], name='Input')
     pp_in_layer = input_img
 
-    c1 = layers.Conv2D(1 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(2, 2))(pp_in_layer)
-    c1 = layers.Conv2D(1 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(2, 2))(c1)
+    c1 = layers.Conv2D(1 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(dilation_rate, dilation_rate))(pp_in_layer)
+    c1 = layers.Conv2D(1 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(dilation_rate, dilation_rate))(c1)
     n1 = layers.BatchNormalization()(c1)
     p1 = layers.MaxPooling2D((2, 2))(n1)
 
-    c2 = layers.Conv2D(2 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(2, 2))(p1)
-    c2 = layers.Conv2D(2 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(2, 2))(c2)
+    c2 = layers.Conv2D(2 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(dilation_rate, dilation_rate))(p1)
+    c2 = layers.Conv2D(2 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(dilation_rate, dilation_rate))(c2)
     n2 = layers.BatchNormalization()(c2)
     p2 = layers.MaxPooling2D((2, 2))(n2)
 
-    c3 = layers.Conv2D(4 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(2, 2))(p2)
-    c3 = layers.Conv2D(4 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(2, 2))(c3)
+    c3 = layers.Conv2D(4 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(dilation_rate, dilation_rate))(p2)
+    c3 = layers.Conv2D(4 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(dilation_rate, dilation_rate))(c3)
     n3 = layers.BatchNormalization()(c3)
     p3 = layers.MaxPooling2D((2, 2))(n3)
 
-    c4 = layers.Conv2D(8 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(2, 2))(p3)
-    c4 = layers.Conv2D(8 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(2, 2))(c4)
+    c4 = layers.Conv2D(8 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(dilation_rate, dilation_rate))(p3)
+    c4 = layers.Conv2D(8 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(dilation_rate, dilation_rate))(c4)
     n4 = layers.BatchNormalization()(c4)
     p4 = layers.MaxPooling2D(pool_size=(2, 2))(n4)
 
-    c5 = layers.Conv2D(16 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(2, 2))(p4)
-    c5 = layers.Conv2D(16 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(2, 2))(c5)
+    c5 = layers.Conv2D(16 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(dilation_rate, dilation_rate))(p4)
+    c5 = layers.Conv2D(16 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(dilation_rate, dilation_rate))(c5)
     n5 = layers.BatchNormalization()(c5)
 
     u6 = attention_up_and_concat(n5, n4)

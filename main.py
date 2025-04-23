@@ -1,7 +1,7 @@
 # Main script to run preprocessing, training or prediction tasks.
 # Convert this to a notebook if you are using jupyter.
 
-# This is where you can change which config to use, by replacing 'config_default' with 'my_amazing_config' etc
+# This is where you can change which config to use
 import config.config as configuration
 
 # INIT
@@ -15,9 +15,14 @@ import evaluation
 if __name__ == "__main__":
 
     # PREPROCESSING
-    preprocessing.preprocess_all(config)
+    #preprocessing.preprocess_all(config)
 
     # TRAINING
-    # training.train_model(config)
+
+    # train a UNet model
+    #training.train_UNet(config)
+
+    #  train a SwinUNet transformer model
+    training.train_SwinUNetPP(config)
 
 
