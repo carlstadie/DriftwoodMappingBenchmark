@@ -13,7 +13,7 @@ from tqdm import tqdm
 import tensorflow as tf
 from tensorflow.keras.callbacks import ModelCheckpoint, TensorBoard, Callback
 from core.UNet import UNet
-from core.Swin_UNetPP import SwinUNetPP
+from core.Swin_UNetPP import SwinUNet
 from core.frame_info import FrameInfo
 from core.optimizers import get_optimizer
 from core.split_frames import split_dataset
@@ -271,15 +271,17 @@ def train_SwinUNetPP(conf):
         if os.path.exists(old_log_dir):
             shutil.copytree(old_log_dir, new_log_dir)
     else:
-        # Create new model
-        model = SwinUNetPP(
-            [config.train_batch_size, *config.patch_size, len(config.channel_list)],
-            [len(config.channel_list)],
-            window_size=7,
-            embed_dim=96,
-            depths=[2, 2, 6, 2],
-            num_heads=[3, 6, 12, 24]
+        # Otherwise define new model
+        model = SwinUNet(
+            H=config.patch_size[0],  # Height of input patches
+            W=config.patch_size[1],  # Width of input patches
+            in_channels=len(config.channel_list),  # Number of input channels/bands
+            C=128,  # Base embedding dimension (can be adjusted)
+            num_class=1,  # Number of output channels
+            num_blocks=3,  # Number of blocks in encoder/decoder
+            patch_size=4  # Size of patches for embedding
         )
+
     
     # Create callbacks
     callbacks = create_callbacks(model_path)
