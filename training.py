@@ -89,25 +89,39 @@ def create_train_val_datasets(frames):
 
 def create_callbacks(model_path):
     """ Define callbacks for the early stopping of training, LearningRateScheduler and model checkpointing"""
-
-    # Add checkpoint callback to save model during training.
-    checkpoint = ModelCheckpoint(model_path, monitor='val_loss', verbose=1,
-                                 save_best_only=True, mode='min', save_weights_only=False)
-
+    # Add checkpoint callback to save model during training
+    checkpoint = ModelCheckpoint(
+        model_path,
+        monitor='val_loss',
+        verbose=1,
+        save_best_only=True,
+        mode='min',
+        save_weights_only=False,
+        save_format='tf'  # Use SavedModel format for better compatibility
+    )
+    
     # Add tensorboard callback to follow training progress
     log_dir = os.path.join(config.logs_dir, os.path.basename(model_path)[:-3])
-    tensorboard = TensorBoard(log_dir=log_dir, histogram_freq=0, write_graph=True, write_grads=False, embeddings_freq=0,
-                              write_images=False, embeddings_layer_names=None, embeddings_metadata=None,
-                              embeddings_data=None, update_freq='epoch', profile_batch='500,520')
-
-    # Add a callback to store custom metadata in the model .h5 file
-    # This allows us to later remember settings that were used when this model was trained (not only those in filename)
-    # The metadata is saved at the end of every epoch to preserve info when training is ended early
+    tensorboard = TensorBoard(
+        log_dir=log_dir,
+        histogram_freq=0,
+        write_graph=True,
+        write_grads=False,
+        embeddings_freq=0,
+        write_images=False,
+        embeddings_layer_names=None,
+        embeddings_metadata=None,
+        embeddings_data=None,
+        update_freq='epoch',
+        profile_batch='500,520'
+    )
+    
+    # Add a callback to store custom metadata in the model file
     class CustomMeta(Callback):
         def __init__(self):
             super().__init__()
             self.start_time = datetime.now()
-
+            
         def on_epoch_end(self, epoch, logs=None):
             # Create object with all custom metadata
             meta_data = {
@@ -129,7 +143,7 @@ def create_callbacks(model_path):
                 "val_steps": config.num_validation_images,
                 "epochs_trained": f"{epoch + 1}/{config.num_epochs}",
                 "total_epochs": config.num_epochs,
-                "last_sensitivity": float(f"{logs['sensitivity']:.4f}"),        # could also add other metrics if needed
+                "last_sensitivity": float(f"{logs['sensitivity']:.4f}"),
                 "last_specificity": float(f"{logs['specificity']:.4f}"),
                 "last_dice_coef": float(f"{logs['dice_coef']:.4f}"),
                 "last_dice_loss": float(f"{logs['dice_loss']:.4f}"),
@@ -143,13 +157,17 @@ def create_callbacks(model_path):
                 "start_time": self.start_time.strftime("%d.%m.%Y %H:%M:%S"),
                 "elapsed_time": (datetime.utcfromtimestamp(0) + (datetime.now() - self.start_time)).strftime("%H:%M:%S")
             }
-            # Serialise to json string and inject into the .h5 model file as an attribute
-            with h5py.File(model_path, "a") as file:
-                file.attrs["custom_meta"] = bytes(json.dumps(meta_data), "utf-8")
+            
+            # Save metadata to a separate JSON file for better compatibility
+            meta_path = f"{model_path}.metadata.json"
+            with open(meta_path, 'w') as f:
+                json.dump(meta_data, f, indent=4)
+            
             # Optionally save the model at regular intervals
             if config.model_save_interval and (epoch + 1) % config.model_save_interval == 0:
-                shutil.copy(model_path, model_path.replace(".h5", f"_{epoch+1}epochs.h5"))
-
+                checkpoint_path = model_path.replace(".h5", f"_{epoch+1}epochs")
+                checkpoint.on_epoch_end(epoch, logs=logs)
+                
     return [checkpoint, tensorboard, CustomMeta()]
 
 
@@ -157,34 +175,36 @@ def train_UNet(conf):
     """Create and train a new UNet model"""
     global config
     config = conf
-
     print("Starting training.")
     start = time.time()
-
+    
     # Get all training frames
     frames = get_all_frames()
-
-    # Split into training, validation and test datasets (proportions are set in config)
+    
+    # Split into training, validation and test datasets
     train_generator, val_generator, test_generator = create_train_val_datasets(frames)
-
+    
     # Create model name from timestamp and custom name
-    model_path = os.path.join(config.saved_models_dir, f"{time.strftime('%Y%m%d-%H%M')}_{config.model_name}.h5")
+    model_path = os.path.join(config.saved_models_dir, f"{time.strftime('%Y%m%d-%H%M')}_{config.model_name}")
+    
     starting_epoch = 0
-
+    
     # Check if we want to continue training an existing model
     if config.continue_model_path is not None:
-
         # Load previous model
         print(f"Loading pre-trained model from {config.continue_model_path} :")
         model = tf.keras.models.load_model(config.continue_model_path,
-                                           custom_objects={'tversky': get_loss('tversky', config.tversky_alphabeta),
-                                                           'dice_coef': dice_coef, 'dice_loss': dice_loss,
-                                                           'accuracy': accuracy, 'specificity': specificity,
-                                                           'sensitivity': sensitivity, 'accuracy': accuracy, 'f_beta': f_beta,
-                                                           'f1': f1_score, 'IoU': IoU, 'nominal_surface_distance': nominal_surface_distance,
-                                                           'Hausdorff_distance': Hausdorff_distance, 'boundary_intersection_over_union': boundary_intersection_over_union
-                                                            }, compile=False)
-
+                                         custom_objects={
+                                             'tversky': get_loss('tversky', config.tversky_alphabeta),
+                                             'dice_coef': dice_coef, 'dice_loss': dice_loss,
+                                             'accuracy': accuracy, 'specificity': specificity,
+                                             'sensitivity': sensitivity, 'accuracy': accuracy, 
+                                             'f_beta': f_beta, 'f1': f1_score, 'IoU': IoU,
+                                             'nominal_surface_distance': nominal_surface_distance,
+                                             'Hausdorff_distance': Hausdorff_distance,
+                                             'boundary_intersection_over_union': boundary_intersection_over_union
+                                         }, compile=False)
+        
         # Get starting epoch from metadata
         with h5py.File(config.continue_model_path, 'r') as model_file:
             if "custom_meta" in model_file.attrs:
@@ -193,25 +213,28 @@ def train_UNet(conf):
                 except:
                     custom_meta = json.loads(model_file.attrs["custom_meta"])
                 starting_epoch = int(custom_meta["epochs_trained"].split("/")[0])
-
+        
         # Copy logs from previous training so that tensorboard shows combined epochs
         old_log_dir = os.path.join(config.logs_dir, os.path.basename(config.continue_model_path)[:-3])
         new_log_dir = os.path.join(config.logs_dir, os.path.basename(model_path)[:-3])
         if os.path.exists(old_log_dir):
             shutil.copytree(old_log_dir, new_log_dir)
-
-    # Otherwise define new model
     else:
-        model = UNet([config.train_batch_size, *config.patch_size, len(config.channel_list)], [len(config.channel_list)], config.dilation_rate)
-
+        # Otherwise define new model
+        model = UNet([config.train_batch_size, *config.patch_size, len(config.channel_list)], 
+                     [len(config.channel_list)], config.dilation_rate)
+    
     # Create callbacks to be used during training
     callbacks = create_callbacks(model_path)
-
+    
     # Train the model
     tf.config.run_functions_eagerly(False)
-    model.compile(optimizer=get_optimizer(config.optimizer_fn), loss=get_loss(config.loss_fn, config.tversky_alphabeta),
-                  metrics=[dice_coef, dice_loss, specificity, sensitivity, accuracy, f_beta, f1_score, IoU,
-                           nominal_surface_distance, Hausdorff_distance, boundary_intersection_over_union])
+    model.compile(optimizer=get_optimizer(config.optimizer_fn), 
+                 loss=get_loss(config.loss_fn, config.tversky_alphabeta),
+                 metrics=[dice_coef, dice_loss, specificity, sensitivity, accuracy, 
+                         f_beta, f1_score, IoU, nominal_surface_distance, 
+                         Hausdorff_distance, boundary_intersection_over_union])
+    
     model.fit(train_generator,
               steps_per_epoch=config.num_training_steps,
               epochs=config.num_epochs,
@@ -220,8 +243,8 @@ def train_UNet(conf):
               validation_steps=config.num_validation_images,
               callbacks=callbacks,
               workers=1)
-
-    print(f"Training completed in {str(timedelta(seconds=time.time() - start)).split('.')[0]}.\n")
+    
+    print(f"Training completed in {str(timedelta(seconds=time.time() - start)).split('.')[0]}.\\n")
 
 def train_SwinUNetPP(conf):
     """Create and train a new Swin UNet model"""
@@ -237,7 +260,8 @@ def train_SwinUNetPP(conf):
     train_generator, val_generator, test_generator = create_train_val_datasets(frames)
     
     # Create model name from timestamp and custom name
-    model_path = os.path.join(config.saved_models_dir, f"{time.strftime('%Y%m%d-%H%M')}_{config.model_name}.h5")
+    model_path = os.path.join(config.saved_models_dir, f"{time.strftime('%Y%m%d-%H%M')}_{config.model_name}")
+    
     starting_epoch = 0
     
     # Check if we want to continue training an existing model
@@ -245,16 +269,16 @@ def train_SwinUNetPP(conf):
         # Load previous model
         print(f"Loading pre-trained model from {config.continue_model_path} :")
         model = tf.keras.models.load_model(config.continue_model_path,
-            custom_objects={
-                'tversky': get_loss('tversky', config.tversky_alphabeta),
-                'dice_coef': dice_coef, 'dice_loss': dice_loss,
-                'accuracy': accuracy, 'specificity': specificity,
-                'sensitivity': sensitivity, 'accuracy': accuracy, 
-                'f_beta': f_beta, 'f1': f1_score, 'IoU': IoU,
-                'nominal_surface_distance': nominal_surface_distance,
-                'Hausdorff_distance': Hausdorff_distance,
-                'boundary_intersection_over_union': boundary_intersection_over_union
-            }, compile=False)
+                                         custom_objects={
+                                             'tversky': get_loss('tversky', config.tversky_alphabeta),
+                                             'dice_coef': dice_coef, 'dice_loss': dice_loss,
+                                             'accuracy': accuracy, 'specificity': specificity,
+                                             'sensitivity': sensitivity, 'accuracy': accuracy,
+                                             'f_beta': f_beta, 'f1': f1_score, 'IoU': IoU,
+                                             'nominal_surface_distance': nominal_surface_distance,
+                                             'Hausdorff_distance': Hausdorff_distance,
+                                             'boundary_intersection_over_union': boundary_intersection_over_union
+                                         }, compile=False)
         
         # Get starting epoch from metadata
         with h5py.File(config.continue_model_path, 'r') as model_file:
@@ -273,15 +297,12 @@ def train_SwinUNetPP(conf):
     else:
         # Otherwise define new model
         model = SwinUNet(
-            H=config.patch_size[0],  # Height of input patches
-            W=config.patch_size[1],  # Width of input patches
-            in_channels=len(config.channel_list),  # Number of input channels/bands
-            C=128,  # Base embedding dimension (can be adjusted)
-            num_class=1,  # Number of output channels
-            num_blocks=3,  # Number of blocks in encoder/decoder
-            patch_size=4  # Size of patches for embedding
+            H=config.patch_size[0],          # Height of input images
+            W=config.patch_size[1],          # Width of input images
+            ch=len(config.channels_used),    # Number of input channels
+            C=96,                           # Base channel dimension
+            patch_size=int(config.patch_size[0]/64)                     # Patch size for embedding
         )
-
     
     # Create callbacks
     callbacks = create_callbacks(model_path)
@@ -292,8 +313,8 @@ def train_SwinUNetPP(conf):
         optimizer=get_optimizer(config.optimizer_fn),
         loss=get_loss(config.loss_fn, config.tversky_alphabeta),
         metrics=[
-            dice_coef, dice_loss, specificity, sensitivity, accuracy, 
-            f_beta, f1_score, IoU, nominal_surface_distance, 
+            dice_coef, dice_loss, specificity, sensitivity, accuracy,
+            f_beta, f1_score, IoU, nominal_surface_distance,
             Hausdorff_distance, boundary_intersection_over_union
         ]
     )
@@ -309,4 +330,4 @@ def train_SwinUNetPP(conf):
         workers=1
     )
     
-    print(f"Training completed in {str(timedelta(seconds=time.time() - start)).split('.')[0]}.\n")
+    print(f"Training completed in {str(timedelta(seconds=time.time() - start)).split('.')[0]}.\\n")

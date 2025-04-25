@@ -20,9 +20,9 @@ if __name__ == "__main__":
     # TRAINING
 
     # train a UNet model
-    #training.train_UNet(config)
+    # training.train_UNet(config)
 
-    #  train a SwinUNet transformer model
+    # Strain a SwinUNet transformer model
     training.train_SwinUNetPP(config)
 
 
