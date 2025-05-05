@@ -58,10 +58,10 @@ class Configuration:
 
         # Model configuration
         self.patch_size = (256, 256)
-        self.tversky_alphabeta = (0.5, 0.5)        # alpha is weight of false positives, beta weight of false negatives
+        self.tversky_alphabeta = (0.4, 0.6)        # alpha is weight of false positives, beta weight of false negatives
 
         # Batch and epoch numbers
-        self.train_batch_size = 32
+        self.train_batch_size = 16
         self.num_epochs = 100
         self.num_training_steps = 500
         self.num_validation_images = 50

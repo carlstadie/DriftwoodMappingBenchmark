@@ -103,6 +103,7 @@ class DataGenerator:
 
         while True:
             X, y = self.random_patch(BATCH_SIZE)
+            
             if self.augmenter == 'iaa':
                 seq_det = seq.to_deterministic()
                 X = seq_det.augment_images(X)

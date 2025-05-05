@@ -1,36 +1,17 @@
 import tensorflow as tf
+from tensorflow import keras
 from tensorflow.keras import layers, models
 import numpy as np
 
+# --- Keep your window_partition and window_reverse exactly as is ---
 def window_partition(x, window_size):
-    """
-    Partition batch of images into windows.
-    Args:
-        x: tensor of shape (B, H, W, C)
-        window_size: tuple of integers (window_height, window_width)
-    Returns:
-        windows: tensor of shape (num_windows*B, window_height, window_width, C)
-    """
     B, H, W, C = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2], tf.shape(x)[3]
-    x = tf.reshape(x, [B,
-        H // window_size[0], window_size[0],
-        W // window_size[1], window_size[1],
-        C])
-    x = tf.transpose(x, [0, 1, 3, 2, 4, 5])  # [B, num_win_h, num_win_w, wh, ww, C]
-    windows = tf.reshape(x, [-1, window_size[0], window_size[1], C])  # [num_windows*B, wh, ww, C]
+    x = tf.reshape(x, [B, H // window_size[0], window_size[0], W // window_size[1], window_size[1], C])
+    x = tf.transpose(x, [0, 1, 3, 2, 4, 5])
+    windows = tf.reshape(x, [-1, window_size[0], window_size[1], C])
     return windows
 
 def window_reverse(windows, window_size, H, W):
-    """
-    Reverse windows to original batch of images.
-    Args:
-        windows: tensor of shape (num_windows*B, window_height, window_width, C)
-        window_size: tuple (window_height, window_width)
-        H: original image height (int or tf.Tensor)
-        W: original image width (int or tf.Tensor)
-    Returns:
-        x: tensor of shape (B, H, W, C)
-    """
     window_h, window_w = window_size
     H = tf.cast(H, tf.int32)
     W = tf.cast(W, tf.int32)
@@ -47,163 +28,155 @@ def window_reverse(windows, window_size, H, W):
     x = tf.reshape(x, [B, H, W, -1])
     return x
 
-def get_relative_position_index(win_h, win_w):
-    """Get pair-wise relative position index for each token inside the window."""
-    coords = np.meshgrid(np.arange(win_h), np.arange(win_w), indexing='ij')
-    coords_flatten = np.stack([coord.flatten() for coord in coords])
-    relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]
-    relative_coords = np.transpose(relative_coords, [1, 2, 0])
-    relative_coords[:, :, 0] += win_h - 1
-    relative_coords[:, :, 1] += win_w - 1
-    relative_coords[:, :, 0] *= 2 * win_w - 1
-    relative_coords = relative_coords.astype(np.float32)
-    tf.debugging.assert_all_finite(tf.constant(relative_coords),
-                                 "NaN/Inf detected in relative position indices")
-    return tf.constant(relative_coords.sum(-1))
+class DropPath(layers.Layer):
+    def __init__(self, drop_prob=0., **kwargs):
+        super().__init__(**kwargs)
+        self.drop_prob = drop_prob
+
+    def call(self, x, training=None):
+        if (not training) or self.drop_prob == 0.:
+            return x
+        keep_prob = 1.0 - self.drop_prob
+        shape = (tf.shape(x)[0],) + (1,) * (len(x.shape) - 1)
+        random_tensor = keep_prob + tf.random.uniform(shape, dtype=x.dtype)
+        binary_tensor = tf.floor(random_tensor)
+        return (x / keep_prob) * binary_tensor
 
 class WindowAttention(layers.Layer):
-    def __init__(self, dim, window_size):
+    def __init__(self, dim, window_size, num_heads=4,
+                 attn_drop_rate=0., proj_drop_rate=0.):
         super().__init__()
+        self.dim         = dim
         self.window_size = window_size
-        self.window_area = window_size[0] * window_size[1]
-        self.num_heads = 4
-        head_dim = dim // self.num_heads
-        self.scale = head_dim ** -0.5
-        self.relative_position_bias_table = tf.Variable(
-            initial_value=tf.zeros(
-                shape=(2 * window_size[0] - 1) ** 2,
-                dtype=tf.float32
-            )
-        )
-        self.relative_position_index = get_relative_position_index(
-            window_size[0],
-            window_size[1]
-        )
-        self.qkv = layers.Dense(dim * 3)
+        self.num_heads   = num_heads
+        self.head_dim    = dim // num_heads
+        self.scale       = self.head_dim ** -0.5
+
+        self.qkv  = layers.Dense(dim * 3, use_bias=True)
         self.proj = layers.Dense(dim)
-        tf.random.normal(
-            self.relative_position_bias_table.shape,
-            stddev=0.02,
-            dtype=tf.float32
-        )
+        self.attn_dropout = layers.Dropout(attn_drop_rate)
+        self.proj_dropout = layers.Dropout(proj_drop_rate)
 
-    def _get_rel_pos_bias(self):
-        """Get relative position bias."""
-        relative_position_indices = tf.cast(
-            self.relative_position_index,
-            tf.int64
+        Wh, Ww = window_size
+        num_rel_positions = (2*Wh - 1) * (2*Ww - 1)
+        self.relative_position_bias_table = self.add_weight(
+            shape=(num_rel_positions, num_heads),
+            initializer="zeros",
+            trainable=True,
+            name="relative_position_bias_table"
         )
-        relative_position_bias = tf.gather(
-            self.relative_position_bias_table,
-            tf.reshape(relative_position_indices, [-1])
-        )
-        relative_position_bias = tf.reshape(
-            relative_position_bias,
-            [self.window_area, self.window_area, -1]
-        )
-        relative_position_bias = tf.transpose(relative_position_bias, [2, 0, 1])
-        return relative_position_bias[tf.newaxis, ...]
+        coords_h = tf.range(Wh)
+        coords_w = tf.range(Ww)
+        coords   = tf.stack(tf.meshgrid(coords_h, coords_w, indexing='ij'))
+        coords   = tf.reshape(coords, [2, -1])
+        rel_coords = coords[:, :, None] - coords[:, None, :]
+        rel_coords = tf.transpose(rel_coords, [1,2,0])
+        rel_coords = rel_coords + tf.constant([Wh-1, Ww-1])
+        rel_index  = rel_coords[...,0]*(2*Ww-1) + rel_coords[...,1]
+        self.relative_position_index = tf.cast(rel_index, tf.int32)
 
-    def call(self, x, mask=None):
-        """Forward pass for window attention with optional mask."""
+    def call(self, x, mask=None, training=None):
         B_, N, C = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2]
-        qkv = self.qkv(x)  # (B_, N, 3 * C)
-        qkv = tf.reshape(qkv, [B_, N, 3, self.num_heads, C // self.num_heads])
-        qkv = tf.transpose(qkv, [2, 0, 3, 1, 4])  # (3, B_, num_heads, N, head_dim)
-        q, k, v = qkv[0], qkv[1], qkv[2]  # Each: (B_, num_heads, N, head_dim)
+        qkv = self.qkv(x)
+        qkv = tf.reshape(qkv, (B_, N, 3, self.num_heads, C//self.num_heads))
+        qkv = tf.transpose(qkv, (2, 0, 3, 1, 4))
+        q, k, v = qkv[0], qkv[1], qkv[2]
         q = q * self.scale
-        attn = tf.matmul(q, k, transpose_b=True)  # (B_, num_heads, N, N)
-        rel_pos_bias = self._get_rel_pos_bias()  # (1, num_heads, N, N)
-        attn = attn + rel_pos_bias
+        attn = tf.matmul(q, k, transpose_b=True)
         if mask is not None:
-            num_windows = tf.shape(mask)[0]
-            attn = tf.reshape(attn, [-1, num_windows, self.num_heads, N, N])
-            attn = attn + mask[tf.newaxis, :, tf.newaxis, :, :]
-            attn = tf.reshape(attn, [-1, self.num_heads, N, N])
+            nW = tf.shape(mask)[0]
+            attn = tf.reshape(attn, (B_ // nW, nW, self.num_heads, N, N))
+            attn += mask[:, None, :, :]
+            attn = tf.reshape(attn, (-1, self.num_heads, N, N))
+        bias = tf.gather(self.relative_position_bias_table,
+                         tf.reshape(self.relative_position_index, [-1]))
+        bias = tf.reshape(bias, [N, N, self.num_heads])
+        bias = tf.transpose(bias, [2, 0, 1])
+        attn = attn + bias[None, ...]
         attn = tf.nn.softmax(attn, axis=-1)
-        attn = tf.matmul(attn, v)  # (B_, num_heads, N, head_dim)
-        x = tf.transpose(attn, [0, 2, 1, 3])  # (B_, N, num_heads, head_dim)
-        x = tf.reshape(x, [B_, N, C])         # (B_, N, C)
-        x = self.proj(x)
-        return x
+        attn = self.attn_dropout(attn, training=training)
+        out  = tf.matmul(attn, v)
+        out  = tf.transpose(out, (0, 2, 1, 3))
+        out  = tf.reshape(out, (B_, N, C))
+        out = self.proj(out)
+        return self.proj_dropout(out, training=training)
 
 class SwinTransformerBlock(layers.Layer):
-    def __init__(self, dim, input_resolution, window_size=4, shift_size=0):
+    def __init__(self, dim, input_resolution, num_heads=4,
+                 window_size=4, shift_size=0,
+                 attn_drop_rate=0., proj_drop_rate=0.,
+                 mlp_drop_rate=0., drop_path_rate=0.1):
         super().__init__()
+        self.dim              = dim
         self.input_resolution = input_resolution
-        self.window_size = window_size
-        self.shift_size = shift_size
-        self.window_area = window_size * window_size
-        self.dim = dim
-        self.norm1 = layers.LayerNormalization(epsilon=1e-5)
-        self.attn = WindowAttention(dim=dim, window_size=(window_size, window_size))
+        self.num_heads        = num_heads
+        self.window_size      = window_size
+        self.shift_size       = shift_size if min(input_resolution) > window_size else 0
+
+        self.norm1 = layers.BatchNormalization(epsilon=1e-5)
+        self.attn  = WindowAttention(dim, window_size=(window_size,window_size), num_heads=num_heads)
+        self.attn_dropout = layers.Dropout(attn_drop_rate)
+        self.proj_dropout = layers.Dropout(proj_drop_rate)
         self.norm2 = layers.LayerNormalization(epsilon=1e-5)
-        self.mlp = tf.keras.Sequential([
+        self.mlp   = keras.Sequential([
             layers.Dense(4 * dim),
-            layers.Activation('gelu'),
-            layers.Dense(dim)
+            layers.Activation("gelu"),
+            layers.Dropout(mlp_drop_rate),
+            layers.Dense(dim),
+            layers.Dropout(mlp_drop_rate),
         ])
-        if shift_size > 0:
-            H, W = self.input_resolution
-            img_mask = np.zeros([1, H, W, 1])
+        self.drop_path = DropPath(drop_prob=drop_path_rate)
+
+        if self.shift_size > 0:
+            H, W = input_resolution
+            img_mask = np.zeros((1, H, W, 1))
+            h_slices = (slice(0, -window_size), slice(-window_size, -shift_size), slice(-shift_size, None))
+            w_slices = (slice(0, -window_size), slice(-window_size, -shift_size), slice(-shift_size, None))
             cnt = 0
-            for h in (slice(0, -window_size),
-                     slice(-window_size, -shift_size),
-                     slice(-shift_size, None)):
-                for w in (slice(0, -window_size),
-                         slice(-window_size, -shift_size),
-                         slice(-shift_size, None)):
+            for h in h_slices:
+                for w in w_slices:
                     img_mask[:, h, w, :] = cnt
                     cnt += 1
-            img_mask = tf.convert_to_tensor(img_mask)
-            mask_windows = window_partition(img_mask, (window_size, window_size))
-            mask_windows = tf.reshape(mask_windows, [-1, self.window_area])
-            attn_mask = mask_windows[:, tf.newaxis] - mask_windows[:, tf.newaxis, :]
-            attn_mask = tf.where(attn_mask != 0, tf.constant(float('-inf'), dtype=tf.float32), tf.constant(0.0, dtype=tf.float32))
-            attn_mask = tf.cast(attn_mask, dtype=tf.float32)
-            tf.debugging.assert_all_finite(attn_mask, "NaN/Inf in attention mask")
-            self.attn_mask = attn_mask
+            mask_windows = window_partition(tf.convert_to_tensor(img_mask), (window_size, window_size))
+            mask_windows = tf.reshape(mask_windows, shape=(-1, window_size * window_size))
+            attn_mask = tf.expand_dims(mask_windows, 1) - tf.expand_dims(mask_windows, 2)
+            attn_mask = tf.where(attn_mask != 0, -100.0, 0.0)
+            self.attn_mask = tf.cast(attn_mask, tf.float32)
         else:
             self.attn_mask = None
 
-    def _attn(self, x):
-        """Attention mechanism."""
-        shape = tf.shape(x)
-        B, H, W, C = shape[0], shape[1], shape[2], shape[3]
+    def call(self, x, training=None):
+        B, H, W, C = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2], tf.shape(x)[3]
+        shortcut = x
+        x = self.norm1(x)
         if self.shift_size > 0:
-            shifted_x = tf.roll(x, shift=[-self.shift_size, -self.shift_size], axis=[1, 2])
-        else:
-            shifted_x = x
-        x_windows = window_partition(shifted_x, (self.window_size, self.window_size))
-        x_windows = tf.reshape(x_windows, [-1, self.window_area, C])
+            x = tf.roll(x, shift=[-self.shift_size, -self.shift_size], axis=[1,2])
+        x_windows = window_partition(x, (self.window_size, self.window_size))
+        x_windows = tf.reshape(x_windows, shape=[-1, self.window_size * self.window_size, C])
         attn_windows = self.attn(x_windows, mask=self.attn_mask)
-        tf.debugging.assert_all_finite(attn_windows, "NaN/Inf in attention output")
-        attn_windows = tf.reshape(attn_windows, [-1, self.window_size, self.window_size, C])
-        shifted_x = window_reverse(attn_windows, (self.window_size, self.window_size), H, W)
+        attn_windows = self.attn_dropout(attn_windows, training=training)
+        attn_windows = tf.reshape(attn_windows, shape=[-1, self.window_size, self.window_size, C])
+        x = window_reverse(attn_windows, (self.window_size, self.window_size), H, W)
         if self.shift_size > 0:
-            x = tf.roll(shifted_x, shift=[self.shift_size, self.shift_size], axis=[1, 2])
-        else:
-            x = shifted_x
-        x = tf.reshape(x, [B, H, W, C])
-        return x
-
-    def call(self, x):
-        """Forward pass."""
-        shape = tf.shape(x)
-        B, H, W, C = shape[0], shape[1], shape[2], shape[3]
-        x = x + self._attn(self.norm1(x))
-        x = tf.reshape(x, [B, H * W, C])
-        x = x + self.mlp(self.norm2(x))
-        x = tf.reshape(x, [B, H, W, C])
+            x = tf.roll(x, shift=[self.shift_size, self.shift_size], axis=[1,2])
+        x = self.proj_dropout(x, training=training)
+        x = shortcut + self.drop_path(x, training=training)
+        shortcut2 = x
+        x = self.norm2(x)
+        x = self.mlp(x, training=training)
+        x = shortcut2 + self.drop_path(x, training=training)
         return x
 
 class PatchEmbedding(layers.Layer):
-    def __init__(self, in_ch, num_feat, patch_size):
+    def __init__(self, in_ch, embed_dim, patch_size):
         super().__init__()
-        self.conv = layers.Conv2D(num_feat, patch_size, strides=patch_size)
+        self.proj = layers.Conv2D(embed_dim, kernel_size=patch_size,
+                                  strides=patch_size, padding='valid')
+        self.norm = layers.LayerNormalization(epsilon=1e-5)
 
     def call(self, x):
-        x = self.conv(x)
+        x = self.proj(x)
+        x = self.norm(x)
         return x
 
 class PatchMerging(layers.Layer):
@@ -306,26 +279,30 @@ class Decoder(models.Model):
             PatchExpansion(4*C),    # 384 -> 192
             PatchExpansion(2*C)     # 192 -> 96
         ]
-        self.skip_conn_concat = [
-            layers.Dense(4*C, use_bias=False),    # 768 -> 384
-            layers.Dense(2*C, use_bias=False),    # 384 -> 192
-            layers.Dense(C, use_bias=False)       # 192 -> 96
+        self.skip_conv_layers = [
+            layers.Conv2D(4*C, kernel_size=1, use_bias=False),
+            layers.Conv2D(2*C, kernel_size=1, use_bias=False),
+            layers.Conv2D(C,   kernel_size=1, use_bias=False)
         ]
 
     def call(self, x, encoder_features):
-        for patch_expand, swin_block, enc_ftr, linear_concatter in zip(
+        for patch_expand, swin_block, enc_ftr, skip_conv in zip(
             self.dec_patch_expand_blocks,
             self.dec_swin_blocks,
             reversed(encoder_features),
-            self.skip_conn_concat):
+            self.skip_conv_layers):
+            # upsample
             x = patch_expand(x)
+            # concatenate skip connection
             x = tf.concat([x, enc_ftr], axis=-1)
-            x = linear_concatter(x)
+            # fuse channels via 1x1 conv
+            x = skip_conv(x)
+            # transformer block
             x = swin_block(x)
         return x
 
 class SwinUNet(models.Model):
-    def __init__(self, H, W, ch, C, num_class=1, num_blocks=3, patch_size=4):
+    def __init__(self, H, W, ch, C, num_class=1, num_blocks=3, patch_size=16):
         super().__init__()
         self.patch_embed = PatchEmbedding(ch, C, patch_size)
         self.encoder = Encoder(C, (H//patch_size, W//patch_size), num_blocks)

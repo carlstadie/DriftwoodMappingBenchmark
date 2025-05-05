@@ -300,9 +300,10 @@ def train_SwinUNetPP(conf):
             H=config.patch_size[0],          # Height of input images
             W=config.patch_size[1],          # Width of input images
             ch=len(config.channels_used),    # Number of input channels
-            C=96,                           # Base channel dimension
+            C=256,                           # Base channel dimension
             patch_size=int(config.patch_size[0]/64)                     # Patch size for embedding
         )
+    
     
     # Create callbacks
     callbacks = create_callbacks(model_path)
