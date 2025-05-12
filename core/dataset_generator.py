@@ -12,18 +12,18 @@ def imageAugmentationWithIAA():
         # Basic aug without changing any values
         iaa.Fliplr(0.5),  # horizontally flip 50% of all images
         iaa.Flipud(0.5),  # vertically flip 20% of all images
-        sometimes(iaa.Crop(percent=(0, 0.1))),  # random crops
+        #sometimes(iaa.Crop(percent=(0, 0.1))),  # random crops
         #
         # # Gaussian blur and gamma contrast
-        sometimes(iaa.GaussianBlur(sigma=(0, 0.3)), 0.3),
+        #sometimes(iaa.GaussianBlur(sigma=(0, 0.3)), 0.3),
         # sometimes(iaa.GammaContrast(gamma=0.5, per_channel=True), 0.3),
 
         # iaa.CoarseDropout((0.03, 0.25), size_percent=(0.02, 0.05), per_channel=True)
         # sometimes(iaa.Multiply((0.75, 1.25), per_channel=True), 0.3),
-        sometimes(iaa.LinearContrast((0.3, 1.2)), 0.3),
+        #sometimes(iaa.LinearContrast((0.3, 1.2)), 0.3),
         # iaa.Add(value=(-0.5,0.5),per_channel=True),
-        sometimes(iaa.PiecewiseAffine(0.05), 0.3),
-        sometimes(iaa.PerspectiveTransform(0.01), 0.1)
+        #sometimes(iaa.PiecewiseAffine(0.05), 0.3),
+        #sometimes(iaa.PerspectiveTransform(0.01), 0.1)
     ],
         random_order=True)
     return seq

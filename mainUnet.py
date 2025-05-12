@@ -2,7 +2,7 @@
 # Convert this to a notebook if you are using jupyter.
 
 # This is where you can change which config to use
-import config.config as configuration
+import config.configUnet as configuration
 
 # INIT
 config = configuration.Configuration().validate()
@@ -20,12 +20,12 @@ if __name__ == "__main__":
     # TRAINING
 
     # train a UNet model
-    #for i in range(10):
-    #    training.train_UNet(config)
-    # training.train_UNet(config)
+    for i in range(10):
+        training.train_UNet(config)
+  
 
     # Strain a SwinUNet transformer model
-    training.train_SwinUNetPP(config)
+    #training.train_SwinUNetPP(config)
 
 
 

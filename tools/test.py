@@ -54,7 +54,24 @@ def delete_images_with_only_0_in_last_band(img_dir):
 
 
 if __name__ == "__main__":
-    append_test_to_img_filename(img_dir, appendix)
-    delete_images_with_0_in_first_4_bands(img_dir)
-    delete_images_with_only_0_in_last_band(img_dir)
-    
+    #append_test_to_img_filename(img_dir, appendix)
+    #delete_images_with_0_in_first_4_bands(img_dir)
+    #delete_images_with_only_0_in_last_band(img_dir)
+
+    import tensorflow as tf
+    from tensorflow.keras.models import load_model
+    # import your attention helpers
+    #from core.UNet import UNet
+    #from core.losses import accuracy, dice_coef, dice_loss, specificity, sensitivity, f_beta, f1_score, IoU, nominal_surface_distance, Hausdorff_distance, boundary_intersection_over_union, get_loss
+
+    model_path = r"/isipd/projects/p_planetdw/data/dw_detection/PlanetScope/models/dem.h5"
+
+    # 1. Load the model (with any custom layers/functions)
+    model = tf.keras.models.load_model(model_path,
+                                         compile=False)
+
+    # 2. Print a layer-by-layer summary
+    model.summary()
+
+    # 3. Or just print the total parameter count
+    print("Total parameters: {:,}".format(model.count_params()))

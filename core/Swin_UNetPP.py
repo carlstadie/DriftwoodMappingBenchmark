@@ -44,7 +44,7 @@ class DropPath(layers.Layer):
 
 class WindowAttention(layers.Layer):
     def __init__(self, dim, window_size, num_heads=4,
-                 attn_drop_rate=0., proj_drop_rate=0.):
+                 attn_drop_rate=0.1, proj_drop_rate=0.1):
         super().__init__()
         self.dim         = dim
         self.window_size = window_size
@@ -82,7 +82,10 @@ class WindowAttention(layers.Layer):
         qkv = tf.transpose(qkv, (2, 0, 3, 1, 4))
         q, k, v = qkv[0], qkv[1], qkv[2]
         q = q * self.scale
+        #k = tf.nn.l2_normalize(k, axis=-1)  # Helps stabilize dot product
+
         attn = tf.matmul(q, k, transpose_b=True)
+        
         if mask is not None:
             nW = tf.shape(mask)[0]
             attn = tf.reshape(attn, (B_ // nW, nW, self.num_heads, N, N))
@@ -92,7 +95,10 @@ class WindowAttention(layers.Layer):
                          tf.reshape(self.relative_position_index, [-1]))
         bias = tf.reshape(bias, [N, N, self.num_heads])
         bias = tf.transpose(bias, [2, 0, 1])
+        bias = tf.clip_by_value(bias, -5.0, 5.0)
         attn = attn + bias[None, ...]
+        attn = tf.clip_by_value(attn, -10.0, 10.0)
+
         attn = tf.nn.softmax(attn, axis=-1)
         attn = self.attn_dropout(attn, training=training)
         out  = tf.matmul(attn, v)
@@ -113,7 +119,7 @@ class SwinTransformerBlock(layers.Layer):
         self.window_size      = window_size
         self.shift_size       = shift_size if min(input_resolution) > window_size else 0
 
-        self.norm1 = layers.BatchNormalization(epsilon=1e-5)
+        self.norm1 = layers.LayerNormalization(epsilon=1e-5)
         self.attn  = WindowAttention(dim, window_size=(window_size,window_size), num_heads=num_heads)
         self.attn_dropout = layers.Dropout(attn_drop_rate)
         self.proj_dropout = layers.Dropout(proj_drop_rate)
@@ -140,7 +146,7 @@ class SwinTransformerBlock(layers.Layer):
             mask_windows = window_partition(tf.convert_to_tensor(img_mask), (window_size, window_size))
             mask_windows = tf.reshape(mask_windows, shape=(-1, window_size * window_size))
             attn_mask = tf.expand_dims(mask_windows, 1) - tf.expand_dims(mask_windows, 2)
-            attn_mask = tf.where(attn_mask != 0, -100.0, 0.0)
+            attn_mask = tf.where(attn_mask != 0, -1e9, 0.0)
             self.attn_mask = tf.cast(attn_mask, tf.float32)
         else:
             self.attn_mask = None
@@ -157,6 +163,8 @@ class SwinTransformerBlock(layers.Layer):
         attn_windows = self.attn_dropout(attn_windows, training=training)
         attn_windows = tf.reshape(attn_windows, shape=[-1, self.window_size, self.window_size, C])
         x = window_reverse(attn_windows, (self.window_size, self.window_size), H, W)
+
+
         if self.shift_size > 0:
             x = tf.roll(x, shift=[self.shift_size, self.shift_size], axis=[1,2])
         x = self.proj_dropout(x, training=training)
@@ -231,85 +239,129 @@ class FinalPatchExpansion(layers.Layer):
         return x
 
 class SwinBlock(layers.Layer):
-    def __init__(self, dims, ip_res, ss_size=3):
+    def __init__(self, dims, ip_res, ss_size=3, num_heads=4):   
         super().__init__()
-        self.swtb1 = SwinTransformerBlock(dim=dims, input_resolution=ip_res)
+        self.swtb1 = SwinTransformerBlock(dim=dims, input_resolution=ip_res, num_heads=num_heads,)
         self.swtb2 = SwinTransformerBlock(dim=dims, input_resolution=ip_res,
-                                         shift_size=ss_size)
+                                         shift_size=ss_size, num_heads=num_heads)
 
     def call(self, x):
         x = self.swtb2(self.swtb1(x))
         return x
 
 class Encoder(models.Model):
-    def __init__(self, C, partioned_ip_res, num_blocks=3):
+    def __init__(self, C, input_resolution, num_stages=3):
         super().__init__()
-        H, W = partioned_ip_res
+        H, W = input_resolution
+
         self.enc_swin_blocks = [
-            SwinBlock(C, (H, W)),
-            SwinBlock(2*C, (H//2, W//2)),
-            SwinBlock(4*C, (H//4, W//4))
-        ]
-        self.enc_patch_merge_blocks = [
-            PatchMerging(C),
-            PatchMerging(2*C),
-            PatchMerging(4*C)
+            keras.Sequential([
+                SwinBlock(C, (H, W), num_heads=C//32),
+                SwinBlock(C, (H, W), num_heads=C//32)
+            ]),
+            keras.Sequential([
+                SwinBlock(2 * C, (H // 2, W // 2), num_heads=(2*C)//32),
+                SwinBlock(2 * C, (H // 2, W // 2), num_heads=(2*C)//32)
+            ]),
+            keras.Sequential([
+                SwinBlock(4 * C, (H // 4, W // 4), num_heads=(4*C)//32),
+                SwinBlock(4 * C, (H // 4, W // 4), num_heads=(4*C)//32)
+            ])
         ]
 
-    def call(self, x):
+        self.enc_patch_merge_blocks = [
+            PatchMerging(C),
+            PatchMerging(2 * C),
+            PatchMerging(4 * C)
+        ]
+
+    def call(self, x, training=None):
         skip_conn_ftrs = []
-        for swin_block, patch_merger in zip(self.enc_swin_blocks,
-                                           self.enc_patch_merge_blocks):
-            x = swin_block(x)
+        for swin_blocks, patch_merger in zip(self.enc_swin_blocks, self.enc_patch_merge_blocks):
+            x = swin_blocks(x, training=training)
             skip_conn_ftrs.append(x)
             x = patch_merger(x)
         return x, skip_conn_ftrs
 
+
 class Decoder(models.Model):
-    def __init__(self, C, partioned_ip_res, num_blocks=3):
+    def __init__(self, C, input_resolution):
         super().__init__()
-        H, W = partioned_ip_res
+        H, W = input_resolution
+
         self.dec_swin_blocks = [
-            SwinBlock(4*C, (H//4, W//4)),      # 384 channels
-            SwinBlock(2*C, (H//2, W//2)),      # 192 channels
-            SwinBlock(C, (H, W))               # 96 channels
-        ]
-        self.dec_patch_expand_blocks = [
-            PatchExpansion(8*C),    # 768 -> 384
-            PatchExpansion(4*C),    # 384 -> 192
-            PatchExpansion(2*C)     # 192 -> 96
-        ]
-        self.skip_conv_layers = [
-            layers.Conv2D(4*C, kernel_size=1, use_bias=False),
-            layers.Conv2D(2*C, kernel_size=1, use_bias=False),
-            layers.Conv2D(C,   kernel_size=1, use_bias=False)
+            keras.Sequential([
+                SwinBlock(4 * C, (H // 4, W // 4), num_heads=(4*C)//32),
+                SwinBlock(4 * C, (H // 4, W // 4), num_heads=(4*C)//32)
+            ]),
+            keras.Sequential([
+                SwinBlock(2 * C, (H // 2, W // 2), num_heads=(2*C)//32),
+                SwinBlock(2 * C, (H // 2, W // 2), num_heads=(2*C)//32)
+            ]),
+            keras.Sequential([
+                SwinBlock(C, (H, W), num_heads=C//32),
+                SwinBlock(C, (H, W), num_heads=C//32)
+            ])
         ]
 
-    def call(self, x, encoder_features):
-        for patch_expand, swin_block, enc_ftr, skip_conv in zip(
+        self.dec_patch_expand_blocks = [
+            PatchExpansion(8 * C),
+            PatchExpansion(4 * C),
+            PatchExpansion(2 * C)
+        ]
+
+        self.skip_conv_layers = [
+            layers.Conv2D(4 * C, kernel_size=1, use_bias=False),
+            layers.Conv2D(2 * C, kernel_size=1, use_bias=False),
+            layers.Conv2D(C, kernel_size=1, use_bias=False)
+        ]
+
+    def call(self, x, encoder_features, training=None):
+        for patch_expand, swin_blocks, enc_ftr, skip_conv in zip(
             self.dec_patch_expand_blocks,
             self.dec_swin_blocks,
             reversed(encoder_features),
-            self.skip_conv_layers):
-            # upsample
+            self.skip_conv_layers
+        ):
             x = patch_expand(x)
-            # concatenate skip connection
             x = tf.concat([x, enc_ftr], axis=-1)
-            # fuse channels via 1x1 conv
             x = skip_conv(x)
-            # transformer block
-            x = swin_block(x)
+            x = swin_blocks(x, training=training)
         return x
+    
+
+class ConvStem(layers.Layer):
+    def __init__(self, out_channels, kernel_size=7, stride=4, **kwargs):
+        super().__init__(**kwargs)
+        self.conv = layers.Conv2D(
+            out_channels,
+            kernel_size=kernel_size,
+            strides=stride,
+            padding="same",
+            use_bias=False
+        )
+        self.bn   = layers.BatchNormalization()
+        self.act  = layers.Activation("gelu")
+
+    def call(self, x, training=None):
+        x = self.conv(x)
+        x = self.bn(x,    training=training)
+        return self.act(x)
+
 
 class SwinUNet(models.Model):
     def __init__(self, H, W, ch, C, num_class=1, num_blocks=3, patch_size=16):
         super().__init__()
+
+        # conv stem: large kernel, stride to downsample once
+        #self.stem = ConvStem(out_channels=C, kernel_size=7, stride=4, name="stem")
+
         self.patch_embed = PatchEmbedding(ch, C, patch_size)
-        self.encoder = Encoder(C, (H//patch_size, W//patch_size), num_blocks)
+        self.encoder = Encoder(C, (H//patch_size, W//patch_size))
         self.bottleneck = SwinBlock(C*(2**num_blocks),
                                    (H//(patch_size*(2**num_blocks)),
                                     W//(patch_size*(2**num_blocks))))
-        self.decoder = Decoder(C, (H//patch_size, W//patch_size), num_blocks)
+        self.decoder = Decoder(C, (H//patch_size, W//patch_size))
         self.final_expansion = FinalPatchExpansion(C)
         self.head = layers.Conv2D(num_class, 1, activation='sigmoid')
 
