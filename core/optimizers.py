@@ -46,6 +46,8 @@ def get_optimizer(optimizer_fn, num_epochs=None, steps_per_epoch=None):
             return Adam(learning_rate=lr_schedule, beta_1=0.9, beta_2=0.999, epsilon=1e-8, clipnorm=1.0)
         else:
             return Adam(learning_rate=3e-4, beta_1=0.9, beta_2=0.999, epsilon=1e-8, clipnorm=1.0)
+    elif optimizer_fn == "adam1":
+        return adam
 
     elif optimizer_fn == "adaDelta":
         return Adadelta(learning_rate=1.0, rho=0.95, epsilon=1e-7)

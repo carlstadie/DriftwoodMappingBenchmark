@@ -113,18 +113,29 @@ class SwinTransformerBlock(layers.Layer):
                  attn_drop_rate=0., proj_drop_rate=0.,
                  mlp_drop_rate=0., drop_path_rate=0.1):
         super().__init__()
-        self.dim              = dim
+        self.dim = dim
         self.input_resolution = input_resolution
-        self.num_heads        = num_heads
-        self.window_size      = window_size
-        self.shift_size       = shift_size if min(input_resolution) > window_size else 0
+        self.num_heads = num_heads
 
+        # Clamp window size to resolution
+        H, W = input_resolution
+        ws = min(window_size, H, W)
+        self.window_size = ws
+        self.shift_size = min(shift_size, ws // 2)
+
+        # Layer norms and MLP
         self.norm1 = layers.LayerNormalization(epsilon=1e-5)
-        self.attn  = WindowAttention(dim, window_size=(window_size,window_size), num_heads=num_heads)
+        self.attn = WindowAttention(
+            dim,
+            window_size=(self.window_size, self.window_size),
+            num_heads=num_heads,
+            attn_drop_rate=attn_drop_rate,
+            proj_drop_rate=proj_drop_rate
+        )
         self.attn_dropout = layers.Dropout(attn_drop_rate)
         self.proj_dropout = layers.Dropout(proj_drop_rate)
         self.norm2 = layers.LayerNormalization(epsilon=1e-5)
-        self.mlp   = keras.Sequential([
+        self.mlp = models.Sequential([
             layers.Dense(4 * dim),
             layers.Activation("gelu"),
             layers.Dropout(mlp_drop_rate),
@@ -133,23 +144,65 @@ class SwinTransformerBlock(layers.Layer):
         ])
         self.drop_path = DropPath(drop_prob=drop_path_rate)
 
+        # Build attention mask if needed
         if self.shift_size > 0:
-            H, W = input_resolution
             img_mask = np.zeros((1, H, W, 1))
-            h_slices = (slice(0, -window_size), slice(-window_size, -shift_size), slice(-shift_size, None))
-            w_slices = (slice(0, -window_size), slice(-window_size, -shift_size), slice(-shift_size, None))
+            h_slices = (
+                slice(0, -self.window_size),
+                slice(-self.window_size, -self.shift_size),
+                slice(-self.shift_size, None)
+            )
+            w_slices = (
+                slice(0, -self.window_size),
+                slice(-self.window_size, -self.shift_size),
+                slice(-self.shift_size, None)
+            )
             cnt = 0
             for h in h_slices:
                 for w in w_slices:
                     img_mask[:, h, w, :] = cnt
                     cnt += 1
-            mask_windows = window_partition(tf.convert_to_tensor(img_mask), (window_size, window_size))
-            mask_windows = tf.reshape(mask_windows, shape=(-1, window_size * window_size))
+            mask_windows = window_partition(
+                tf.convert_to_tensor(img_mask),
+                (self.window_size, self.window_size)
+            )
+            mask_windows = tf.reshape(mask_windows, shape=(-1, self.window_size * self.window_size))
             attn_mask = tf.expand_dims(mask_windows, 1) - tf.expand_dims(mask_windows, 2)
             attn_mask = tf.where(attn_mask != 0, -1e9, 0.0)
             self.attn_mask = tf.cast(attn_mask, tf.float32)
         else:
             self.attn_mask = None
+
+    def call(self, x, training=None):
+        B, H, W, C = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2], tf.shape(x)[3]
+        shortcut = x
+        x = self.norm1(x)
+        # cyclic shift
+        if self.shift_size > 0:
+            x = tf.roll(x, shift=[-self.shift_size, -self.shift_size], axis=[1, 2])
+        # partition windows
+        x_windows = window_partition(x, (self.window_size, self.window_size))
+        x_windows = tf.reshape(x_windows, shape=[-1, self.window_size * self.window_size, C])
+
+        # attention
+        attn_windows = self.attn(x_windows, mask=self.attn_mask)
+        attn_windows = self.attn_dropout(attn_windows, training=training)
+        attn_windows = tf.reshape(
+            attn_windows,
+            shape=[-1, self.window_size, self.window_size, C]
+        )
+
+        # merge windows
+        x = window_reverse(attn_windows, (self.window_size, self.window_size), H, W)
+        if self.shift_size > 0:
+            x = tf.roll(x, shift=[self.shift_size, self.shift_size], axis=[1, 2])
+
+        x = self.proj_dropout(x, training=training)
+        x = shortcut + self.drop_path(x, training=training)
+        x = self.norm2(x)
+        x = self.mlp(x, training=training)
+        x = shortcut + self.drop_path(x, training=training)
+        return x
 
     def call(self, x, training=None):
         B, H, W, C = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2], tf.shape(x)[3]
@@ -222,21 +275,41 @@ class PatchExpansion(layers.Layer):
         return x
 
 class FinalPatchExpansion(layers.Layer):
-    def __init__(self, dim):
+    def __init__(self, dim, up_factor):
         super().__init__()
-        self.input_dim = dim
-        self.norm = layers.LayerNormalization(epsilon=1e-5)
-        self.expand = layers.Dense(16*dim, use_bias=False)
+        self.up_factor = up_factor
+        self.norm      = layers.LayerNormalization(epsilon=1e-5)
+        # up_factor**2 * dim, not hard‐coded 16*dim
+        self.expand    = layers.Dense((up_factor**2) * dim, use_bias=False)
 
     def call(self, x):
-        x = self.expand(x)
+        # x: [B, H, W, dim]
+        x = self.expand(x)  # now has shape [B, H, W, up_factor**2 * dim]
+        # get dynamic shape
         shape = tf.shape(x)
-        B, H, W, C = shape[0], shape[1], shape[2], shape[3]
-        x = tf.reshape(x, [B, H, W, 4, 4, C//16])
+        B = shape[0]
+        H = shape[1]
+        W = shape[2]
+        C = shape[3]  # this is up_factor**2 * original_dim
+
+        # reshape into [B, H, W, up_factor, up_factor, C/(up_factor**2)]
+        new_C = C // (self.up_factor**2)
+        x = tf.reshape(
+            x,
+            [B,
+             H,
+             W,
+             self.up_factor,
+             self.up_factor,
+             new_C]
+        )
+        # permute so we get [B, H, up_factor, W, up_factor, new_C]
         x = tf.transpose(x, [0, 1, 3, 2, 4, 5])
-        x = tf.reshape(x, [B, H*4, W*4, C//16])
-        x = self.norm(x)
-        return x
+        # finally collapse to [B, H*up_factor, W*up_factor, new_C]
+        x = tf.reshape(x, [B, H * self.up_factor, W * self.up_factor, new_C])
+
+        return self.norm(x)
+
 
 class SwinBlock(layers.Layer):
     def __init__(self, dims, ip_res, ss_size=3, num_heads=4):   
@@ -362,7 +435,9 @@ class SwinUNet(models.Model):
                                    (H//(patch_size*(2**num_blocks)),
                                     W//(patch_size*(2**num_blocks))))
         self.decoder = Decoder(C, (H//patch_size, W//patch_size))
-        self.final_expansion = FinalPatchExpansion(C)
+        # … in your SwinUNet __init__ …
+        self.final_expansion = FinalPatchExpansion(C, up_factor=patch_size)
+
         self.head = layers.Conv2D(num_class, 1, activation='sigmoid')
 
     def call(self, x):

@@ -326,8 +326,8 @@ def train_SwinUNetPP(conf):
             H=config.patch_size[0],          # Height of input images
             W=config.patch_size[1],          # Width of input images
             ch=len(config.channels_used),    # Number of input channels
-            C=128,                           # Base channel dimension
-            patch_size=4#int(config.patch_size[0]/64)                     # Patch size for embedding
+            C=64,                           # Base channel dimension
+            patch_size=16#int(config.patch_size[0]/64)                     # Patch size for embedding
         )
     
     
@@ -345,6 +345,9 @@ def train_SwinUNetPP(conf):
             Hausdorff_distance, boundary_intersection_over_union
         ]
     )
+
+    csv_logger = CSVLogger(os.path.join(config.logs_dir, f'{os.path.basename(model_path)}_metrics.csv'), 
+                  separator=',', append=True)
     
     model.fit(
         train_generator,
@@ -353,7 +356,7 @@ def train_SwinUNetPP(conf):
         initial_epoch=starting_epoch,
         validation_data=val_generator,
         validation_steps=config.num_validation_images,
-        callbacks=callbacks,
+        callbacks=[*callbacks, csv_logger],
         workers=1
     )
     

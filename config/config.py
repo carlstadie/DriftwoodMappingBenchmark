@@ -29,7 +29,7 @@ class Configuration:
 
         # Path to preprocessed data to use for this training
         # Preprocessed frames are a tif file per area, with bands [normalised img bands + label band]
-        self.preprocessed_dir = None               # if set to None, it will use the most recent preprocessing data
+        self.preprocessed_dir = "/isipd/projects/p_planetdw/data/methods_test/training_data/MACS/20250429-1208_MACS_test_utm8"               # if set to None, it will use the most recent preprocessing data
 
         # Path to existing model to be used to continue training on [optional]
         self.continue_model_path = None 
@@ -61,7 +61,7 @@ class Configuration:
         self.tversky_alphabeta = (0.5, 0.5)        # alpha is weight of false positives, beta weight of false negatives
 
         # Batch and epoch numbers
-        self.train_batch_size = 16
+        self.train_batch_size = 64
         self.num_epochs = 150
         self.num_training_steps = 500
         self.num_validation_images = 50

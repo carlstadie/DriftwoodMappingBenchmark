@@ -1,88 +1,101 @@
-import tensorflow as tf
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
-import os
 
-def extract_metrics_from_events(log_dir):
+# --- load your data ---
+df = pd.read_csv(
+    "/isipd/projects/p_planetdw/data/methods_test/logs/20250513-1740_MACS_test_metrics.csv",
+    sep=","
+)
+val_loss   = df["val_loss"].values
+train_loss = df["loss"].values
+
+# --- generate synthetic losses ---
+def genetrate_synthetic_losses(val_loss, train_loss, sample_size=100):
+    syn_val_loss, syn_train_loss = [], []
+    for _ in range(sample_size):
+        shift = np.random.normal(-0.01, 0.01, size=val_loss.shape)
+        syn_val_loss.append(val_loss   + shift)
+        syn_train_loss.append(train_loss + shift)
+    return np.array(syn_val_loss), np.array(syn_train_loss)
+
+
+
+
+def plot_losses(
+    syn_train_loss: np.ndarray,
+    syn_val_loss:   np.ndarray,
+    save_path:      str = None,
+    show:           bool = True,
+    figsize:        tuple = (12, 5)
+):
     """
-    Extract training metrics from TensorFlow event logs into a DataFrame.
-    Handles profile-empty files and searches subdirectories.
-    
-    Args:
-        log_dir (str): Path to the directory containing events.out.tfevents.* files
-        
-    Returns:
-        tuple: Training DataFrame, Validation DataFrame
+    Plots synthetic training & validation losses with their means in a 1×2 subplot.
+
+    Parameters
+    ----------
+    syn_train_loss : np.ndarray
+        Array of shape (n_runs, n_epochs) for training losses.
+    syn_val_loss : np.ndarray
+        Array of shape (n_runs, n_epochs) for validation losses.
+    save_path : str, optional
+        If given, the figure is saved to this path.
+    show : bool
+        If True, calls plt.show() at the end.
+    figsize : tuple
+        Size of the overall figure (width, height).
     """
-    train_data = []
-    val_data = []
-    
-    # Verify log directory exists
-    if not os.path.exists(log_dir):
-        raise FileNotFoundError(f"Log directory not found: {log_dir}")
-    
-    # Get all event files, including in subdirectories
-    event_files = tf.io.gfile.glob(f"{log_dir}/events.out.tfevents.*")
-    if not event_files:
-        # Try subdirectories
-        event_files = tf.io.gfile.glob(f"{log_dir}/**/events.out.tfevents.*")
-    
-    print(f"Found {len(event_files)} event files:")
-    for file_path in event_files:
-        print(f"  - {file_path}")
-    
-    # Process each event file
-    for file_path in event_files:
-        try:
-            print(f"\nProcessing file: {file_path}")
-            # Use tf.compat.v1.summary.Summary() for more robust parsing
-            for e in tf.compat.v1.train.summary_iterator(file_path):
-                if e.summary:
-                    for v in e.summary.value:
-                        if v.tensor:
-                            metric_name = v.tag
-                            value = float(tf.make_ndarray(v.tensor))
-                            step = int(e.step)
-                            
-                            print(f"  Step {step}: {metric_name} = {value}")
-                            
-                            # Determine if this is training or validation
-                            if 'val_' in metric_name:
-                                val_data.append({
-                                    'metric': metric_name.replace('val_', ''),
-                                    'value': value,
-                                    'step': step
-                                })
-                            else:
-                                train_data.append({
-                                    'metric': metric_name,
-                                    'value': value,
-                                    'step': step
-                                })
-        except Exception as e:
-            print(f"Error processing {file_path}: {str(e)}")
-    
-    # Create DataFrames
-    df_train = pd.DataFrame(train_data)
-    df_val = pd.DataFrame(val_data)
-    
-    return df_train, df_val
+    # compute mean and std
+    mean_train = syn_train_loss #np.mean(syn_train_loss, axis=0)
+    std_train  = np.std(syn_train_loss,  axis=0)
+    mean_val   = syn_val_loss #np.mean(syn_val_loss,   axis=0)
+    std_val    = np.std(syn_val_loss,    axis=0)
 
-# Replace with your actual log directory path
-log_dir = "/isipd/projects/p_planetdw/data/methods_test/logs/UNet/20250509-1600_U"
+    # setup figure
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
 
-# Extract metrics
-try:
-    df_train, df_val = extract_metrics_from_events(log_dir)
-    
-    print("\nFirst few rows of training metrics:")
-    print(df_train.head())
-    print("\nFirst few rows of validation metrics:")
-    print(df_val.head())
-    
-    if df_train.empty:
-        print("\nWarning: Training DataFrame is empty")
-    if df_val.empty:
-        print("\nWarning: Validation DataFrame is empty")
-except Exception as e:
-    print(f"Error: {str(e)}")
+    # Training Loss ±σ
+    epochs = np.arange(mean_train.size)
+    ax1.plot(epochs, mean_train, color='C0', lw=2, label='Mean Train Loss')
+    """ax1.fill_between(
+        epochs,
+        mean_train - std_train,
+        mean_train + std_train,
+        color='C0', alpha=0.3,
+        label='±1σ'
+    )"""
+    ax1.set_title("Training Loss")
+    ax1.set_ylim(0, 1.)
+    ax1.set_xlabel("Epoch")
+    ax1.set_ylabel("Loss")
+    ax1.legend()
+
+    # Validation Loss ±σ
+    ax2.plot(epochs, mean_val, color='C1', lw=2, label='Mean Val Loss')
+    """ax2.fill_between(
+        epochs,
+        mean_val - std_val,
+        mean_val + std_val,
+        color='C1', alpha=0.3,
+        label='±1σ'
+    )"""
+    ax2.set_title("Validation Loss")
+    ax2.set_ylim(0, 1.)
+    ax2.set_xlabel("Epoch")
+    ax2.legend()
+
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=300)
+    if show:
+        plt.show()
+    plt.close(fig)
+
+syn_val_loss, syn_train_loss = genetrate_synthetic_losses(val_loss, train_loss, sample_size=100)
+
+plot_losses(
+    train_loss,
+    val_loss,
+    save_path="/isipd/projects/p_planetdw/data/methods_test/logs/combined_losses_swin.png"
+)
+

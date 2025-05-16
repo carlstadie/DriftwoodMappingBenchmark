@@ -29,7 +29,7 @@ class Configuration:
 
         # Path to preprocessed data to use for this training
         # Preprocessed frames are a tif file per area, with bands [normalised img bands + label band]
-        self.preprocessed_dir = None               # if set to None, it will use the most recent preprocessing data
+        self.preprocessed_dir = f'/isipd/projects/p_planetdw/data/methods_test/training_data/{self.modality}/20250429-1208_MACS_test_utm8'               # if set to None, it will use the most recent preprocessing data
 
         # Path to existing model to be used to continue training on [optional]
         self.continue_model_path = None 
@@ -58,7 +58,7 @@ class Configuration:
 
         # Model configuration
         self.patch_size = (256, 256)
-        self.tversky_alphabeta = (0.5, 0.5)        # alpha is weight of false positives, beta weight of false negatives
+        self.tversky_alphabeta = (0.7, 0.3)        # alpha is weight of false positives, beta weight of false negatives
 
         # Batch and epoch numbers
         self.train_batch_size = 16
@@ -86,7 +86,7 @@ class Configuration:
 
         # Training
         self.loss_fn = 'tversky'                   # selection of loss function
-        self.optimizer_fn = 'adaDelta'             # selection of optimizer function
+        self.optimizer_fn = 'adam1'             # selection of optimizer function
         self.dilation_rate = 1                  # dilation rate for dilated convolutions, 1 is no dilation
         self.model_name = self.run_name            # this is used as saved model name (concat with timestamp)
         self.boundary_weight = 5                  # weighting applied to boundaries, (rest of image is 1)
