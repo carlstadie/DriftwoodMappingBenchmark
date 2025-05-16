@@ -9,7 +9,7 @@ class Configuration:
     def __init__(self):
 
         # --------- RUN NAME ---------
-        self.run_name = 'MACS_test'                     # custom name for this run, eg resampled_x3, alpha60, new_train etc
+        self.run_name = 'Unet_new'                     # custom name for this run, eg resampled_x3, alpha60, new_train etc
 
         # ---------- PATHS -----------
 
@@ -29,7 +29,7 @@ class Configuration:
 
         # Path to preprocessed data to use for this training
         # Preprocessed frames are a tif file per area, with bands [normalised img bands + label band]
-        self.preprocessed_dir = "/isipd/projects/p_planetdw/data/methods_test/training_data/MACS/20250429-1208_MACS_test_utm8"               # if set to None, it will use the most recent preprocessing data
+        self.preprocessed_dir = f'/isipd/projects/p_planetdw/data/methods_test/training_data/{self.modality}/20250429-1208_MACS_test_utm8'               # if set to None, it will use the most recent preprocessing data
 
         # Path to existing model to be used to continue training on [optional]
         self.continue_model_path = None 
@@ -58,10 +58,10 @@ class Configuration:
 
         # Model configuration
         self.patch_size = (256, 256)
-        self.tversky_alphabeta = (0.5, 0.5)        # alpha is weight of false positives, beta weight of false negatives
+        self.tversky_alphabeta = (0.7, 0.3)        # alpha is weight of false positives, beta weight of false negatives
 
         # Batch and epoch numbers
-        self.train_batch_size = 64
+        self.train_batch_size = 16
         self.num_epochs = 150
         self.num_training_steps = 500
         self.num_validation_images = 50
@@ -74,7 +74,7 @@ class Configuration:
         # ------ ADVANCED SETTINGS ------
         # GPU selection, if you have multiple GPUS.
         # Used for both training and prediction, so use multiple config files to run on two GPUs in parallel.
-        self.selected_GPU = 7 # =CUDA id, 0 is first.    -1 to disable GPU and use CPU
+        self.selected_GPU = 6 # =CUDA id, 0 is first.    -1 to disable GPU and use CPU
 
         # Preprocessing
         self.train_image_type = self.image_file_type           # used to find training images
@@ -86,7 +86,7 @@ class Configuration:
 
         # Training
         self.loss_fn = 'tversky'                   # selection of loss function
-        self.optimizer_fn = 'adam'             # selection of optimizer function
+        self.optimizer_fn = 'adam1'             # selection of optimizer function
         self.dilation_rate = 1                  # dilation rate for dilated convolutions, 1 is no dilation
         self.model_name = self.run_name            # this is used as saved model name (concat with timestamp)
         self.boundary_weight = 5                  # weighting applied to boundaries, (rest of image is 1)

@@ -11,7 +11,7 @@ import numpy as np
 from tqdm import tqdm
 
 import tensorflow as tf
-from tensorflow.keras.callbacks import ModelCheckpoint, TensorBoard, Callback
+from tensorflow.keras.callbacks import ModelCheckpoint, TensorBoard, Callback, CSVLogger
 from core.UNet import UNet
 from core.Swin_UNetPP import SwinUNet
 from core.frame_info import FrameInfo
@@ -52,7 +52,7 @@ def get_all_frames():
         # C | H | W
         annotations = preprocessed[-1, ::]
 
-        # Create frame with combined image, annotation, and weight bands
+        # Create frame with combined image and annotation bands
         frames.append(FrameInfo(image_channels, annotations))
 
     return frames
@@ -170,6 +170,29 @@ def create_callbacks(model_path):
                 
     return [checkpoint, tensorboard, CustomMeta()]
 
+class MetricsCSVCallback(Callback):
+    def __init__(self, log_dir):
+        self.log_dir = log_dir
+        self.metrics_df = None
+        
+    def on_epoch_end(self, epoch, logs=None):
+        if logs is None:
+            logs = {}
+            
+        # Create initial DataFrame if it doesn't exist
+        if self.metrics_df is None:
+            self.metrics_df = pd.DataFrame()
+            
+        # Create new row for this epoch
+        new_row = pd.DataFrame(logs, index=[epoch])
+        
+        # Append to existing DataFrame
+        self.metrics_df = pd.concat([self.metrics_df, new_row], ignore_index=True)
+        
+        # Save to CSV
+        csv_path = os.path.join(self.log_dir, 'metrics_history.csv')
+        self.metrics_df.to_csv(csv_path, index=False)
+
 
 def train_UNet(conf):
     """Create and train a new UNet model"""
@@ -229,11 +252,14 @@ def train_UNet(conf):
     
     # Train the model
     tf.config.run_functions_eagerly(False)
-    model.compile(optimizer=get_optimizer(config.optimizer_fn), 
+    model.compile(optimizer=get_optimizer(config.optimizer_fn, config.num_epochs, config.num_training_steps), 
                  loss=get_loss(config.loss_fn, config.tversky_alphabeta),
                  metrics=[dice_coef, dice_loss, specificity, sensitivity, accuracy, 
                          f_beta, f1_score, IoU, nominal_surface_distance, 
                          Hausdorff_distance, boundary_intersection_over_union])
+    
+    csv_logger = CSVLogger(os.path.join(config.logs_dir, f'{os.path.basename(model_path)}_metrics.csv'), 
+                      separator=',', append=True)
     
     model.fit(train_generator,
               steps_per_epoch=config.num_training_steps,
@@ -241,10 +267,10 @@ def train_UNet(conf):
               initial_epoch=starting_epoch,
               validation_data=val_generator,
               validation_steps=config.num_validation_images,
-              callbacks=callbacks,
+              callbacks=[*callbacks, csv_logger],
               workers=1)
     
-    print(f"Training completed in {str(timedelta(seconds=time.time() - start)).split('.')[0]}.\\n")
+    print(f"Training completed in {str(timedelta(seconds=time.time() - start)).split('.')[0]}. \n")
 
 def train_SwinUNetPP(conf):
     """Create and train a new Swin UNet model"""
@@ -300,8 +326,8 @@ def train_SwinUNetPP(conf):
             H=config.patch_size[0],          # Height of input images
             W=config.patch_size[1],          # Width of input images
             ch=len(config.channels_used),    # Number of input channels
-            C=256,                           # Base channel dimension
-            patch_size=int(config.patch_size[0]/64)                     # Patch size for embedding
+            C=64,                           # Base channel dimension
+            patch_size=16#int(config.patch_size[0]/64)                     # Patch size for embedding
         )
     
     
@@ -319,6 +345,9 @@ def train_SwinUNetPP(conf):
             Hausdorff_distance, boundary_intersection_over_union
         ]
     )
+
+    csv_logger = CSVLogger(os.path.join(config.logs_dir, f'{os.path.basename(model_path)}_metrics.csv'), 
+                  separator=',', append=True)
     
     model.fit(
         train_generator,
@@ -327,8 +356,8 @@ def train_SwinUNetPP(conf):
         initial_epoch=starting_epoch,
         validation_data=val_generator,
         validation_steps=config.num_validation_images,
-        callbacks=callbacks,
+        callbacks=[*callbacks, csv_logger],
         workers=1
     )
     
-    print(f"Training completed in {str(timedelta(seconds=time.time() - start)).split('.')[0]}.\\n")
+    print(f"Training completed in {str(timedelta(seconds=time.time() - start)).split('.')[0]}. \n")
