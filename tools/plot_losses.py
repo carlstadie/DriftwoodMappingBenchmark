@@ -1,101 +1,92 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import os
 
-# --- load your data ---
-df = pd.read_csv(
-    "/isipd/projects/p_planetdw/data/methods_test/logs/20250513-1740_MACS_test_metrics.csv",
-    sep=","
-)
-val_loss   = df["val_loss"].values
-train_loss = df["loss"].values
+unet_loss_dir = "/isipd/projects/p_planetdw/data/methods_test/logs/unet_samples"
 
-# --- generate synthetic losses ---
-def genetrate_synthetic_losses(val_loss, train_loss, sample_size=100):
-    syn_val_loss, syn_train_loss = [], []
-    for _ in range(sample_size):
-        shift = np.random.normal(-0.01, 0.01, size=val_loss.shape)
-        syn_val_loss.append(val_loss   + shift)
-        syn_train_loss.append(train_loss + shift)
-    return np.array(syn_val_loss), np.array(syn_train_loss)
+metrics = ['loss', 'specificity', 'sensitivity', 'IoU', 'f1_score', 'Hausdorff_distance']
+output_dir = "/isipd/projects/p_planetdw/data/methods_test/logs/unet_samples"
+
+def read_metrics_as_array(directory, metrics):
+    files = sorted([f for f in os.listdir(directory) if f.endswith('.csv')])
+    data_list = []
+    
+    metric_names = []
+    for metric in metrics:
+        metric_names.append(metric)
+        metric_names.append('val_' + metric)
+
+    for file in files:
+        file_path = os.path.join(directory, file)
+        df = pd.read_csv(file_path)
+        file_data = []
+
+        for name in metric_names:
+            if name in df.columns:
+                file_data.append(df[name].values)
+            else:
+                # Fill with NaNs if column is missing
+                file_data.append(np.full(len(df), np.nan))
+        
+        # Transpose so shape is (epochs, metrics)
+        file_data = np.stack(file_data, axis=1)  # shape: (epochs, num_metrics)
+        data_list.append(file_data)
+
+    # Convert to a 3D array: (files, epochs, metrics)
+    data_array = np.stack(data_list, axis=0)
+
+    # Build lookup dict
+    lookup = {name: idx for idx, name in enumerate(metric_names)}
+
+    return data_array, lookup, files
+
+data_array, metric_lookup, file_names = read_metrics_as_array(unet_loss_dir, metrics)
+
+print(f"Data shape: {data_array.shape}")
 
 
 
+def plot_losses(loss_array, metrics, metric_lookup, output_dir):
+    epochs = loss_array.shape[1]
+    num_metrics = len(metrics)
 
-def plot_losses(
-    syn_train_loss: np.ndarray,
-    syn_val_loss:   np.ndarray,
-    save_path:      str = None,
-    show:           bool = True,
-    figsize:        tuple = (12, 5)
-):
-    """
-    Plots synthetic training & validation losses with their means in a 1×2 subplot.
+    plt.figure(figsize=(10, 10))  # Square layout
+    
+    for i, metric in enumerate(metrics):
+        plt.subplot(num_metrics, 1, i + 1)
 
-    Parameters
-    ----------
-    syn_train_loss : np.ndarray
-        Array of shape (n_runs, n_epochs) for training losses.
-    syn_val_loss : np.ndarray
-        Array of shape (n_runs, n_epochs) for validation losses.
-    save_path : str, optional
-        If given, the figure is saved to this path.
-    show : bool
-        If True, calls plt.show() at the end.
-    figsize : tuple
-        Size of the overall figure (width, height).
-    """
-    # compute mean and std
-    mean_train = syn_train_loss #np.mean(syn_train_loss, axis=0)
-    std_train  = np.std(syn_train_loss,  axis=0)
-    mean_val   = syn_val_loss #np.mean(syn_val_loss,   axis=0)
-    std_val    = np.std(syn_val_loss,    axis=0)
+        # Training metric
+        for j in range(loss_array.shape[0]):
+            plt.plot(range(epochs), loss_array[j, :, metric_lookup[metric]], color='lightblue', linewidth=1)
 
-    # setup figure
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+        train_mean = np.nanmean(loss_array[:, :, metric_lookup[metric]], axis=0)
+        
+        # Validation metric
+        val_metric = 'val_' + metric
+        if val_metric in metric_lookup:
+            for j in range(loss_array.shape[0]):
+                plt.plot(range(epochs), loss_array[j, :, metric_lookup[val_metric]], color='peachpuff', linewidth=1)
 
-    # Training Loss ±σ
-    epochs = np.arange(mean_train.size)
-    ax1.plot(epochs, mean_train, color='C0', lw=2, label='Mean Train Loss')
-    """ax1.fill_between(
-        epochs,
-        mean_train - std_train,
-        mean_train + std_train,
-        color='C0', alpha=0.3,
-        label='±1σ'
-    )"""
-    ax1.set_title("Training Loss")
-    ax1.set_ylim(0, 1.)
-    ax1.set_xlabel("Epoch")
-    ax1.set_ylabel("Loss")
-    ax1.legend()
+            val_mean = np.nanmean(loss_array[:, :, metric_lookup[val_metric]], axis=0)
+            plt.plot(range(epochs), train_mean, color='tab:blue', label=f'train', linewidth=2)
+            plt.plot(range(epochs), val_mean, color='tab:orange', label=f'val', linewidth=2)
 
-    # Validation Loss ±σ
-    ax2.plot(epochs, mean_val, color='C1', lw=2, label='Mean Val Loss')
-    """ax2.fill_between(
-        epochs,
-        mean_val - std_val,
-        mean_val + std_val,
-        color='C1', alpha=0.3,
-        label='±1σ'
-    )"""
-    ax2.set_title("Validation Loss")
-    ax2.set_ylim(0, 1.)
-    ax2.set_xlabel("Epoch")
-    ax2.legend()
-
+        plt.title(metric)
+        plt.xlabel('Epochs')
+        plt.ylabel(metric)
+        plt.legend(loc='upper right')
+        plt.grid(True)
+        plt.gca().set_aspect('auto')  # Square plot per metric (approx)
+    
     plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=300)
-    if show:
-        plt.show()
-    plt.close(fig)
+    output_path = os.path.join(output_dir, 'losses_plot.png')
+    plt.savefig(output_path)
+    plt.close()
+    print(f"Plot saved to {output_path}")
 
-syn_val_loss, syn_train_loss = genetrate_synthetic_losses(val_loss, train_loss, sample_size=100)
 
-plot_losses(
-    train_loss,
-    val_loss,
-    save_path="/isipd/projects/p_planetdw/data/methods_test/logs/combined_losses_swin.png"
-)
+plot_losses(data_array, metrics, metric_lookup, output_dir)
+    
+
 

@@ -25,7 +25,9 @@ if __name__ == "__main__":
     # training.train_UNet(config)
 
     # Strain a SwinUNet transformer model
-    training.train_SwinUNetPP(config)
+    for i in range(10):
+        training.train_SwinUNetPP(config)
+    #training.train_SwinUNetPP(config)
 
 
 
