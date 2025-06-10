@@ -14,11 +14,11 @@ from multiprocessing import Process, current_process
 
 # Config
 checkpoint_path = '/isipd/projects/p_planetdw/data/methods_test/training_images/SAM_checkpoints/sam_vit_l_0b3195.pth'
-image_folder = '/isipd/projects/Response/GIS_RS_projects/Nina_Nesterova/Georeferenced_old_imagery/test'
-feature_dir = '/isipd/projects/Response/GIS_RS_projects/Nina_Nesterova/Georeferenced_old_imagery/encodings'
+image_folder = '/isipd/projects/Response/GIS_RS_projects/Nina_Nesterova/data/Planet_2024/to_encode'
+feature_dir = '/isipd/projects/Response/GIS_RS_projects/Nina_Nesterova/data/Planet_2024/encoded'
 
 
-GPUS = [1, 2]
+GPUS = [0]
 
 def float32_to_uint16(image):
     """Convert float32 image to uint16 by shifting by 10000 """
@@ -60,25 +60,6 @@ if __name__ == "__main__":
     # check if first image in image path is float32
     with rasterio.open(image_paths[0]) as src:
         dtype = src.dtypes[0]
-
-    if dtype == 'float32':
-        print("[INFO] Detected float32 images, converting to uint16 in temporary directory")
-
-        new_image_paths = []
-        for image_path in image_paths:
-            with rasterio.open(image_path) as src:
-                img = src.read()
-                meta = src.meta.copy()
-                meta['dtype'] = 'uint16'
-
-            img_uint16 = float32_to_uint16(img)
-
-            temp_path = os.path.join(temp_image_folder, os.path.basename(image_path))
-            with rasterio.open(temp_path, 'w', **meta) as dst:
-                dst.write(img_uint16)
-            new_image_paths.append(temp_path)
-
-        image_paths = new_image_paths
 
     if len(GPUS) == 0:
         raise RuntimeError("No CUDA GPUs available.")

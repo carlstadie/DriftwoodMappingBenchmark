@@ -15,12 +15,12 @@ class Configuration:
 
         # Modality to be preprocessed
 
-        self.modality = 'MACS'                          # 'MACS', 'PS', 'S2'
+        self.modality = 'PS'                          # 'MACS', 'PS', 'S2'
 
         # Path to training areas and polygons shapefiles
         self.training_data_dir = f'/isipd/projects/p_planetdw/data/methods_test/training/{self.modality}/'  # path to training data
         self.training_area_fn = 'aoi_utm_8a.gpkg'#'merged_rectangles.gpkg' 
-        self.training_polygon_fn = 'dw_utm_8a.gpkg' #'merged_polygons.gpkg' 
+        self.training_polygon_fn = 'dw_utm_8p.gpkg' #'merged_polygons.gpkg' 
         
         # Path to training images
         self.training_image_dir = f'/isipd/projects/p_planetdw/data/methods_test/training_images/{self.modality}/'  # path to training images
@@ -29,7 +29,7 @@ class Configuration:
 
         # Path to preprocessed data to use for this training
         # Preprocessed frames are a tif file per area, with bands [normalised img bands + label band]
-        self.preprocessed_dir = "/isipd/projects/p_planetdw/data/methods_test/training_data/MACS/20250429-1208_MACS_test_utm8"               # if set to None, it will use the most recent preprocessing data
+        self.preprocessed_dir = f'/isipd/projects/p_planetdw/data/methods_test/training_data/{self.modality}/20250604-0816_Unet_Planet_utm8'               # if set to None, it will use the most recent preprocessing data
 
         # Path to existing model to be used to continue training on [optional]
         self.continue_model_path = None 
@@ -74,7 +74,7 @@ class Configuration:
         # ------ ADVANCED SETTINGS ------
         # GPU selection, if you have multiple GPUS.
         # Used for both training and prediction, so use multiple config files to run on two GPUs in parallel.
-        self.selected_GPU = 7 # =CUDA id, 0 is first.    -1 to disable GPU and use CPU
+        self.selected_GPU = 2 # =CUDA id, 0 is first.    -1 to disable GPU and use CPU
 
         # Preprocessing
         self.train_image_type = self.image_file_type           # used to find training images

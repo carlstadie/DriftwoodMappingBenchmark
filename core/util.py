@@ -43,6 +43,7 @@ def raster_copy(output_fp, input_fp, mode="warp", resample=1, out_crs=None, band
         base_options["xRes"] = x_res / resample,
         base_options["yRes"] = y_res / resample,
         base_options["resampleAlg"] = resample_alg
+    
 
     # Use GDAL Warp
     if mode.lower() == "warp":
