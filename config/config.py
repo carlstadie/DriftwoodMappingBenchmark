@@ -74,7 +74,7 @@ class Configuration:
         # ------ ADVANCED SETTINGS ------
         # GPU selection, if you have multiple GPUS.
         # Used for both training and prediction, so use multiple config files to run on two GPUs in parallel.
-        self.selected_GPU = 2 # =CUDA id, 0 is first.    -1 to disable GPU and use CPU
+        self.selected_GPU = 6 # =CUDA id, 0 is first.    -1 to disable GPU and use CPU
 
         # Preprocessing
         self.train_image_type = self.image_file_type           # used to find training images
