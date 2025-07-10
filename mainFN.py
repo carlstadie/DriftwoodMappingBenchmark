@@ -2,7 +2,7 @@
 # Convert this to a notebook if you are using jupyter.
 
 # This is where you can change which config to use
-import config.configUnet as configuration
+import config.configFN as configuration
 
 # INIT
 config = configuration.Configuration().validate()
@@ -12,18 +12,16 @@ import prediction
 import postprocessing
 import evaluation
 
-# USE TENSORFLOR TF2 ENV FOR THIS PROJECT
+# USE PYTORCH TORCH ENV FOR THIS PROJECT
 
 
 if __name__ == "__main__":
 
     # PREPROCESSING
-    #preprocessing.preprocess_all(config)
+    preprocessing.preprocess_all(config)
 
-    # TRAINING
+    # CONTINUAL PRETRAINING
 
-    for i in range(10):
-        training.train_UNet(config)
 
 
 

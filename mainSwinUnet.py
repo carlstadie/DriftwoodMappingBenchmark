@@ -2,7 +2,7 @@
 # Convert this to a notebook if you are using jupyter.
 
 # This is where you can change which config to use
-import config.config as configuration
+import config.configSwinUnet as configuration
 
 # INIT
 config = configuration.Configuration().validate()
@@ -12,6 +12,8 @@ import prediction
 import postprocessing
 import evaluation
 
+# USE TENSORFLOR TF2 ENV FOR THIS PROJECT
+
 if __name__ == "__main__":
 
     # PREPROCESSING
@@ -19,15 +21,9 @@ if __name__ == "__main__":
 
     # TRAINING
 
-    # train a UNet model
-    #for i in range(10):
-    #    training.train_UNet(config)
-    # training.train_UNet(config)
-
-    # Strain a SwinUNet transformer model
     for i in range(10):
         training.train_SwinUNetPP(config)
-    #training.train_SwinUNetPP(config)
+
 
 
 

@@ -1,4 +1,4 @@
-#    Author: Ankit Kariryaa, University of Bremen
+
 
 import os
 import json
