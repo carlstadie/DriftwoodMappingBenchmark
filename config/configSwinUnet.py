@@ -15,7 +15,7 @@ class Configuration:
 
         # Modality to be preprocessed
 
-        self.modality = 'PS'                          # 'MACS', 'PS', 'S2'
+        self.modality = 'MACS'                          # 'MACS', 'PS', 'S2'
 
         # Path to training areas and polygons shapefiles
         self.training_data_dir = f'/isipd/projects/p_planetdw/data/methods_test/training/{self.modality}/'  # path to training data

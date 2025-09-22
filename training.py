@@ -70,21 +70,36 @@ def create_train_val_datasets(frames):
     input_channels = list(range(len(config.channel_list)))
     label_channel = len(config.channel_list)     # because label and weights are directly after the input channels
 
+    # Allow tuner to override patch size (temporary during tuning)
+    patch_h, patch_w = config.patch_size
+    if hasattr(config, "tune_patch_h") and hasattr(config, "tune_patch_w") and config.tune_patch_h and config.tune_patch_w:
+        patch_h, patch_w = int(config.tune_patch_h), int(config.tune_patch_w)
+
     # Define model patch size: Height * Width * (Input + Output) channels
-    patch_size = [*config.patch_size, len(config.channel_list) + 1]  # +1 for the label channel
+    patch_size = [patch_h, patch_w, len(config.channel_list) + 1]  # +1 for the label channel
+
+    # New generator knobs with safe defaults
+    aug_strength = getattr(config, "augmenter_strength", 1.0)
+    min_pos_frac = getattr(config, "min_pos_frac", 0.0)
 
     # Create generators for training, validation and test data
-    train_generator = Generator(input_channels, patch_size, training_frames, frames, label_channel,
-                                augmenter='iaa').random_generator(
-                                config.train_batch_size)
-    val_generator = Generator(input_channels, patch_size, validation_frames, frames, label_channel,
-                              augmenter=None).random_generator(
-                              config.train_batch_size)
-    test_generator = Generator(input_channels, patch_size, test_frames, frames, label_channel,
-                               augmenter=None).random_generator(
-                               config.train_batch_size)
-    
+    train_generator = Generator(
+        input_channels, patch_size, training_frames, frames, label_channel,
+        augmenter='iaa', augmenter_strength=aug_strength, min_pos_frac=min_pos_frac
+    ).random_generator(config.train_batch_size)
+
+    val_generator = Generator(
+        input_channels, patch_size, validation_frames, frames, label_channel,
+        augmenter=None, augmenter_strength=1.0, min_pos_frac=0.0
+    ).random_generator(config.train_batch_size)
+
+    test_generator = Generator(
+        input_channels, patch_size, test_frames, frames, label_channel,
+        augmenter=None, augmenter_strength=1.0, min_pos_frac=0.0
+    ).random_generator(config.train_batch_size)
+
     return train_generator, val_generator, test_generator
+
 
 
 def create_callbacks(model_path):

@@ -2,6 +2,7 @@ from pathlib import Path
 import re
 import json
 import math
+import hashlib
 import pandas as pd
 import geopandas as gpd
 from shapely.geometry import mapping, Polygon, MultiPolygon, GeometryCollection
@@ -19,8 +20,8 @@ DATE_WINDOW_DAYS = 45
 CLOUD_THRESH_PROP = 80.0                            # scene-level CLOUDY_PIXEL_PERCENTAGE filter
 PER_TILE_MAX_AOI_CLOUD = 0.30                       # 0..1; skip a tile if best image still cloudier than this. set None to disable
 
-# strictly whole-scene compositing (NO per-pixel blending)
-BANDS = ["B4", "B3", "B2", "B8"]                    # export order (RGB+NIR)
+# whole-scene export (no per-pixel blending)
+BANDS = ["B2","B3","B4","B5","B6","B7","B8","B8A","B11","B12"]                    # export order (RGB+NIR)
 SCL_CLOUD_CLASSES = [3, 8, 9, 10]                   # shadow, cloud medium, cloud high, cirrus
 
 MAX_PIXELS = 1e13
@@ -30,8 +31,24 @@ SUMMARY_CSV = "S2_GEE_export_summary.csv"           # written next to AOI folder
 print(AOI_FOLDER)
 
 # ==========================
-# Helpers (AOIs & UTM)
+# Helpers (naming, AOIs & UTM)
 # ==========================
+def _sanitize_for_description(s: str) -> str:
+    # Only allow: letters, digits, ".", ",", ":", ";", "_", "-" (EE requirement)
+    return re.sub(r"[^A-Za-z0-9\.\,\:\;\_\-]+", "_", s)
+
+def _sanitize_for_filename(s: str) -> str:
+    # Be conservative for filenames too
+    return re.sub(r"[^A-Za-z0-9\.\_\-]+", "_", s)
+
+def _truncate(s: str, maxlen: int) -> str:
+    return s if len(s) <= maxlen else s[:maxlen].rstrip("._-")
+
+def _short_id(s: str, n: int = 8) -> str:
+    # Stable short id from any string (e.g., system:index)
+    h = hashlib.sha1(s.encode("utf-8")).hexdigest()
+    return h[:n].upper()
+
 def utm_epsg_from_lonlat(lon: float, lat: float) -> str:
     zone = int((lon + 180) // 6) + 1
     epsg = 32600 + zone if lat >= 0 else 32700 + zone
@@ -74,8 +91,8 @@ def create_aois(input_folder, target_crs="EPSG:4326"):
 
     dissolved = merged.dissolve(by="target", as_index=True).reset_index()
 
-    # ---- centroid in projected CRS (fixes geographic centroid warning)
-    tmp_proj = dissolved.to_crs("EPSG:3413")  # NSIDC Polar Stereographic North
+    # centroid for UTM guess
+    tmp_proj = dissolved.to_crs("EPSG:3413")
     cent = tmp_proj.geometry.centroid.to_crs("EPSG:4326")
     dissolved["centroid_lon"] = cent.x
     dissolved["centroid_lat"] = cent.y
@@ -174,7 +191,6 @@ def gee_init():
 # AOI Cloud metric + rank key (with null-safe defaults)
 # ==========================
 def compute_aoi_cloud_frac(img, region):
-    """AOI-specific cloud fraction from SCL (fraction 0..1), may return null if no pixels."""
     scl = img.select("SCL")
     is_cloud = ee.Image(0)
     for c in SCL_CLOUD_CLASSES:
@@ -182,42 +198,23 @@ def compute_aoi_cloud_frac(img, region):
     stats = is_cloud.rename("c").reduceRegion(
         reducer=ee.Reducer.mean(), geometry=region, scale=20, bestEffort=True, maxPixels=MAX_PIXELS
     )
-    return ee.Number(stats.get("c"))  # may be null
+    return ee.Number(stats.get("c"))
 
 def _coalesce_number(val, fallback):
-    # Equivalent of COALESCE for numbers: if null → fallback
     return ee.Number(ee.Algorithms.If(ee.Algorithms.IsEqual(val, None), fallback, val))
 
 def add_rank_properties(col, region, aoi_date):
-    """
-    Adds (null-safe):
-      - aoi_cloud_filled (fraction, default 1.0 if null)
-      - date_delta_days_filled (default 9999 if null/no AOI date)
-      - scene_cloud_filled (default 100 if missing)
-      - rank_key = aoi_cloud*1e6 + dateDelta*1e3 + sceneCloud
-      - date_str
-      - tile_id (coalesced MGRS)
-    """
     target_date = ee.Date(aoi_date.strftime("%Y-%m-%d")) if aoi_date is not None else None
 
     def _with_props(im):
         ac = compute_aoi_cloud_frac(im, region)
         ac_filled = _coalesce_number(ac, 1.0)
-
         t  = ee.Date(im.get("system:time_start"))
-        if target_date:
-            dd = t.difference(target_date, "day").abs()
-        else:
-            dd = ee.Number(9999)
+        dd = t.difference(target_date, "day").abs() if target_date else ee.Number(9999)
         dd_filled = _coalesce_number(dd, 9999)
-
         scene_cloud = _coalesce_number(ee.Number(im.get("CLOUDY_PIXEL_PERCENTAGE")), 100)
-
         rank_key = ac_filled.multiply(1e6).add(dd_filled.multiply(1e3)).add(scene_cloud)
-
-        # tile id (some collections/images can miss the property)
         tile = ee.String(ee.Algorithms.If(im.get("MGRS_TILE"), im.get("MGRS_TILE"), "TNA"))
-
         return (im
                 .set("aoi_cloud", ac)
                 .set("aoi_cloud_filled", ac_filled)
@@ -242,14 +239,9 @@ def build_s2_collection(region, start_date, end_date, aoi_date):
     return add_rank_properties(col, region, aoi_date)
 
 # ==========================
-# Select whole best scene per tile (crisp borders)
+# Select whole best scene per tile (no mosaicking)
 # ==========================
 def select_best_per_tile(col, per_tile_max_cloud=None):
-    """
-    Returns an ImageCollection consisting of the single best scene per tile_id.
-    Best = min rank_key (aoi_cloud → date distance → scene cloud).
-    Optionally drops tiles whose best aoi_cloud_filled > per_tile_max_cloud.
-    """
     tiles = ee.List(col.aggregate_array("tile_id")).distinct()
 
     def _best_for_tile(tile):
@@ -259,41 +251,40 @@ def select_best_per_tile(col, per_tile_max_cloud=None):
 
     best_list = tiles.map(_best_for_tile)
     best_col = ee.ImageCollection.fromImages(best_list)
-
     if per_tile_max_cloud is not None:
         best_col = best_col.filter(ee.Filter.lte("aoi_cloud_filled", per_tile_max_cloud))
-
     return best_col
 
 # ==========================
-# Export
+# Export (ENTIRE SCENE) with safe names
 # ==========================
-def export_rgb(img, region, file_prefix, utm_epsg):
-    export_region = simplify_for_export(region, EXPORT_REGION_SIMPLIFY_M)
+def export_scene(img, description, file_prefix):
+    export_region = simplify_for_export(img.geometry(), EXPORT_REGION_SIMPLIFY_M)
+    crs = img.select(BANDS[0]).projection().crs()
     task = ee.batch.Export.image.toDrive(
-        image = img,
-        description = file_prefix,
+        image = img.select(BANDS).multiply(0.0001).toFloat(),
+        description = description,          # <= 100 chars, EE-safe
         folder = DRIVE_FOLDER,
-        fileNamePrefix = file_prefix,
+        fileNamePrefix = file_prefix,       # can be longer; also sanitized
         region = export_region,
-        crs = utm_epsg,
+        crs = crs,
         scale = 10,
         maxPixels = MAX_PIXELS,
         fileFormat = "GeoTIFF"
     )
     task.start()
-    print(f"[Export] Started: {file_prefix} → Drive/{DRIVE_FOLDER}  (CRS={utm_epsg}, 10 m)")
+    try:
+        crs_str = crs.getInfo()
+    except Exception:
+        crs_str = "image CRS"
+    print(f"[Export] Started: {file_prefix} → Drive/{DRIVE_FOLDER}  (CRS={crs_str}, 10 m)")
     return task
 
 # ==========================
 # Summary building (null-safe)
 # ==========================
 def summarize_selected_images(selected_col, region, target, utm, start_date, end_date, task_name):
-    """
-    Summarize images actually used (best per tile). Null-safe to avoid compute errors.
-    """
     def per_image_feature(im):
-        # clear area via SCL (QC only)
         scl = im.select("SCL")
         is_cloud = ee.Image(0)
         for c in SCL_CLOUD_CLASSES:
@@ -365,30 +356,35 @@ def main():
 
         print(f"\n=== {target} | window={start}..{end} | {utm} ===")
 
-        # Build collection & select whole best scene per tile
         col = build_s2_collection(region, start, end, aoi_date)
         best_col = select_best_per_tile(col, PER_TILE_MAX_AOI_CLOUD)
 
-        # Whole-scene mosaic (NO per-pixel mixing), reflectance scaling, clip AOI
-        comp = (best_col
-                .map(lambda im: im.select(BANDS))
-                .mosaic()
-                .multiply(0.0001)
-                .toFloat()
-                .clip(region))
+        size = best_col.size().getInfo()
+        img_list = best_col.toList(size)
 
-        # Name & export
-        date_tag = (row.get("date").strftime("%Y%m%d") if pd.notna(row.get("date")) else "nodate")
-        prefix = re.sub(r"[^A-Za-z0-9._-]+", "_", f"{target}_S2L2A_{date_tag}_SR_10m_utm")
-        task = export_rgb(comp, region, prefix, utm)
-        tasks.append(task)
+        for i in range(size):
+            im = ee.Image(img_list.get(i))
+            date_str = im.get("date_str").getInfo()
+            tile_id  = im.get("tile_id").getInfo()
+            sys_idx  = im.get("system:index").getInfo()
 
-        # Summarize selected (used) images
-        rows = summarize_selected_images(best_col, region, target, utm, start, end, prefix)
+            # Short, EE-safe description (≤100 chars)
+            desc_raw = f"{target}_{tile_id}_{date_str}"
+            desc = _truncate(_sanitize_for_description(desc_raw), 100)
+
+            # Filename prefix (sanitized; can be longer)
+            date_tag = (row.get("date").strftime("%Y%m%d") if pd.notna(row.get("date")) else "nodate")
+            sid = _short_id(sys_idx, 8)
+            fname_raw = f"{target}_{tile_id}_{date_str}_{date_tag}_{sid}_S2L2A_SR_10m_fullscene"
+            file_prefix = _truncate(_sanitize_for_filename(fname_raw), 180)
+
+            task = export_scene(im, desc, file_prefix)
+            tasks.append(task)
+
+        rows = summarize_selected_images(best_col, region, target, utm, start, end, f"{target}_fullscene")
         rows = sorted(rows, key=lambda r: (r["AOI"], r["MGRS"], r["DateDeltaDays"], r["AOICloudFrac"]))
         all_rows.extend(rows)
 
-    # Write summary CSV
     df = pd.DataFrame(all_rows)
     out_csv = Path(AOI_FOLDER).parent / SUMMARY_CSV
     df.to_csv(out_csv, index=False)

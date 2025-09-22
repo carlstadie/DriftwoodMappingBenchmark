@@ -7,6 +7,7 @@ import config.configSwinUnet as configuration
 # INIT
 config = configuration.Configuration().validate()
 import preprocessing
+import tuning
 import training
 import prediction
 import postprocessing
@@ -19,10 +20,12 @@ if __name__ == "__main__":
     # PREPROCESSING
     #preprocessing.preprocess_all(config)
 
-    # TRAINING
+    # TUNING
+    best = tuning.tune_SwinUNetPP(config)
 
-    for i in range(10):
-        training.train_SwinUNetPP(config)
+    # TRAINING
+    #for i in range(10):
+        #training.train_SwinUNetPP(config)
 
 
 
