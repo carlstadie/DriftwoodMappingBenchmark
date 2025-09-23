@@ -22,11 +22,11 @@ if __name__ == "__main__":
     #preprocessing.preprocess_all(config)
 
     #HYPERPARAMETER TUNING
-    #best = tuning.tune_UNet(config)
+    best = tuning.tune_UNet(config)
     # TRAINING
 
     #for i in range(10):
-        training.train_UNet(config)
+        #training.train_UNet(config)
 
 
 
