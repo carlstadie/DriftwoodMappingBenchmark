@@ -9,27 +9,27 @@ class Configuration:
     def __init__(self):
 
         # --------- RUN NAME ---------
-        self.run_name = 'Unet_Planet_utm8'                     # custom name for this run, eg resampled_x3, alpha60, new_train etc
+        self.run_name = 'UNKtest'                     # custom name for this run, eg resampled_x3, alpha60, new_train etc
 
         # ---------- PATHS -----------
 
         # Modality to be preprocessed
 
-        self.modality = 'PS'                          # 'MACS', 'PS', 'S2'
+        self.modality = 'aerial'                          # 'MACS', 'PS', 'S2'
 
         # Path to training areas and polygons shapefiles
-        self.training_data_dir = f'/isipd/projects/p_planetdw/data/methods_test/training/{self.modality}/'  # path to training data
-        self.training_area_fn = 'aoi_utm_8a.gpkg'#'merged_rectangles.gpkg' 
-        self.training_polygon_fn = 'dw_utm_8p.gpkg' #'merged_polygons.gpkg' 
+        self.training_data_dir = f'/isipd/projects/p_planetdw/data/dw_detection/aerial/training/aerial'  # path to training data
+        self.training_area_fn = 'aoi_UNK.gpkg'#'merged_rectangles.gpkg' 
+        self.training_polygon_fn = 'dw_UNK.gpkg' #'merged_polygons.gpkg' 
         
         # Path to training images
-        self.training_image_dir = f'/isipd/projects/p_planetdw/data/methods_test/training_images/{self.modality}/'  # path to training images
+        self.training_image_dir = f'/isipd/projects/p_planetdw/data/dw_detection/aerial/training_images/aerial'  # path to training images
         # Output base path where all preprocessed data folders will be created, change paths depending on image modality
-        self.preprocessed_base_dir = f'/isipd/projects/p_planetdw/data/methods_test/training_data/{self.modality}/'  # path to preprocessed data
+        self.preprocessed_base_dir = f'/isipd/projects/p_planetdw/data/dw_detection/aerial/preprocessed'  # path to preprocessed data
 
         # Path to preprocessed data to use for this training
         # Preprocessed frames are a tif file per area, with bands [normalised img bands + label band]
-        self.preprocessed_dir = f'/isipd/projects/p_planetdw/data/methods_test/training_data/{self.modality}/20250604-0816_Unet_Planet_utm8'               # if set to None, it will use the most recent preprocessing data
+        self.preprocessed_dir = f'/isipd/projects/p_planetdw/data/dw_detection/aerial/preprocessed/20250929-1151_Unet_Planet_utm8'               # if set to None, it will use the most recent preprocessing data
 
         # Path to existing model to be used to continue training on [optional]
         self.continue_model_path = None 
@@ -43,13 +43,13 @@ class Configuration:
 
         # ------- IMAGE CONFIG ---------
         # Image file type, used to find images for training and prediction.
-        self.image_file_type = ".jp2"              # supported are .tif and .jp2
+        self.image_file_type = ".tif"              # supported are .tif and .jp2
 
         # Up-sampling factor to use during preprocessing and prediction. 1 ->no up-sampling, 2 ->double resolution, etc
-        self.resample_factor = 3
+        self.resample_factor = 1
 
         # Selection of channels to include.
-        self.channels_used = [True, True, True, True]
+        self.channels_used = [True, True, True]
 
         # ------ TRAINING CONFIG -------
         # Split of input frames into training, test and validation data   (train_ratio = 1 - test_ratio - val_ratio)
@@ -57,14 +57,14 @@ class Configuration:
         self.val_ratio = 0.2
 
         # Model configuration
-        self.patch_size = (256, 256)
-        self.tversky_alphabeta = (0.7, 0.3)        # alpha is weight of false positives, beta weight of false negatives
+        self.patch_size = (512, 512)
+        self.tversky_alphabeta = (0.5, 0.5)        # alpha is weight of false positives, beta weight of false negatives
 
         # Batch and epoch numbers
         self.train_batch_size = 16
-        self.num_epochs = 150
+        self.num_epochs = 100
         self.num_training_steps = 500
-        self.num_validation_images = 50
+        self.num_validation_images = 10
 
         # --- POSTPROCESSING CONFIG ----
         self.create_polygons = True                # To polygonize the raster predictions to polygon VRT

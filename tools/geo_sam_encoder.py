@@ -14,8 +14,8 @@ from multiprocessing import Process, current_process
 
 # Config
 checkpoint_path = '/isipd/projects/p_planetdw/data/methods_test/training_images/SAM_checkpoints/sam_vit_l_0b3195.pth'
-image_folder = '/isipd/projects/Response/GIS_RS_projects/Nina_Nesterova/data/Planet_2024/to_encode'
-feature_dir = '/isipd/projects/Response/GIS_RS_projects/Nina_Nesterova/data/Planet_2024/encoded'
+image_folder = '/isipd/projects/p_planetdw/data/methods_test/training_images/MACS'
+feature_dir = '/isipd/projects/p_planetdw/data/methods_test/training_images/MACS/encodings'
 
 
 GPUS = [0]
