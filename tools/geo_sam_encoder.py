@@ -14,7 +14,7 @@ from multiprocessing import Process, current_process
 
 # Config
 checkpoint_path = '/isipd/projects/p_planetdw/data/methods_test/training_images/SAM_checkpoints/sam_vit_l_0b3195.pth'
-image_folder = '/isipd/projects/p_planetdw/data/methods_test/training_images/MACS'
+image_folder = '/isipd/projects/p_planetdw/data/methods_test/training_images/MACS/to_encode'
 feature_dir = '/isipd/projects/p_planetdw/data/methods_test/training_images/MACS/encodings'
 
 

@@ -1,3 +1,4 @@
+# core/frame_info.py  (PyTorch)
 #    Edited by Sizhuo Li
 #    Author: Ankit Kariryaa, University of Bremen
 
@@ -11,76 +12,85 @@ def image_normalize(im, axis=(0, 1), c=1e-8, nodata_val=None):
     """
     if nodata_val is not None and np.sum(im == nodata_val) > 0:
         im = im.astype(np.float32)
-        im[np.any(im == nodata_val, axis=2), :] = np.nan    # treat whole pixel as nodata if any band has nodata value
+        im[np.any(im == nodata_val, axis=2), :] = np.nan  # treat whole pixel as nodata if any band has nodata value
         return (im - np.nanmean(im, axis)) / (np.nanstd(im, axis) + c)
     else:
         return (im - im.mean(axis)) / (im.std(axis) + c)
-   
- 
-# Each area (ndvi, pan, annotation, weight) is represented as an Frame
+
+
 class FrameInfo:
-    """ Defines a frame, includes its constituent images, annotation and weights (for weighted loss).
-    """
+    """Defines a frame, includes its constituent images (inputs) and annotation (label)."""
 
     def __init__(self, img, annotations, dtype=np.float32):
-        """FrameInfo constructor.
-
+        """
         Args:
-            img: ndarray
-                3D array containing various input channels.
-            annotations: ndarray
-                3D array containing human labels, height and width must be same as img.
-            weight: ndarray
-                3D array containing weights for certain losses.
+            img: ndarray (H, W, C_in)
+            annotations: ndarray (H, W) or (H, W, 1)
             dtype: np.float32, optional
-                datatype of the array.
         """
         self.img = img
         self.annotations = annotations
         self.dtype = dtype
 
-    # Normalization takes a probability between 0 and 1 that an image will be locally normalized.
-    def getPatch(self, i, j, patch_size, img_size):
-        """Function to get patch from the given location of the given size.
-
-        Args:
-            i: int
-                Starting location on first dimension (x axis).
-            y: int
-                Starting location on second dimension (y axis).
-            patch_size: tuple(int, int)
-                Size of the patch.
-            img_size: tuple(int, int)
-                Total size of the images from which the patch is generated.
+    def getPatch(self, top: int, left: int, patch_size, img_size, pad_mode: str = "reflect"):
         """
-        patch = np.zeros(patch_size, dtype=self.dtype)
-    
-        im = self.img[i:i + img_size[0], j:j + img_size[1]]
+        Return a composite patch (inputs + label as last channel), padded to `patch_size`.
+        - top, left: top-left of the slice to take from the full image
+        - patch_size: (H, W) or (H, W, C_out). If 2-D, C_out = C_in + 1 (label).
+        - img_size: (h_slice, w_slice) actual slice size (clamped to image bounds).
+        - pad_mode: 'reflect' (default) or 'constant' (zeros). 'reflect' looks best for aug.
+        """
+        if isinstance(patch_size, (list, tuple)) and len(patch_size) == 2:
+            H, W = int(patch_size[0]), int(patch_size[1])
+            C_out = int(self.img.shape[2]) + 1
+        else:
+            H, W, C_out = int(patch_size[0]), int(patch_size[1]), int(patch_size[2])
 
-        #normalize all images 
-        im = image_normalize(im, axis=(0, 1))
-        an = self.annotations[i:i + img_size[0], j:j + img_size[1]]
-        an = np.expand_dims(an, axis=-1)
-        comb_img = np.concatenate((im, an), axis=-1)
-        patch[:img_size[0], :img_size[1], ] = comb_img
-        return (patch)
+        h_slice = min(int(img_size[0]), H)
+        w_slice = min(int(img_size[1]), W)
 
-    # Returns all patches in a image, sequentially generated
+        # Grab slice from source (clamped to bounds)
+        img_patch = self.img[top: top + h_slice, left: left + w_slice, :]        # (h_slice, w_slice, C_in)
+        # --- TF parity: per-patch normalization ---
+        img_patch = image_normalize(img_patch, axis=(0, 1))
+
+        lab_patch = self.annotations[top: top + h_slice, left: left + w_slice]   # (h_slice, w_slice)
+        if lab_patch.ndim == 2:
+            lab_patch = lab_patch[..., None]                                      # (h_slice, w_slice, 1)
+        comb = np.concatenate([img_patch, lab_patch], axis=-1)                    # (h_slice, w_slice, C_in+1)
+
+        # Center the slice inside the output canvas
+        off_h = (H - h_slice) // 2
+        off_w = (W - w_slice) // 2
+
+        # Prepare canvas (optionally reflect-pad to avoid big black borders after rot/scale aug)
+        patch = np.zeros((H, W, C_out), dtype=self.img.dtype)
+        patch[off_h:off_h + h_slice, off_w:off_w + w_slice, :comb.shape[-1]] = comb
+
+        if pad_mode == "reflect":
+            # top
+            if off_h > 0:
+                patch[:off_h, off_w:off_w + w_slice, :comb.shape[-1]] = patch[off_h:off_h + 1, off_w:off_w + w_slice, :comb.shape[-1]][::-1, ...]
+            # bottom
+            if H - (off_h + h_slice) > 0:
+                patch[off_h + h_slice:, off_w:off_w + w_slice, :comb.shape[-1]] = patch[off_h + h_slice - 1:off_h + h_slice, off_w:off_w + w_slice, :comb.shape[-1]][::-1, ...]
+            # left
+            if off_w > 0:
+                patch[:, :off_w, :comb.shape[-1]] = patch[:, off_w:off_w + 1, :comb.shape[-1]][:, ::-1, :]
+            # right
+            if W - (off_w + w_slice) > 0:
+                patch[:, off_w + w_slice:, :comb.shape[-1]] = patch[:, off_w + w_slice - 1:off_w + w_slice, :comb.shape[-1]][:, ::-1, :]
+
+        return patch
+
     def sequential_patches(self, patch_size, step_size):
-        """All sequential patches in this frame.
-
-        Args:
-            patch_size: tuple(int, int)
-                Size of the patch.
-            step_size: tuple(int, int)
-                Total size of the images from which the patch is generated.
-        """
+        """All sequential patches in this frame."""
         img_shape = self.img.shape
         x = range(0, img_shape[0] - patch_size[0], step_size[0])
         y = range(0, img_shape[1] - patch_size[1], step_size[1])
-        if (img_shape[0] <= patch_size[0]):
+        if img_shape[0] <= patch_size[0]:
             x = [0]
-        if (img_shape[1] <= patch_size[1]):
+        if img_shape[1] <= patch_size[1]:
             y = [0]
 
         ic = (min(img_shape[0], patch_size[0]), min(img_shape[1], patch_size[1]))
@@ -89,26 +99,15 @@ class FrameInfo:
         for i, j in xy:
             img_patch = self.getPatch(i, j, patch_size, ic)
             img_patches.append(img_patch)
-        # print(len(img_patches))
-        return (img_patches)
+        return img_patches
 
-    # Returns a single patch, starting at a random image
     def random_patch(self, patch_size):
-        """A random from this frame.
-
-        Args:
-            patch_size: tuple(int, int)
-                Size of the patch.
+        """
+        Backwards-compatible random crop (still used by some code paths).
+        Now centers the crop in the padded canvas instead of placing it at [0,0].
         """
         img_shape = self.img.shape
-        if (img_shape[0] <= patch_size[0]):
-            x = 0
-        else:
-            x = np.random.randint(0, img_shape[0] - patch_size[0])
-        if (img_shape[1] <= patch_size[1]):
-            y = 0
-        else:
-            y = np.random.randint(0, img_shape[1] - patch_size[1])
+        x = 0 if (img_shape[0] <= patch_size[0]) else np.random.randint(0, img_shape[0] - patch_size[0])
+        y = 0 if (img_shape[1] <= patch_size[1]) else np.random.randint(0, img_shape[1] - patch_size[1])
         ic = (min(img_shape[0], patch_size[0]), min(img_shape[1], patch_size[1]))
-        img_patch = self.getPatch(x, y, patch_size, ic)
-        return (img_patch)
+        return self.getPatch(x, y, patch_size, ic, pad_mode="reflect")

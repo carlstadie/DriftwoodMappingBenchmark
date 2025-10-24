@@ -112,7 +112,7 @@ def memory(percentage):
         def wrapper(*args, **kwargs):
             memory_limit(percentage)
             try:
-                function(*args, **kwargs)
+                return function(*args, **kwargs)
             except MemoryError:
                 mem = get_memory() / 1024 / 1024
                 print('Available memory: %.2f GB' % mem)
