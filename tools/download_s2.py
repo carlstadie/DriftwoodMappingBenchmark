@@ -13,7 +13,7 @@ import ee
 # ==========================
 # CONFIG
 # ==========================
-AOI_FOLDER = r"/isipd/projects/p_planetdw/data/methods_test/aois/study_area"
+AOI_FOLDER = r"/isipd/projects/p_planetdw/data/methods_test/auxilliary_data"  # folder containing AOI .geojson/.gpkg files
 DRIVE_FOLDER = "S2_GEE_Exports"                     # base Google Drive folder name (AOI name will be appended)
 
 DATE_WINDOW_DAYS = 90
@@ -28,7 +28,7 @@ MAX_PIXELS = 1e13
 EXPORT_REGION_SIMPLIFY_M = 10                       # meters; light simplification of export region
 SUMMARY_CSV = "S2_GEE_export_summary.csv"           # written next to AOI folder
 
-single_file_path = "/isipd/projects/p_planetdw/data/methods_test/auxilliary_data/img_footprints.gpkg"  # optional path to a single AOI file (overrides AOI_FOLDER)
+single_file_path = "/isipd/projects/p_planetdw/data/methods_test/auxilliary_data/aoi_ext.gpkg"  # optional path to a single AOI file (overrides AOI_FOLDER)
 
 print(AOI_FOLDER)
 
@@ -483,6 +483,12 @@ def main():
 
     # Write summary CSV
     df = pd.DataFrame(all_rows)
+
+    print("\n=== Export Summary ===")
+
+    date_difference = df['DateDeltaDays'].describe()
+    print(f"Mean date difference across all selected images: {date_difference['mean']:.2f} days")
+
     out_csv = Path(AOI_FOLDER).parent / SUMMARY_CSV
     df.to_csv(out_csv, index=False)
     print(f"\n[Summary] Wrote selected-image summary: {out_csv}")

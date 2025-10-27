@@ -97,7 +97,7 @@ class Configuration:
         self.optimizer_fn = "adam"      # selection of optimizer function
         self.train_batch_size = 32
         self.num_epochs = 100
-        self.num_training_steps = 500   # steps per epoch (train)
+        self.num_training_steps = 100   # steps per epoch (train)
         self.num_validation_images = 50 # steps per epoch (val)
 
         # ------ EMA (Exponential Moving Average) ------
@@ -108,6 +108,7 @@ class Configuration:
         # ------ CHECKPOINTING / LOGGING ------
         # [optional] save model every N epochs. If None, only best is saved
         self.model_save_interval = None
+        self.overfit_one_batch = False
         # Console verbosity / progress bars
         self.train_verbose = True
         self.train_epoch_log_every = 1   # print every N epochs

@@ -39,11 +39,11 @@ from core.UNet import UNet
 from core.Swin_UNetPP import SwinUNet
 from core.frame_info import FrameInfo
 from core.optimizers import get_optimizer
-from core.split_frames import split_dataset
+from core.split_frames import split_dataset, summarize_positive_rates
 from core.dataset_generator import DataGenerator as Generator
 
 # Metrics / losses (PyTorch)
-from core.losses_pytorch import (
+from core.losses import (
     accuracy,
     dice_coef,
     dice_loss,
@@ -412,6 +412,17 @@ def create_train_val_datasets(frames):
         frames, frames_json, config.test_ratio, config.val_ratio
     )
 
+    stats = summarize_positive_rates(frames, {
+        "train": training_frames,
+        "val": validation_frames,
+        "test": test_frames
+    })
+    print("\n[positive-rate % by frame]  mean | median | std | min..max  (n)")
+    for k in ("train", "val", "test"):
+        s = stats[k]
+        print(f"  {k:>5}: {s['mean']:.3f} | {s['median']:.3f} | {s['std']:.3f} | "
+              f"{s['min']:.3f}..{s['max']:.3f}  (n={s['n']})")
+
     # Channels
     input_channels = list(range(len(config.channel_list)))
     label_channel = len(config.channel_list)  # label directly after inputs
@@ -732,6 +743,29 @@ def _fit_model(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device).to(memory_format=torch.channels_last)
 
+    
+    # === Overfit-one-batch mode: capture first batch and repeat forever ===
+    if getattr(config, "overfit_one_batch", False):
+
+        print('==== Overfitting on one Batch ====')
+        # get one CPU batch (as provided by your iterable)
+        first_it = iter(train_iterable)
+        first_x, first_y = next(first_it)
+
+        # freeze data randomness: use exact same tensors every step
+        def _infinite_one_batch():
+            while True:
+                # clone to avoid any accidental in-place ops piling up
+                yield first_x.clone(), first_y.clone()
+
+        # validation also on the same batch (repeat N times)
+        def _repeat_val(n):
+            for _ in range(int(n)):
+                yield first_x.clone(), first_y.clone()
+
+        train_iterable = _infinite_one_batch()
+        val_iterable = _repeat_val(getattr(config, "num_validation_images", 10))
+
     # EMA (optional)
     use_ema = bool(getattr(config, "use_ema", False))
     ema_decay = float(getattr(config, "ema_decay", 0.999))
@@ -951,21 +985,40 @@ def _fit_model(
             except Exception as _:
                 pass
 
-        # TensorBoard scalars
-        tb.add_scalar("loss", logs["loss"], epoch)
-        tb.add_scalar("val_loss", logs["val_loss"], epoch)
+        # TensorBoard scalars — group train/val into one chart per metric using add_scalars
+        # Loss (train + val)
+        if "loss" in logs or "val_loss" in logs:
+            pair = {}
+            if "loss" in logs:
+                pair["train"] = logs["loss"]
+            if "val_loss" in logs:
+                pair["val"] = logs["val_loss"]
+            tb.add_scalars("loss", pair, epoch)
+
+        # Light metrics (e.g., dice_coef, accuracy) — grouped train/val per metric
         for fn in light_metric_fns:
-            tb.add_scalar(fn.__name__, logs[fn.__name__], epoch)
-            tb.add_scalar(f"val_{fn.__name__}", logs[f"val_{fn.__name__}"], epoch)
-        # Also log heavy metrics
-        for name in [
+            name = fn.__name__
+            train_key = name
+            val_key = f"val_{name}"
+            if train_key in logs or val_key in logs:
+                pair = {}
+                if train_key in logs:
+                    pair["train"] = logs[train_key]
+                if val_key in logs:
+                    pair["val"] = logs[val_key]
+                tb.add_scalars(name, pair, epoch)
+
+        # Heavy metrics are primarily validation-only; log them grouped under the base metric name as "val"
+        heavy_names = [
             "val_specificity", "val_sensitivity", "val_f_beta", "val_f1_score", "val_IoU",
             "val_nominal_surface_distance", "val_Hausdorff_distance", "val_boundary_intersection_over_union",
             "val_dice_loss"
-        ]:
+        ]
+        for name in heavy_names:
             if name in logs:
-                tb.add_scalar(name, logs[name], epoch)
-        tb.flush()
+                base = name[4:] if name.startswith("val_") else name
+                tb.add_scalars(base, {"val": logs[name]}, epoch)
+            tb.flush()
 
         # Per-epoch metadata (mirrors your JSON)
         meta_data = {

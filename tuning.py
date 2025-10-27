@@ -109,12 +109,72 @@ def _trial_banner(trial_num: int, model_key: str, hp: Dict[str, Any], data_hp: D
     opt_bits = f"opt={hp['optimizer']}, lr={hp['learning_rate']:.3g}" + (f", wd={hp['weight_decay']:.2g}" if hp.get("optimizer")=="adamw" and 'weight_decay' in hp else "")
     sch_bits = f"sched={hp.get('scheduler','none')}"
     arch_str = "; ".join(arch_bits) if arch_bits else "-"
-    print(f"[trial {trial_num}] {opt_bits}, {sch_bits} | arch: {arch_str} | data: {data_bits}")
+    print(f"\n[trial {trial_num}] {opt_bits}, {sch_bits} | arch: {arch_str} | data: {data_bits}")
 
 def _epoch_line(epoch: int, best: float, cur: float, extra: str = ""):
     msg = f"  epoch {epoch:02d}: val_dice={cur:.4f} (best={best:.4f})"
     if extra: msg += f" | {extra}"
     print(msg)
+
+# --------- Console color helpers (match training style) ---------
+class _C:
+    RED = "\033[31m"
+    YELLOW = "\033[33m"
+    GREEN = "\033[32m"
+    CYAN = "\033[36m"
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+
+def _col(s: str, color: str) -> str:
+    return f"{color}{s}{_C.RESET}"
+
+def _format_val(v):
+    # Short, readable numbers; keep other types as-is
+    if isinstance(v, float):
+        if (abs(v) > 1e4) or (0 < abs(v) < 1e-4):
+            return f"{v:.2e}"
+        return f"{v:.4f}"
+    return str(v)
+
+def _print_sxs_diff(prev_cfg: Dict[str, Any], curr_cfg: Dict[str, Any],
+                    prev_score: Optional[float], curr_score: float) -> None:
+    """
+    Side-by-side comparison of previous best vs current trial.
+    Columns are width-aligned so numbers and '|' line up.
+    """
+    if prev_cfg is None:
+        print("\n   baseline: no previous best to compare.")
+        return
+
+    # Build rows first (using raw keys for width calc; color later)
+    keys = sorted(set(prev_cfg.keys()) | set(curr_cfg.keys()))
+    rows = []
+    for k in keys:
+        a = prev_cfg.get(k, "-")
+        b = curr_cfg.get(k, "-")
+        rows.append((k, _format_val(a), _format_val(b), a != b))
+
+    # Compute column widths
+    key_w  = max(len(k) for k, *_ in rows) if rows else 0
+    prev_w = max(len(p) for _, p, _, _ in rows) if rows else 0
+    curr_w = max(len(c) for _, _, c, _ in rows) if rows else 0
+
+    print("   config diff (prev  |  curr):")
+    for k, prev_s, curr_s, changed in rows:
+        # Color only the key label, but pad using raw key length
+        k_disp = _col(k, _C.YELLOW) if changed else k
+        k_pad = " " * (key_w - len(k))  # pad computed on raw (non-colored) key
+        mark = "  *" if changed else ""
+        # Right-align values so the pipes are vertically aligned
+        print(f"     - {k_disp}:{k_pad}  {prev_s:>{prev_w}}  |  {curr_s:>{curr_w}}{mark}")
+
+    if prev_score is not None:
+        delta = curr_score - prev_score
+        sign = "+" if delta >= 0 else ""
+        delta_str = f"{sign}{delta:.5f}"
+        color = _C.GREEN if delta > 0 else (_C.RED if delta < 0 else _C.CYAN)
+        # Align score line with same widths for visual continuity
+        print(f"\n   score: prev={prev_score:>{prev_w}.5f} | curr={curr_score:>{curr_w}.5f} ({_col(delta_str, color)})")
 
 
 # -----------------------
@@ -162,7 +222,7 @@ def _data_space_hb(trial: optuna.Trial) -> Tuple[int, int, float, float]:
     valid_sizes = [32, 48, 64, 80, 96, 112, 128, 160, 192, 224,
                    256, 288, 320, 352, 384, 416, 448, 480, 512]
     patch_h = trial.suggest_categorical("patch_h", valid_sizes)
-    patch_w = trial.suggest_categorical("patch_w", valid_sizes)
+    patch_w = patch_h # make patches strictly square
     aug_str = trial.suggest_categorical("augmenter_strength", [0.0, 0.5, 1.0])
     minpos  = trial.suggest_categorical("min_pos_frac", [0.0, 0.01, 0.02])
     return int(patch_h), int(patch_w), float(aug_str), float(minpos)
@@ -297,6 +357,9 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     _phase_banner(model_key, phase, max_epochs, steps, val_steps, tune_batch)
+
+    # Track best within this phase for nicer printing (does NOT affect Optuna)
+    best_print = {"score": None, "cfg": None}
 
     def _single_execution(trial, train_iterable, val_iterable,
                           model: nn.Module, optimizer: torch.optim.Optimizer,
@@ -463,6 +526,14 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
                           dict(patch_h=patch_h, patch_w=patch_w,
                                augmenter_strength=aug_str, min_pos_frac=minpos))
 
+            # NEW: assemble comparable current-config dict for side-by-side vs best
+            cfg_current = dict(hp_line)
+            cfg_current.update(dict(
+                patch_h=patch_h, patch_w=patch_w,
+                augmenter_strength=aug_str, min_pos_frac=minpos,
+                model=model_key, phase=phase
+            ))
+
             # ----- multiple executions per trial (average objective) -----
             exec_vals: List[float] = []
             for exec_idx in range(max(1, int(executions_per_trial))):
@@ -493,7 +564,25 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
 
             result = float(np.mean(exec_vals))
             dur = time.time() - trial_t0
-            print(f"  ↳ trial {trial.number} done: val_dice={result:.5f}, time={time.strftime('%H:%M:%S', time.gmtime(dur))}")
+            print(f"\n  --> trial {trial.number} done: val_dice={result:.5f}, time={time.strftime('%H:%M:%S', time.gmtime(dur))}")
+
+            # NEW: side-by-side vs previous best (print-only; no change to optimization)
+            prev_score = best_print["score"]
+            prev_cfg = best_print["cfg"]
+            _print_sxs_diff(prev_cfg, cfg_current, prev_score, result)
+
+            if (prev_score is None) or (result > prev_score + 1e-12):
+                if prev_score is None:
+                    print(_col("   ✅ Baseline established (first completed trial).", _C.GREEN))
+                else:
+                    delta = result - prev_score
+                    print(_col(f"   ✅ NEW BEST! Improved by +{delta:.5f}", _C.GREEN))
+                best_print["score"] = result
+                best_print["cfg"] = cfg_current
+            else:
+                gap = prev_score - result
+                print(_col(f"\n   ==> Off current best by {gap:.5f}", _C.CYAN))
+
             return result
 
         except RuntimeError as e:
@@ -554,13 +643,13 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
     best_json_path = os.path.join(project_dir, f"{stamp}_{tag}_{phase}_best_hparams.json")
     with open(best_json_path, "w") as f:
         json.dump(best_params, f, indent=2)
-    print(f"[{tag} {phase}] best saved to: {best_json_path}")
+    print(f"\n[{tag} {phase}] best saved to: {best_json_path}")
 
     return best_params, study
 
 
 # -----------------------
-# Chained tuner (HB → BO)
+# Chained tuner (HB --> BO)
 # -----------------------
 def _tune_chained(conf, model_type: str = "unet",
                   executions_per_trial: int = 1, overwrite: bool = False) -> Dict[str, Any]:
@@ -570,7 +659,10 @@ def _tune_chained(conf, model_type: str = "unet",
     """
     global config
     config = conf
-    print("Starting chained tuning (HyperBand + Bayesian).")
+
+
+
+    print("\nStarting chained tuning (HyperBand + Bayesian).")
     _seed(_default(getattr(config, "seed", None), 42))
 
     # Budgets
@@ -670,8 +762,10 @@ def _tune_chained(conf, model_type: str = "unet",
     final_path = os.path.join(project_dir, f"{stamp}_{key}_tuning_FINAL_best_hparams.json")
     with open(final_path, "w") as f:
         json.dump(final, f, indent=2)
+    print("\n" + "="*60)
     print(f"[{key} tuning] FINAL merged best saved to: {final_path}")
     print(json.dumps(final, indent=2))
+    print("="*60 + "\n")
     return final
 
 

@@ -17,8 +17,33 @@ def _ensure_dir(path: str) -> None:
     if path and not os.path.exists(path):
         os.makedirs(path, exist_ok=True)
 
+def summarize_positive_rates(frames: Sequence[Any], sets: Dict[str, Sequence[int]]) -> Dict[str, Dict[str, float]]:
+    """
+    Returns summary stats (in percent) of per-frame positive rates for each set.
+    """
+    pr = _pos_rate(frames) * 100.0
+    out: Dict[str, Dict[str, float]] = {}
+    for name, idx in sets.items():
+        idx = np.asarray(idx, dtype=int)
+        vals = pr[idx] if idx.size > 0 else np.asarray([], dtype=float)
+        if vals.size == 0:
+            out[name] = {"n": 0, "mean": 0.0, "median": 0.0, "std": 0.0, "min": 0.0, "max": 0.0}
+        else:
+            out[name] = {
+                "n": int(vals.size),
+                "mean": float(np.mean(vals)),
+                "median": float(np.median(vals)),
+                "std": float(np.std(vals)),
+                "min": float(np.min(vals)),
+                "max": float(np.max(vals)),
+            }
+    return out
+
+
 
 # ---------- K-fold CV helper (kept compatible with your TF version) ----------
+
+
 def cross_validation_split(
     frames: Sequence[Any],
     frames_json: str,
@@ -135,9 +160,11 @@ def split_dataset(
             training_frames = fjson["training_frames"]
             testing_frames = fjson["testing_frames"]
             validation_frames = fjson["validation_frames"]
-        print("training_frames", training_frames)
-        print("validation_frames", validation_frames)
-        print("testing_frames", testing_frames)
+
+
+        print("training_frames", len(training_frames))
+        print("validation_frames", len(validation_frames))
+        print("testing_frames", len(testing_frames))
         return training_frames, validation_frames, testing_frames
 
     print(
@@ -209,7 +236,7 @@ def split_dataset(
     with open(frames_json, "w") as f:
         json.dump(frame_split, f, indent=2)
 
-    print("training_frames", training_frames)
-    print("validation_frames", validation_frames)
-    print("testing_frames", testing_frames)
+    print("training_frames", len(training_frames))
+    print("validation_frames", len(validation_frames))
+    print("testing_frames", len(testing_frames))
     return training_frames, validation_frames, testing_frames
