@@ -13,7 +13,7 @@ import ee
 # ==========================
 # CONFIG
 # ==========================
-AOI_FOLDER = r"/isipd/projects/p_planetdw/data/methods_test/auxilliary_data"  # folder containing AOI .geojson/.gpkg files
+AOI_FOLDER = r"/isipd/projects/p_planetdw/data/methods_test/aois/study_area"
 DRIVE_FOLDER = "S2_GEE_Exports"                     # base Google Drive folder name (AOI name will be appended)
 
 DATE_WINDOW_DAYS = 90
@@ -484,11 +484,8 @@ def main():
     # Write summary CSV
     df = pd.DataFrame(all_rows)
 
-    print("\n=== Export Summary ===")
-
-    date_difference = df['DateDeltaDays'].describe()
-    print(f"Mean date difference across all selected images: {date_difference['mean']:.2f} days")
-
+    print("=====SUMMARY=====")
+    print(df["DateDeltaDays"].describe())
     out_csv = Path(AOI_FOLDER).parent / SUMMARY_CSV
     df.to_csv(out_csv, index=False)
     print(f"\n[Summary] Wrote selected-image summary: {out_csv}")

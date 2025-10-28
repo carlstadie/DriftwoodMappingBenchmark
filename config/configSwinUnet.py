@@ -14,11 +14,10 @@ class Configuration:
 
     def __init__(self):
         # --------- RUN NAME ---------
-        # custom name for this run, e.g. resampled_x3, alpha60, new_train
         self.run_name = "MACS_test"
 
         # ---------- PATHS -----------
-        # Modality to be preprocessed: 'MACS', 'PS', 'S2', ...
+        # Modality to be preprocessed (e.g. 'MACS', 'PS', 'S2', 'aerial', ...)
         self.modality = "PS"
 
         # Path to training areas and polygons shapefiles
@@ -41,14 +40,14 @@ class Configuration:
         # Path to preprocessed data used for this training.
         # If set to None, the most recent preprocessing data is used.
         self.preprocessed_dir = (
-            f"/isipd/projects/p_planetdw/data/methods_test/training_data/{self.modality}/"
-            "20250604-0816_Unet_Planet_utm8"
+            "/isipd/projects/p_planetdw/data/methods_test/training_data/MACS/"
+            "20250429-1208_MACS_test_utm8"
         )
 
         # Path to existing model to continue training on [optional]
         self.continue_model_path = None
 
-        # Where trained models and training logs will be stored
+        # Paths where trained models and training logs will be stored
         self.saved_models_dir = "/isipd/projects/p_planetdw/data/methods_test/models"
         self.logs_dir = "/isipd/projects/p_planetdw/data/methods_test/logs"
 
@@ -64,28 +63,109 @@ class Configuration:
         # Selection of channels to include (bool mask)
         self.channels_used = [True, True, True, True]
 
-        # ------ TRAINING CONFIG -------
-        # Split of frames into training / test / validation
+        # ------ TRAIN/VAL/TEST SPLIT ------
         # (train_ratio = 1 - test_ratio - val_ratio)
         self.test_ratio = 0.2
         self.val_ratio = 0.2
 
-        # Model configuration
+        # ------ MODEL CORE ------
         self.patch_size = (256, 256)
-        # alpha is weight of false positives, beta of false negatives
+        # Optional tuner overrides (explicitly present so hasattr checks are true)
+        self.tune_patch_h = None
+        self.tune_patch_w = None
+        # alpha is weight of false positives, beta weight of false negatives
         self.tversky_alphabeta = (0.5, 0.5)
+        # Kept for parity with UNet (Swin ignores this)
+        self.dilation_rate = 1
 
-        # Batch and epoch numbers
+        # Used as saved model name (concat with timestamp)
+        self.model_name = self.run_name
+
+        # Channels actually used (indices); derived from channels_used
+        self.preprocessing_bands = np.where(self.channels_used)[0]
+        self.channel_list = list(self.preprocessing_bands)
+        self.input_shape = (
+            self.patch_size[0],
+            self.patch_size[1],
+            len(self.channel_list),
+        )
+
+        # ------ OPTIM / SCHED / EPOCHS ------
+        self.loss_fn = "tversky"        # selection of loss function
+        self.optimizer_fn = "adam"      # selection of optimizer function
         self.train_batch_size = 64
         self.num_epochs = 150
-        self.num_training_steps = 500
-        self.num_validation_images = 50
+        self.num_training_steps = 500   # steps per epoch (train)
+        self.num_validation_images = 50 # steps per epoch (val)
+
+        # ------ EMA (Exponential Moving Average) ------
+        self.use_ema = True
+        self.ema_decay = 0.999
+        self.eval_with_ema = True
+
+        # ------ CHECKPOINTING / LOGGING ------
+        # [optional] save model every N epochs. If None, only best is saved
+        self.model_save_interval = None
+        self.overfit_one_batch = False
+        # Console verbosity / progress bars
+        self.train_verbose = True
+        self.train_epoch_log_every = 1   # print every N epochs
+        self.train_print_heavy = True    # print heavy val metrics block
+        self.show_progress = True        # tqdm bars for train/val loops
+        # TensorBoard visual logging
+        self.log_visuals_every = 5       # STEP interval (0 disables)
+        self.vis_rgb_idx = (0, 1, 2)
+        self.viz_pos_color = (1.0, 1.0, 0.0)  # class 1 -> yellow
+        self.viz_neg_color = (0.0, 0.0, 1.0)  # class 0 -> blue
+
+        # ------ AUG / SAMPLING / DATALOADER ------
+        self.augmenter_strength = 0.7
+        self.min_pos_frac = 0.02         # minimum fraction of positive pixels
+        self.pos_ratio = 0.5             # fraction of batch from positive candidates
+        self.patch_stride = None         # None -> generator default
+        self.fit_workers = 8             # DataLoader workers
+        self.steps_per_execution = 1     # grad accumulation steps
+
+        # ------ EVALUATION ------
+        self.eval_threshold = 0.5
+        self.heavy_eval_steps = 50
+        # Print positive-rate stats of splits (if you wired the helper)
+        self.print_pos_stats = True
+
+        # ------ MIXED PRECISION / COMPILE / REPRO ------
+        self.use_torch_compile = False   # PyTorch 2.0+ compile()
+        self.seed = None                 # int for reproducibility; None -> random
+        self.clip_norm = 0.0             # gradient clipping (0 disables)
+
+        # ------ SWIN-UNET (PP) ------
+        self.swin_patch_size = 16        # patch size used by Swin stages
+        self.swin_window = 4             # Swin window size for hierarchy multiple
+        self.swin_levels = 3             # # of downsample levels (affects multiple)
+        self.swin_base_channels = 64     # base channel width for Swin backbone
+        # (Optional, picked up by training if present)
+        # self.swin_ss_size = 2
+        # self.swin_attn_drop = 0.0
+        # self.swin_proj_drop = 0.0
+        # self.swin_mlp_drop = 0.0
+        # self.swin_drop_path = 0.1
 
         # --- POSTPROCESSING CONFIG ----
         # Polygonize raster predictions to polygon VRT
         self.create_polygons = True
         # CPU threads for polygon/centroid processing
         self.postproc_workers = 12
+
+        # Prediction
+        self.predict_images_file_type = self.image_file_type
+        self.predict_images_prefix = ""
+        self.overwrite_analysed_files = False
+        self.prediction_name = self.run_name
+        self.prediction_output_dir = None
+        self.prediction_patch_size = None  # if None, read from model
+        self.prediction_operator = "MAX"   # "MAX" or "MIN" for overlaps
+        self.output_prefix = "det_" + self.prediction_name + "_"
+        # 'bool' is smallest size, 'uint8' has nodata (255), 'float32' is raw
+        self.output_dtype = "bool"
 
         # ------ ADVANCED SETTINGS ------
         # GPU selection. Used for both training and prediction.
@@ -95,82 +175,12 @@ class Configuration:
         # Preprocessing
         # used to find training images
         self.train_image_type = self.image_file_type
-        # filter only certain images by prefix, e.g. "ps_"
+        # filter only certain images by prefix, eg "ps_"
         self.train_image_prefix = ""
-        # e.g. [0, 1, 2, 3] from channels_used mask
-        self.preprocessing_bands = np.where(self.channels_used)[0]
+        # used in the preprocessing folder name
         self.preprocessed_name = self.run_name
         # whether to include borders when rasterizing label polygons
         self.rasterize_borders = False
-
-        # Training
-        self.loss_fn = "tversky"        # selection of loss function
-        self.optimizer_fn = "adam"      # selection of optimizer function
-        self.dilation_rate = 1          # not used by Swin, but kept for parity
-        self.model_name = self.run_name
-        self.boundary_weight = 5
-        self.model_save_interval = None
-        self.channel_list = self.preprocessing_bands
-        self.input_shape = (
-            self.patch_size[0],
-            self.patch_size[1],
-            len(self.channel_list),
-        )
-
-        # Optional Swin settings (picked up by training if present)
-        self.swin_base_channels = 64    # base C
-        self.swin_patch_size = 16       # patch embedding size (typical: 8 or 16)
-        # Optionally:
-        # self.swin_window = 4
-        # self.swin_ss_size = 2
-        # self.swin_attn_drop = 0.0
-        # self.swin_proj_drop = 0.0
-        # self.swin_mlp_drop = 0.0
-        # self.swin_drop_path = 0.1
-
-        # ---------- NEW KNOBS (added; everything else unchanged) ----------
-        # Albumentations strength (0..1)
-        self.augmenter_strength = 0.7
-        # Positive patch control
-        self.min_pos_frac = 0.02       # minimum fraction of positive pixels to treat a patch as "positive"
-        self.pos_ratio = 0.5           # fraction of each batch sampled from positive candidates
-        self.patch_stride = None       # None -> generator defaults to ~half patch stride
-        # DataLoader workers
-        self.fit_workers = 8
-        # Evaluation thresholds / effort
-        self.eval_threshold = 0.5
-        self.heavy_eval_steps = 50
-        # Mixed precision / compile
-        self.use_torch_compile = False
-        # Optional per-run seed (int for reproducibility; None => free randomness)
-        self.seed = None
-        # Gradient clipping (0.0 disables)
-        self.clip_norm = 0.0
-        # Visual logging
-        self.log_visuals_every = 5     # epochs; 0 disables
-        self.vis_rgb_idx = (0, 1, 2)   # which input channels to show as RGB in TensorBoard
-        # EMA (Exponential Moving Average of weights)
-        self.use_ema = True
-        self.ema_decay = 0.999
-        self.eval_with_ema = True
-
-        # Swin-specific padding/tiling (used by training autopad helper)
-        self.swin_window = 4           # window size on the token grid
-        self.swin_levels = 3           # number of downsample stages (affects padding multiple)
-
-        # Prediction
-        self.predict_images_file_type = self.image_file_type
-        self.predict_images_prefix = ""
-        self.overwrite_analysed_files = False
-        self.prediction_name = self.run_name
-        self.prediction_output_dir = None
-        # if None, patch size is read from the loaded model
-        self.prediction_patch_size = None
-        # "MAX" or "MIN": value for overlapping predictions
-        self.prediction_operator = "MAX"
-        self.output_prefix = "det_" + self.prediction_name + "_"
-        # 'bool' is smallest size, 'uint8' has nodata (255), 'float32' is raw
-        self.output_dtype = "bool"
 
         # Set overall GDAL settings
         gdal.UseExceptions()                    # Enable exceptions
@@ -244,7 +254,6 @@ class Configuration:
         if int(self.selected_GPU) != -1:
             try:
                 import torch
-
                 if not torch.cuda.is_available():
                     raise ConfigError(
                         "PyTorch cannot detect a CUDA-enabled GPU. "
