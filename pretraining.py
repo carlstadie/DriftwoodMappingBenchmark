@@ -444,6 +444,7 @@ def build_shared_backbone_s2l1c_s2l2a(bands_10):
         "S2L1C": ["BLUE", "GREEN", "RED", "NIR_NARROW"],  # AE/PS (4)
         "S2L2A": bands_10                                 # S2 (10)
     }
+    print("Building TerraMind shared backbone for S2L1C + S2L2A...")
     model = BACKBONE_REGISTRY.build(
         "terramind_v1_base",
         pretrained=True,

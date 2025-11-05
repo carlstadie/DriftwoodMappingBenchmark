@@ -37,6 +37,7 @@ _AMP_DTYPE = (
 # ===== Your project imports =====
 from core.UNet import UNet
 from core.Swin_UNetPP import SwinUNet
+from core.TerraMind import TerraMind
 from core.frame_info import FrameInfo
 from core.optimizers import get_optimizer
 from core.split_frames import split_dataset, summarize_positive_rates
@@ -132,7 +133,9 @@ def _unpad(y: torch.Tensor, pad_h: int, pad_w: int) -> torch.Tensor:
 
 def _forward_with_autopad(model: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Forward pass with optional autopadding for Swin models (guarded by model type)."""
-    if isinstance(model, SwinUNet):
+    # unwrap compile wrappers so isinstance checks still work
+    base = getattr(model, "_orig_mod", model)
+    if isinstance(base, SwinUNet):
         # only Swin needs strict spatial multiples
         window = getattr(config, "swin_window", 4)
         levels = getattr(config, "swin_levels", 3)
@@ -185,6 +188,82 @@ def _format_logs_for_print(logs: Dict[str, Any]) -> str:
             except Exception:
                 parts.append(f"{k}={v}")
     return " | ".join(parts)
+
+def _to_cpu_image(t: torch.Tensor) -> torch.Tensor:
+    """Detach → float32 → CPU so SummaryWriter.add_image always works."""
+    return t.detach().to(device="cpu", dtype=torch.float32)
+
+def _pick_vis_channel(prob: torch.Tensor, cls_idx: Optional[int] = None) -> torch.Tensor:
+    """
+    Ensure probs are [N,1,H,W] for visualization.
+    - Binary: already [N,1,H,W] → return as is
+    - Multi-class: [N,C,H,W] → pick cls_idx (default=1) or argmax mask if None
+    """
+    if prob.dim() == 4 and prob.size(1) > 1:
+        if cls_idx is None:
+            # argmax → a discrete mask (0..C-1), make it {0,1} by marking the winning class as 1
+            arg = prob.argmax(dim=1, keepdim=True)
+            # choose class 1 by default to make a 0/1 mask; change if you prefer another default
+            cls = 1
+            return (arg == cls).float()
+        return prob[:, cls_idx:cls_idx+1]
+    return prob  # already single-channel
+
+def _overlay_heatmap_on_rgb(rgb: torch.Tensor, prob: torch.Tensor, alpha: float = 0.4) -> torch.Tensor:
+    """
+    Overlay probability heatmap on RGB image.
+    rgb: [N,3,H,W] in [0,1]
+    prob: [N,1,H,W] in [0,1]
+    Returns: [N,3,H,W] blended image
+    
+    Uses a colormap-like approach: low prob = blue-ish, high prob = red-ish
+    """
+    p = prob.clamp(0, 1)
+    
+    # Create a simple red-yellow-white colormap for the heatmap
+    # Low values (0) -> blue, mid values (0.5) -> yellow, high values (1) -> red
+    heat_r = p  # Red increases with probability
+    heat_g = 1.0 - torch.abs(p - 0.5) * 2.0  # Green peaks at 0.5
+    heat_b = 1.0 - p  # Blue decreases with probability
+    
+    heatmap_rgb = torch.cat([heat_r, heat_g, heat_b], dim=1).clamp(0, 1)
+    
+    # Blend: overlay = alpha * heatmap + (1-alpha) * rgb
+    overlay = alpha * heatmap_rgb + (1.0 - alpha) * rgb
+    return overlay.clamp(0, 1)
+
+def _log_triptych_and_optional_heatmap(
+    tb: SummaryWriter,
+    tag_prefix: str,
+    x: torch.Tensor,
+    y_prob: torch.Tensor,
+    y_true: torch.Tensor,
+    step: int,
+    rgb_idx: Tuple[int,int,int],
+    threshold: float,
+    cls_idx: Optional[int],
+    add_heatmap: bool = True,
+):
+    """
+    Logs:
+      - triptych [ RGB with heatmap overlay | PRED(thresholded two-tone) | GT(two-tone) ]
+    Works on CPU or CUDA tensors and binary or multi-class y_prob.
+    """
+    n = min(8, x.size(0))
+    prob_vis = _pick_vis_channel(y_prob[:n], cls_idx=cls_idx)
+
+    panel = _make_triptych_rgb_pred_gt(
+        x[:n], prob_vis, y_true[:n],
+        rgb_idx=rgb_idx,
+        threshold=threshold,
+        pos=tuple(getattr(config, "viz_pos_color", (1.0, 1.0, 0.0))),
+        neg=tuple(getattr(config, "viz_neg_color", (0.0, 0.0, 1.0))),
+        overlay_heatmap=add_heatmap,
+    )
+    grid = vutils.make_grid(panel, nrow=min(4, panel.size(0)), padding=0)
+    tb.add_image(f"{tag_prefix}/rgb_pred_gt", _to_cpu_image(grid), step)
+
+    tb.flush()  # ensure events are written promptly
 
 
 # --------- Console color helpers ---------
@@ -298,16 +377,22 @@ def _make_triptych_rgb_pred_gt(x_nchw: torch.Tensor,
                                rgb_idx: Tuple[int, int, int] = (0, 1, 2),
                                threshold: float = 0.5,
                                pos: Tuple[float, float, float] = (1.0, 1.0, 0.0),
-                               neg: Tuple[float, float, float] = (0.0, 0.0, 1.0)) -> torch.Tensor:
+                               neg: Tuple[float, float, float] = (0.0, 0.0, 1.0),
+                               overlay_heatmap: bool = False) -> torch.Tensor:
     """
-    Build a horizontal triptych [ RGB | PRED | GT ]:
-      - RGB from x channels (bands 1–3 -> indices (0,1,2))
+    Build a horizontal triptych [ RGB (with optional heatmap overlay) | PRED | GT ]:
+      - RGB from x channels (bands 1–3 -> indices (0,1,2)), optionally with heatmap overlay
       - PRED colored two-tone (1=yellow, 0=blue), thresholded
       - GT colored two-tone (1=yellow, 0=blue)
     Returns [N,3,H,3W].
     """
     rgb = _rgb_from_x(x_nchw, rgb_idx=rgb_idx)
     pred_prob = _ensure_probabilities(y_pred_n1hw)
+    
+    # Apply heatmap overlay to RGB if requested
+    if overlay_heatmap:
+        rgb = _overlay_heatmap_on_rgb(rgb, pred_prob, alpha=0.4)
+    
     pred_rgb = _mask_to_two_tone(pred_prob, threshold=threshold, pos=pos, neg=neg)
     gt_rgb = _mask_to_two_tone(y_true_n1hw, threshold=0.5, pos=pos, neg=neg)
     return torch.cat([rgb, pred_rgb, gt_rgb], dim=-1).clamp(0, 1)
@@ -324,6 +409,190 @@ def _ensure_probabilities(y_pred: torch.Tensor) -> torch.Tensor:
     if (mn < -1e-3) or (mx > 1.0 + 1e-3):
         return torch.sigmoid(y_pred)
     return y_pred.clamp(0.0, 1.0)
+
+
+# ==== TerraTorch output helpers ====
+def _ensure_nchw(t: torch.Tensor) -> torch.Tensor:
+    """Accept [N,H,W] -> [N,1,H,W]; keep [N,C,H,W] as-is."""
+    if t.dim() == 3:
+        return t.unsqueeze(1)
+    return t
+
+def _is_terramind_model(model: nn.Module) -> bool:
+    """Robustly detect TerraMind even when wrapped by torch.compile."""
+    base = getattr(model, "_orig_mod", model)
+    try:
+        return isinstance(base, TerraMind) or bool(getattr(base, "_is_terramind", False))
+    except Exception:
+        return bool(getattr(base, "_is_terramind", False))
+
+def _as_probs_from_terratorch_logits_first(out, num_classes: int = 1) -> torch.Tensor:
+    """
+    TerraTorch containers -> probability maps. Prefer logits (keeps grad), then float predictions.
+    Always return float NCHW.
+    """
+    from collections.abc import Mapping
+    import torch as _torch
+
+    def _activate_from_logits(logits: _torch.Tensor) -> _torch.Tensor:
+        logits = _ensure_nchw(logits)
+        if num_classes <= 1 or (logits.dim() >= 2 and logits.shape[1] == 1):
+            return _torch.sigmoid(logits)
+        return _torch.softmax(logits, dim=1)
+
+    # 1) Prefer logits
+    if isinstance(out, Mapping) and isinstance(out.get("logits", None), _torch.Tensor):
+        return _activate_from_logits(out["logits"])
+    if hasattr(out, "logits") and isinstance(out.logits, _torch.Tensor):
+        return _activate_from_logits(out.logits)
+
+    # 2) Allow prediction ONLY if it's already a float prob map
+    if isinstance(out, Mapping) and isinstance(out.get("prediction", None), _torch.Tensor):
+        p = _ensure_nchw(out["prediction"])
+        if p.dtype.is_floating_point and p.dim() == 4:
+            return p
+    if hasattr(out, "prediction") and isinstance(out.prediction, _torch.Tensor):
+        p = _ensure_nchw(out.prediction)
+        if p.dtype.is_floating_point and p.dim() == 4:
+            return p
+
+    # 3) Fallbacks (dict values, attrs, sequences, tensors)
+    if isinstance(out, Mapping):
+        for v in out.values():
+            if isinstance(v, _torch.Tensor):
+                return _ensure_probabilities(_ensure_nchw(v))
+    try:
+        for v in vars(out).values():
+            if isinstance(v, _torch.Tensor):
+                return _ensure_probabilities(_ensure_nchw(v))
+            if isinstance(v, (list, tuple)):
+                for t in v:
+                    if isinstance(t, _torch.Tensor):
+                        return _ensure_probabilities(_ensure_nchw(t))
+            if isinstance(v, dict):
+                for t in v.values():
+                    if isinstance(t, _torch.Tensor):
+                        return _ensure_probabilities(_ensure_nchw(t))
+    except Exception:
+        pass
+    if isinstance(out, (list, tuple)) and len(out) > 0:
+        first = next((v for v in out if isinstance(v, _torch.Tensor)), None)
+        if first is not None:
+            return _ensure_probabilities(_ensure_nchw(first))
+    if isinstance(out, _torch.Tensor):
+        return _ensure_probabilities(_ensure_nchw(out))
+    raise TypeError(f"Cannot interpret TerraTorch output of type {type(out)}")
+
+
+# ==== Original generic TerraTorch-style output → probabilities ====
+def _as_probs_from_terratorch(out, num_classes: int = 1) -> torch.Tensor:
+    """
+    TerraTorch ModelOutput / HF-style container / dict / tuple / tensor -> probability maps.
+
+    Order of attempts:
+      1) mapping-like: prefer "prediction", then "logits"
+      2) attribute-style: .prediction / .logits
+      3) special adapters: .to_dict(), .as_dict(), .items(), __iter__()
+      4) scan __dict__ for first Tensor
+      5) sequence-like: first Tensor
+      6) plain Tensor: use heuristic
+    """
+    from collections.abc import Mapping
+    import torch as _torch
+
+    def _activate_from_logits(logits: _torch.Tensor) -> _torch.Tensor:
+        if num_classes <= 1 or logits.shape[1] == 1:
+            return _torch.sigmoid(logits)
+        return _torch.softmax(logits, dim=1)
+
+    # 1) Mapping-like (many ModelOutput types behave like dicts)
+    if isinstance(out, Mapping):
+        if "prediction" in out and isinstance(out["prediction"], _torch.Tensor):
+            return out["prediction"]
+        if "logits" in out and isinstance(out["logits"], _torch.Tensor):
+            return _activate_from_logits(out["logits"])
+        # any first tensor value
+        for v in out.values():
+            if isinstance(v, _torch.Tensor):
+                return _ensure_probabilities(v)
+
+    # 2) Attribute-style
+    if hasattr(out, "prediction") and isinstance(out.prediction, _torch.Tensor):
+        return out.prediction
+    if hasattr(out, "logits") and isinstance(out.logits, _torch.Tensor):
+        return _activate_from_logits(out.logits)
+
+    # 3) Adapters common in custom ModelOutput classes
+    for to_dict_name in ("to_dict", "as_dict"):
+        if hasattr(out, to_dict_name):
+            try:
+                d = getattr(out, to_dict_name)()
+                if isinstance(d, dict):
+                    if "prediction" in d and isinstance(d["prediction"], _torch.Tensor):
+                        return d["prediction"]
+                    if "logits" in d and isinstance(d["logits"], _torch.Tensor):
+                        return _activate_from_logits(d["logits"])
+                    for v in d.values():
+                        if isinstance(v, _torch.Tensor):
+                            return _ensure_probabilities(v)
+            except Exception:
+                pass
+
+    if hasattr(out, "items"):
+        try:
+            for k, v in out.items():
+                if k in ("prediction", "pred"):
+                    if isinstance(v, _torch.Tensor):
+                        return v
+                if k == "logits" and isinstance(v, _torch.Tensor):
+                    return _activate_from_logits(v)
+            for _, v in out.items():
+                if isinstance(v, _torch.Tensor):
+                    return _ensure_probabilities(v)
+        except Exception:
+            pass
+
+    if hasattr(out, "__iter__") and not isinstance(out, (list, tuple, _torch.Tensor)):
+        try:
+            it = iter(out)
+            peek = next(it)
+            if isinstance(peek, tuple) and len(peek) == 2:
+                k, v = peek
+                cands = [v] + [v2 for _, v2 in it]
+            else:
+                cands = [peek] + list(it)
+            for v in cands:
+                if isinstance(v, _torch.Tensor):
+                    return _ensure_probabilities(v)
+        except StopIteration:
+            pass
+        except Exception:
+            pass
+
+    try:
+        for v in vars(out).values():
+            if isinstance(v, _torch.Tensor):
+                return _ensure_probabilities(v)
+            if isinstance(v, (list, tuple)):
+                for t in v:
+                    if isinstance(t, _torch.Tensor):
+                        return _ensure_probabilities(t)
+            if isinstance(v, dict):
+                for t in v.values():
+                    if isinstance(t, _torch.Tensor):
+                        return _ensure_probabilities(t)
+    except Exception:
+        pass
+
+    if isinstance(out, (list, tuple)) and len(out) > 0:
+        first = next((v for v in out if isinstance(v, _torch.Tensor)), None)
+        if first is not None:
+            return _ensure_probabilities(first)
+
+    if isinstance(out, _torch.Tensor):
+        return _ensure_probabilities(out)
+
+    raise TypeError(f"Cannot interpret TerraTorch output of type {type(out)}")
 
 
 # -----------------------------
@@ -489,33 +758,21 @@ def create_train_val_datasets(frames):
         weighting="area",
     ).random_generator(config.train_batch_size)
 
-    # Wrap with DataLoader-like iterables
+    # Wrap with DataLoader-like iterables (only set prefetch_factor when workers>0)
     workers = int(getattr(config, "fit_workers", 8))
     train_ds = TorchGeneratorDataset(train_gen)
     val_ds = TorchGeneratorDataset(val_gen)
     test_ds = TorchGeneratorDataset(test_gen)
 
-    train_dl = DataLoader(
-        train_ds,
-        batch_size=None,
-        num_workers=workers,
-        pin_memory=torch.cuda.is_available(),
-        prefetch_factor=2 if workers > 0 else None,
-    )
-    val_dl = DataLoader(
-        val_ds,
-        batch_size=None,
-        num_workers=workers,
-        pin_memory=torch.cuda.is_available(),
-        prefetch_factor=2 if workers > 0 else None,
-    )
-    test_dl = DataLoader(
-        test_ds,
-        batch_size=None,
-        num_workers=workers,
-        pin_memory=torch.cuda.is_available(),
-        prefetch_factor=2 if workers > 0 else None,
-    )
+    base_kwargs = dict(batch_size=None, num_workers=workers, pin_memory=torch.cuda.is_available())
+    if workers > 0:
+        base_kwargs_pf = {**base_kwargs, "prefetch_factor": 2}
+    else:
+        base_kwargs_pf = base_kwargs
+
+    train_dl = DataLoader(train_ds, **base_kwargs_pf)
+    val_dl = DataLoader(val_ds, **base_kwargs_pf)
+    test_dl = DataLoader(test_ds, **base_kwargs_pf)
     return train_dl, val_dl, test_dl
 
 
@@ -615,8 +872,21 @@ class HeavyMetricsEvaluator:
                 x = x.to(self.device, non_blocking=True).contiguous(memory_format=torch.channels_last)
                 y_true = y_true.to(self.device, non_blocking=True)
 
+                # TerraMind-aware probabilities
                 y_pred_raw = _forward_with_autopad(model, x)
-                y_prob = _ensure_probabilities(y_pred_raw).float()
+                num_classes = int(getattr(config, "num_classes", 1))
+                if _is_terramind_model(model):
+                    y_prob_full = _as_probs_from_terratorch_logits_first(y_pred_raw, num_classes=num_classes)
+                else:
+                    y_prob_full = _as_probs_from_terratorch(y_pred_raw, num_classes=num_classes)
+                y_prob_full = _ensure_nchw(y_prob_full).float()
+                if y_prob_full.shape[1] > 1:
+                    cls_idx = int(getattr(config, "metrics_class", 1))
+                    cls_idx = max(0, min(cls_idx, y_prob_full.shape[1]-1))
+                    y_prob = y_prob_full[:, cls_idx:cls_idx+1]
+                else:
+                    y_prob = y_prob_full
+
                 y_bin = (y_prob >= self.threshold).float()
 
                 for name, fn in self.metric_fns.items():
@@ -629,7 +899,6 @@ class HeavyMetricsEvaluator:
         for name, values in accum.items():
             if values:
                 mean_val = sum(values) / len(values)
-                # TensorBoard (PyTorch): no as_default(); just add_scalar
                 self.tb_writer.add_scalar(name, mean_val, epoch)
                 logs[f"val_{name}"] = mean_val
         self.tb_writer.flush()
@@ -647,7 +916,7 @@ def _create_logging(model_path: str, log_suffix: str = "") -> Tuple[BestModelSav
 def _print_run_banner(model_key: str, log_dir: str):
     """Pretty console banner like tuning, including the LOSS."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    ema_on = bool(getattr(config, "use_ema", True))
+    ema_on = bool(getattr(config, "use_ema", False))
     aug = float(getattr(config, "augmenter_strength", 1.0))
     minpos = float(getattr(config, "min_pos_frac", 0.0))
     posr = getattr(config, "pos_ratio", None)
@@ -707,6 +976,73 @@ def _build_model_swin() -> nn.Module:
     )
     return model
 
+def _build_model_terramind() -> nn.Module:
+    # ---- derive channels ----
+    in_ch = len(getattr(config, "channels_used", getattr(config, "channel_list", [])))
+    num_classes = int(getattr(config, "num_classes", 1))
+    modality = getattr(config, "modality", "S2")
+
+    # ---- map your tm_* config to TerraMind kwargs ----
+    tm_backbone = getattr(config, "tm_backbone", None)                # e.g. "terramind_v1_large"
+    tm_decoder  = getattr(config, "tm_decoder", "UperNetDecoder")     # "UperNetDecoder" | "UNetDecoder" | ...
+    tm_dec_ch   = getattr(config, "tm_decoder_channels", 256)         # int or list[int]
+    tm_indices  = getattr(config, "tm_select_indices", None)          # list[int] or None
+    tm_bands    = getattr(config, "tm_bands", None)                   # list[str] or None
+    tm_ckpt     = getattr(config, "tm_backbone_ckpt_path", None)
+    tm_merge    = getattr(config, "terramind_merge_method", "mean")   # keep default if not provided
+    tm_size_fallback = getattr(config, "terramind_size", "base")
+
+    # Accept either a direct backbone name or infer size from the suffix
+    def _parse_size_from_backbone(s: str | None, default_size: str = "base") -> tuple[str | None, str]:
+        if not s:
+            return None, default_size
+        lower = s.lower()
+        if lower.startswith("terramind"):
+            size = "large" if "large" in lower else ("base" if "base" in lower else ("small" if "small" in lower else ("tiny" if "tiny" in lower else default_size)))
+            return s, size
+        # if it's not a full terramind id, treat it like a size token
+        if lower in {"tiny", "small", "base", "large"}:
+            return None, lower
+        return None, default_size
+
+    backbone_override, tm_size = _parse_size_from_backbone(tm_backbone, tm_size_fallback)
+
+    # Optional extra decoder kwargs (add more if you expose them in config)
+    decoder_kwargs = {}
+    # Example: if you ever add config.tm_decoder_dropout, pass it here:
+    # if hasattr(config, "tm_decoder_dropout"): decoder_kwargs["dropout"] = float(config.tm_decoder_dropout)
+
+    model = TerraMind(
+        in_channels=in_ch,
+        num_classes=num_classes,
+        modality=modality,
+        tm_size=tm_size,
+        merge_method=tm_merge,
+        pretrained=True,
+        ckpt_path=tm_ckpt,
+        indices_override=tm_indices,
+        bands_override=tm_bands,
+        decoder=tm_decoder,
+        decoder_channels=tm_dec_ch,
+        decoder_kwargs=decoder_kwargs,
+        backbone=backbone_override,   # direct backbone string, if provided
+        rescale=True,
+    )
+
+    # mark for downstream detection even if compiled later
+    setattr(model, "_is_terramind", True)
+
+    # Optional: full-backbone freeze at init
+    if bool(getattr(config, "tm_freeze_backbone", False)):
+        for name, p in model.named_parameters():
+            if "backbone" in name:
+                p.requires_grad = False
+
+    return model
+
+
+
+
 
 # -----------------------------
 # Fit loop
@@ -725,6 +1061,12 @@ def _fit_model(
 
     # TensorBoard writers
     tb = SummaryWriter(log_dir)
+
+    # --- ensure Images tab appears immediately ---
+    _dummy = torch.zeros(1, 3, 32, 32)  # [N,3,H,W]
+    tb.add_image("viz/boot/dummy", vutils.make_grid(_dummy).detach().cpu(), 0)
+    tb.flush()
+
     csv_path = os.path.join(
         config.logs_dir, f"{os.path.basename(model_path)}_metrics.csv"
     )
@@ -743,7 +1085,6 @@ def _fit_model(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device).to(memory_format=torch.channels_last)
 
-    
     # === Overfit-one-batch mode: capture first batch and repeat forever ===
     if getattr(config, "overfit_one_batch", False):
 
@@ -782,7 +1123,7 @@ def _fit_model(
     light_metric_fns = [dice_coef, accuracy]
 
     steps_per_epoch = int(config.num_training_steps)
-    val_steps = int(config.num_validation_images)
+    val_steps = int(getattr(config, "num_validation_images", 0))
     total_epochs = int(config.num_epochs)
 
     grad_accum = int(getattr(config, "steps_per_execution", 1))
@@ -799,7 +1140,7 @@ def _fit_model(
     show_progress = bool(getattr(config, "show_progress", True))
 
     # Print run banner
-    key = "unet" if log_name == "_unet" else "swin"
+    key = "unet" if log_name == "_unet" else ("tm" if log_name == "_tm" else "swin")
     _print_run_banner(key, log_dir)
 
     # Track the best (by val_loss)
@@ -832,7 +1173,24 @@ def _fit_model(
 
             with torch.cuda.amp.autocast(enabled=torch.cuda.is_available(), dtype=_AMP_DTYPE):
                 y_pred_raw = _forward_with_autopad(model, x)
-                y_prob = _ensure_probabilities(y_pred_raw)
+                # TerraMind-only: decode logits→probs, else use default extractor
+                num_classes = int(getattr(config, "num_classes", 1))
+                if _is_terramind_model(model):
+                    y_prob_full = _as_probs_from_terratorch_logits_first(y_pred_raw, num_classes=num_classes)
+                else:
+                    y_prob_full = _as_probs_from_terratorch(y_pred_raw, num_classes=num_classes)
+                y_prob_full = _ensure_nchw(y_prob_full).float()
+                # For binary-style losses/metrics, pick a single class if needed
+                if y_prob_full.shape[1] > 1:
+                    cls_idx = int(getattr(config, "metrics_class", 1))
+                    cls_idx = max(0, min(cls_idx, y_prob_full.shape[1]-1))
+                    y_prob = y_prob_full[:, cls_idx:cls_idx+1]
+                else:
+                    y_prob = y_prob_full
+                # warn if gradients were severed (e.g., from argmax)
+                if _is_terramind_model(model) and not y_prob.requires_grad:
+                    print("WARNING: TerraMind y_prob has no grad — check decode path.")
+
                 loss = criterion(y, y_prob)
 
             scaler.scale(loss / grad_accum).backward()
@@ -864,19 +1222,19 @@ def _fit_model(
             # Step-wise visuals: [ RGB | PRED | GT ]
             if log_visuals_every > 0 and ((global_step % log_visuals_every) == 0):
                 try:
-                    n = min(8, x.size(0))
-                    panel = _make_triptych_rgb_pred_gt(
-                        x[:n],
-                        y_prob[:n],
-                        y[:n],
+                    _log_triptych_and_optional_heatmap(
+                        tb=tb,
+                        tag_prefix="viz/train",
+                        x=x,
+                        y_prob=y_prob,
+                        y_true=y,
+                        step=global_step,
                         rgb_idx=vis_rgb_idx,
                         threshold=float(getattr(config, "eval_threshold", 0.5)),
-                        pos=tuple(getattr(config, "viz_pos_color", (1.0, 1.0, 0.0))),  # 1 -> yellow
-                        neg=tuple(getattr(config, "viz_neg_color", (0.0, 0.0, 1.0))),  # 0 -> blue
+                        cls_idx=getattr(config, "viz_class", 1),  # pick class 1 by default
+                        add_heatmap=True,
                     )
-                    grid = vutils.make_grid(panel, nrow=min(4, panel.size(0)), padding=0)
-                    tb.add_image("viz/train/rgb_pred_gt", grid, global_step)
-                except Exception:
+                except Exception as _:
                     pass
 
             # Live postfix for progress
@@ -914,22 +1272,37 @@ def _fit_model(
         best_improved = False
         with maybe_ema_ctx():
             # Validation loop with progress bar
-            val_range = range(val_steps)
-            if show_progress:
+            val_range = range(max(1, val_steps)) if val_steps > 0 else range(0)
+            if show_progress and val_steps > 0:
                 val_range = tqdm(val_range, desc=f"Epoch {epoch+1}/{total_epochs} [val]", leave=False)
 
             with torch.no_grad():
                 val_it = iter(val_iterable)
                 x_vis = None; y_vis = None; y_hat_vis = None  # for epoch-end viz
+                val_count = 0
                 for _ in val_range:
                     try:
                         x, y = next(val_it)
                     except StopIteration:
                         break
+                    val_count += 1
                     x = x.to(device, non_blocking=True).contiguous(memory_format=torch.channels_last)
                     y = y.to(device, non_blocking=True)
                     y_pred_raw = _forward_with_autopad(model, x)
-                    y_prob = _ensure_probabilities(y_pred_raw).float()
+                    # TerraMind-only decode in validation, else default
+                    num_classes = int(getattr(config, "num_classes", 1))
+                    if _is_terramind_model(model):
+                        y_prob_full = _as_probs_from_terratorch_logits_first(y_pred_raw, num_classes=num_classes)
+                    else:
+                        y_prob_full = _as_probs_from_terratorch(y_pred_raw, num_classes=num_classes)
+                    y_prob_full = _ensure_nchw(y_prob_full).float()
+                    if y_prob_full.shape[1] > 1:
+                        cls_idx = int(getattr(config, "metrics_class", 1))
+                        cls_idx = max(0, min(cls_idx, y_prob_full.shape[1]-1))
+                        y_prob = y_prob_full[:, cls_idx:cls_idx+1]
+                    else:
+                        y_prob = y_prob_full
+
                     loss = criterion(y, y_prob)
                     val_loss_accum += float(loss.detach().cpu().item())
                     for fn in light_metric_fns:
@@ -940,14 +1313,15 @@ def _fit_model(
                         val_metric_accums[fn.__name__] += float(
                             v.detach().mean().cpu().item() if isinstance(v, torch.Tensor) else float(v)
                         )
-                    # keep one batch for visual
+                    # keep first batch for visualization
                     if x_vis is None:
                         x_vis, y_vis, y_hat_vis = x[:8].clone(), y[:8].clone(), y_prob[:8].clone()
 
-                avg_val_loss = val_loss_accum / max(1, val_steps)
+                denom = max(1, val_count if val_count > 0 else val_steps)
+                avg_val_loss = val_loss_accum / denom
                 logs["val_loss"] = avg_val_loss
                 for fn in light_metric_fns:
-                    logs[f"val_{fn.__name__}"] = val_metric_accums[fn.__name__] / max(1, val_steps)
+                    logs[f"val_{fn.__name__}"] = val_metric_accums[fn.__name__] / denom
 
                 # Heavy metrics on subset of val
                 logs = heavy_eval.run(model, epoch, logs)
@@ -962,20 +1336,20 @@ def _fit_model(
                 # Visualization: epoch-end [ RGB | PRED | GT ]
                 if x_vis is not None:
                     try:
-                        panel = _make_triptych_rgb_pred_gt(
-                            x_vis,
-                            y_hat_vis,
-                            y_vis,
+                        _log_triptych_and_optional_heatmap(
+                            tb=tb,
+                            tag_prefix="viz/val",
+                            x=x_vis,
+                            y_prob=y_hat_vis,
+                            y_true=y_vis,
+                            step=epoch + 1,
                             rgb_idx=vis_rgb_idx,
                             threshold=float(getattr(config, "eval_threshold", 0.5)),
-                            pos=tuple(getattr(config, "viz_pos_color", (1.0, 1.0, 0.0))),
-                            neg=tuple(getattr(config, "viz_neg_color", (0.0, 0.0, 0.5))),
+                            cls_idx=getattr(config, "viz_class", 1),
+                            add_heatmap=True,
                         )
-                        grid = vutils.make_grid(panel, nrow=min(4, panel.size(0)), padding=0)
-                        tb.add_image("viz/val/rgb_pred_gt", grid, epoch + 1)
                     except Exception:
                         pass
-
 
         # If we evaluated/saved EMA weights and there was an improvement, also save RAW weights snapshot
         if best_improved and eval_with_ema and ema is not None:
@@ -1018,7 +1392,7 @@ def _fit_model(
             if name in logs:
                 base = name[4:] if name.startswith("val_") else name
                 tb.add_scalars(base, {"val": logs[name]}, epoch)
-            tb.flush()
+        tb.flush()
 
         # Per-epoch metadata (mirrors your JSON)
         meta_data = {
@@ -1259,6 +1633,58 @@ def train_SwinUNetPP(conf):
         model_path,
         starting_epoch,
         log_name="_swin",
+        optimizer=optimizer,
+        criterion=criterion,
+    )
+
+    print(_col(f"Training completed in {str(timedelta(seconds=time.time() - start)).split('.')[0]}.\n", _C.GREEN))
+
+def train_TerraMind(conf):
+    """Create and train a TerraMind-based segmentation model with your fast loop."""
+    global config
+    config = conf
+    print("Starting training (TerraMind).")
+    start = time.time()
+
+    set_global_seed(getattr(config, "seed", None))
+
+    frames = get_all_frames()
+    train_ds, val_ds, test_ds = create_train_val_datasets(frames)
+
+    stamp = time.strftime("%Y%m%d-%H%M")
+    model_path = os.path.join(config.saved_models_dir, f"{stamp}_{config.model_name}")
+
+    state_path, starting_epoch = _prepare_model_and_logging(model_path)
+
+    model = _build_model_terramind()
+
+    if getattr(config, "use_torch_compile", False) and hasattr(torch, "compile"):
+        try:
+            model = torch.compile(model)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    optimizer = get_optimizer(config.optimizer_fn, None, None, model)
+    criterion = get_loss(config.loss_fn, getattr(config, "tversky_alphabeta", (0.5, 0.5)))
+
+    if state_path and os.path.exists(state_path):
+        try:
+            state = torch.load(state_path, map_location="cpu")
+            if isinstance(state, dict) and "model_state" in state:
+                model.load_state_dict(state["model_state"])
+            elif isinstance(state, dict):
+                model.load_state_dict(state)
+            print(f"Loaded weights from: {state_path}")
+        except Exception as exc:
+            print(_col(f"Could not load PyTorch weights from {state_path}: {exc}", _C.RED))
+
+    _fit_model(
+        model,
+        train_ds,
+        val_ds,
+        model_path,
+        starting_epoch,
+        log_name="_tm",
         optimizer=optimizer,
         criterion=criterion,
     )

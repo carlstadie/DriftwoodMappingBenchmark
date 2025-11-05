@@ -37,7 +37,8 @@ def alb_augmentation(patch_size: Tuple[int, int], strength: float = 1.0) -> A.Co
             A.RandomBrightnessContrast(brightness_limit=0.0, contrast_limit=0.7 * s, p=0.30 * s),
 
             # Geometric warps
-            A.PiecewiseAffine(scale=0.05 * s, p=0.30 * s),
+            #A.PiecewiseAffine(scale=0.05 * s, p=0.30 * s),
+            A.ElasticTransform(alpha=1.0 * s, sigma=50.0 * s, alpha_affine=50.0 * s, p=0.30 * s),
             A.Perspective(scale=(0.0, 0.01 * s), keep_size=True, p=0.10 * s),
         ]
     )
