@@ -56,7 +56,7 @@ class Configuration:
 
         # ------ ADVANCED SETTINGS ------
         # GPU selection
-        self.selected_gpu = 7  # CUDA device index, -1 for CPU
+        self.selected_gpu = 6  # CUDA device index, -1 for CPU
 
         # Preprocessing
         self.train_image_type = self.image_file_type
@@ -105,7 +105,7 @@ class Configuration:
         # ---------------- TerraMind-specific ----------------
         # These are only used when training/tuning the TerraMind model.
         self.num_classes = 1
-        self.tm_backbone = 'terramind_v1_large'  # {'terramind_v1_tiny','small','base','large'}
+        self.tm_backbone = 'terramind_v1_base'  # {'terramind_v1_tiny','small','base','large'}
         self.tm_decoder = 'UNetDecoder'         # or 'UperNetDecoder'
         self.tm_decoder_channels = [512, 256, 128, 64]  # UNet-style widths
         self.tm_select_indices = None           # let code pick sensible defaults

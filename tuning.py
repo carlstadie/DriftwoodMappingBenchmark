@@ -1,7 +1,7 @@
 from __future__ import annotations
-import os, json, time, random
+import os, json, time, random, gc
 from datetime import datetime
-from typing import Dict, Any, Tuple, List, Optional, Iterable
+from typing import Dict, Any, Tuple, List, Optional, Iterable, Union
 
 import numpy as np
 import torch
@@ -16,14 +16,17 @@ try:
 except Exception as _e:
     raise ImportError("Optuna is required for tuning. Install with `pip install optuna`.") from _e
 
-from training import get_all_frames, create_train_val_datasets
+from core.common.data import get_all_frames, create_train_val_datasets
 from core.UNet import UNet
 from core.Swin_UNetPP import SwinUNet
 from core.optimizers import get_optimizer  # optional project-level optimizer factory
-from core.TerraMind import TerraMind  # your wrapper
-
-# NEW: we’ll directly use the TerraTorch factory for Prithvi / SatMAE builds
-from terratorch.models.encoder_decoder_factory import EncoderDecoderFactory
+from core.TerraMind import TerraMind
+# NEW: import the same forward/decoder helpers used in training
+from core.common.model_utils import (
+    _forward_with_autopad,
+    _as_probs_from_terratorch_logits_first,
+    _ensure_nchw,
+)
 
 
 # -----------------------
@@ -37,26 +40,33 @@ def _seed(seed: int = 42) -> None:
     torch.cuda.manual_seed_all(seed)
     torch.use_deterministic_algorithms(False)  # match TF defaults
 
+
 def _ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
+
 
 def _default(val, fallback):
     return val if val is not None else fallback
 
+
 def _nan_to_num_torch(x: torch.Tensor, constant: float) -> torch.Tensor:
     return torch.where(torch.isfinite(x), x, torch.as_tensor(constant, dtype=x.dtype, device=x.device))
+
 
 def _sanitize_pair_xy(x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     x = x.to(dtype=torch.float32)
     y = y.to(dtype=torch.float32)
+    # Inputs/labels are safe to clamp in-place (no grad needed)
     x = _nan_to_num_torch(x, 0.0).clamp_(0.0, 1.0)
     y = _nan_to_num_torch(y, 0.0).clamp_(0.0, 1.0)
     return x, y
+
 
 def _sanitize_weights(w: torch.Tensor) -> torch.Tensor:
     w = w.to(dtype=torch.float32)
     w = _nan_to_num_torch(w, 1.0).clamp_(0.0, 1e6)
     return w
+
 
 def _snap_hw_for_swin(H: int, W: int, patch_size: int, window_size: int, down_levels: int = 3) -> Tuple[int, int]:
     need = window_size * (2 ** down_levels)
@@ -68,8 +78,10 @@ def _snap_hw_for_swin(H: int, W: int, patch_size: int, window_size: int, down_le
     W_adj = t_w_adj * patch_size
     return H_adj, W_adj
 
+
 def _flatten_nchw_like(y: torch.Tensor) -> torch.Tensor:
     return y.reshape(y.shape[0], -1)
+
 
 def _safe_dice(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     y_true = y_true.to(dtype=torch.float32).clamp(0.0, 1.0)
@@ -80,6 +92,7 @@ def _safe_dice(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = 1e-6) ->
     den = torch.sum(y_true_f, dim=1) + torch.sum(y_pred_f, dim=1)
     dice = (2.0 * inter + eps) / (den + eps)
     return dice.mean()
+
 
 def _safe_iou(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     y_true = y_true.to(dtype=torch.float32).clamp(0.0, 1.0)
@@ -92,12 +105,46 @@ def _safe_iou(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = 1e-6) -> 
     return iou.mean()
 
 
+# --- NEW: best-effort worker shutdown for PyTorch DataLoader ---
+def _stop_dataloader_workers(dl: Optional[Iterable]) -> None:
+    """
+    Best-effort shutdown of DataLoader worker processes/threads.
+    Safe to call on loaders with 0 workers or non-standard iterables.
+    """
+    if dl is None:
+        return
+    try:
+        it = getattr(dl, "_iterator", None)
+        if it is not None:
+            # PyTorch internal: _MultiProcessingDataLoaderIter
+            shut = getattr(it, "_shutdown_workers", None)
+            if callable(shut):
+                shut()
+            try:
+                workers = getattr(it, "_workers", None)
+                if workers:
+                    for w in workers:
+                        try:
+                            w.terminate()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            try:
+                setattr(dl, "_iterator", None)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 # -----------------------
 # Logging helpers (concise / readable)
 # -----------------------
 def _phase_banner(model_key: str, phase: str, max_epochs: int, steps: int, val_steps: int, tune_batch: int):
     print(f"\n=== [{model_key.upper()}][{phase}] epochs={max_epochs}, "
           f"steps/epoch={steps}, val_steps={val_steps}, batch={tune_batch} ===")
+
 
 def _trial_banner(trial_num: int, model_key: str, hp: Dict[str, Any], data_hp: Dict[str, Any]):
     arch_bits = []
@@ -107,10 +154,10 @@ def _trial_banner(trial_num: int, model_key: str, hp: Dict[str, Any], data_hp: D
     elif model_key == "swin":
         for k in ("C", "attn_drop", "proj_drop", "mlp_drop", "drop_path", "ss_size"):
             if k in hp: arch_bits.append(f"{k}={hp[k]}")
-    else:  # TerraMind / Prithvi / SatMAE
-        for k in ("fm_backbone", "tm_decoder", "tm_decoder_channels", "tm_head_dropout",
+    else:
+        for k in ("tm_decoder", "tm_decoder_channels", "tm_head_dropout",
                   "tm_lr_backbone", "tm_lr_head_mult", "tm_weight_decay",
-                  "tm_freeze_backbone_epochs"):
+                  "tm_freeze_backbone_epochs", "tm_size"):
             if k in hp: arch_bits.append(f"{k}={hp[k]}")
     data_bits = f"{data_hp['patch_h']}x{data_hp['patch_w']}, aug={data_hp['augmenter_strength']}, minpos={data_hp['min_pos_frac']}"
     opt_bits = f"opt={hp['optimizer']}" if "optimizer" in hp else ""
@@ -122,10 +169,12 @@ def _trial_banner(trial_num: int, model_key: str, hp: Dict[str, Any], data_hp: D
     arch_str = "; ".join(arch_bits) if arch_bits else "-"
     print(f"\n[trial {trial_num}] {opt_bits}, {sch_bits} | arch: {arch_str} | data: {data_bits}")
 
+
 def _epoch_line(epoch: int, best: float, cur: float, extra: str = ""):
     msg = f"  epoch {epoch:02d}: val_dice={cur:.4f} (best={best:.4f})"
     if extra: msg += f" | {extra}"
     print(msg)
+
 
 # --------- Console color helpers (match training style) ---------
 class _C:
@@ -136,37 +185,43 @@ class _C:
     RESET = "\033[0m"
     BOLD = "\033[1m"
 
+
 def _col(s: str, color: str) -> str:
     return f"{color}{s}{_C.RESET}"
 
+
 def _format_val(v):
-    # Short, readable numbers; keep other types as-is
     if isinstance(v, float):
         if (abs(v) > 1e4) or (0 < abs(v) < 1e-4):
             return f"{v:.2e}"
         return f"{v:.4f}"
     return str(v)
 
+
 def _print_sxs_diff(prev_cfg: Dict[str, Any], curr_cfg: Dict[str, Any],
                     prev_score: Optional[float], curr_score: float) -> None:
     if prev_cfg is None:
         print("\n   baseline: no previous best to compare.")
         return
+
     keys = sorted(set(prev_cfg.keys()) | set(curr_cfg.keys()))
     rows = []
     for k in keys:
         a = prev_cfg.get(k, "-")
         b = curr_cfg.get(k, "-")
         rows.append((k, _format_val(a), _format_val(b), a != b))
+
     key_w  = max(len(k) for k, *_ in rows) if rows else 0
     prev_w = max(len(p) for _, p, _, _ in rows) if rows else 0
     curr_w = max(len(c) for _, _, c, _ in rows) if rows else 0
+
     print("   config diff (prev  |  curr):")
     for k, prev_s, curr_s, changed in rows:
         k_disp = _col(k, _C.YELLOW) if changed else k
         k_pad = " " * (key_w - len(k))
         mark = "  *" if changed else ""
         print(f"     - {k_disp}:{k_pad}  {prev_s:>{prev_w}}  |  {curr_s:>{curr_w}}{mark}")
+
     if prev_score is not None:
         delta = curr_score - prev_score
         sign = "+" if delta >= 0 else ""
@@ -186,8 +241,10 @@ def _optimizer_space_hb(trial: optuna.Trial) -> Tuple[str, float, Optional[float
         wd = trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)
     return opt, lr, wd
 
+
 def _schedule_space_hb(trial: optuna.Trial) -> str:
     return trial.suggest_categorical("scheduler", ["none", "cosine", "onecycle"])
+
 
 def _optimizer_space_bo(trial: optuna.Trial, fixed_opt: str) -> Tuple[str, float, Optional[float]]:
     lr = trial.suggest_float("learning_rate", 1e-5, 5e-3, log=True)
@@ -196,12 +253,14 @@ def _optimizer_space_bo(trial: optuna.Trial, fixed_opt: str) -> Tuple[str, float
         wd = trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)
     return fixed_opt, lr, wd
 
+
 def _unet_space_hb(trial: optuna.Trial) -> Tuple[int, int, float, float]:
     dilation = trial.suggest_categorical("dilation_rate", [1, 2, 4])
     layer_cnt = trial.suggest_categorical("layer_count", [32, 64, 96])
     l2w = trial.suggest_categorical("l2_weight", [0.0, 1e-5, 1e-4])
     drp = trial.suggest_categorical("dropout", [0.0, 0.1, 0.2])
     return int(dilation), int(layer_cnt), float(l2w), float(drp)
+
 
 def _swin_space_hb(trial: optuna.Trial) -> Tuple[int, int, float, float, float, float]:
     C = trial.suggest_categorical("C", [48, 64, 96])
@@ -212,17 +271,18 @@ def _swin_space_hb(trial: optuna.Trial) -> Tuple[int, int, float, float, float, 
     drop_path = trial.suggest_categorical("drop_path", [0.0, 0.1, 0.2])
     return int(C), int(ss_half), float(attn_drop), float(proj_drop), float(mlp_drop), float(drop_path)
 
+
 def _data_space_hb(trial: optuna.Trial) -> Tuple[int, int, float, float]:
     valid_sizes = [32, 48, 64, 80, 96, 112, 128, 160, 192, 224,
                    256, 288, 320, 352, 384, 416, 448, 480, 512]
     patch_h = trial.suggest_categorical("patch_h", valid_sizes)
     patch_w = patch_h
     aug_str = trial.suggest_categorical("augmenter_strength", [0.0, 0.5, 1.0])
-    minpos  = trial.suggest_categorical("min_pos_frac", [0.0, 0.01, 0.02])
+    minpos = trial.suggest_categorical("min_pos_frac", [0.0, 0.01, 0.02])
     return int(patch_h), int(patch_w), float(aug_str), float(minpos)
 
 
-# -------- TerraMind / Prithvi / SatMAE search spaces & helpers --------
+# -------- TerraMind search spaces & helpers --------
 def _tm_space_hb(trial: optuna.Trial):
     dec = trial.suggest_categorical("tm_decoder", ["UNetDecoder", "UperNetDecoder"])
     dec_ch = trial.suggest_categorical("tm_decoder_channels", [128, 192, 256, 384])
@@ -233,97 +293,93 @@ def _tm_space_hb(trial: optuna.Trial):
     wd = trial.suggest_float("tm_weight_decay", 1e-6, 5e-4, log=True)
     return dec, dec_ch, head_do, freeze_ep, lr_backbone, lr_head_mult, wd
 
+
 def _tm_space_bo(trial: optuna.Trial, fixed):
     lr_backbone = trial.suggest_float("tm_lr_backbone", 1e-6, 3e-5, log=True)
     lr_head_mult = trial.suggest_categorical("tm_lr_head_mult", [5.0, 10.0])
     wd = trial.suggest_float("tm_weight_decay", 1e-6, 5e-4, log=True)
     return lr_backbone, lr_head_mult, wd
 
-def _make_two_tier_optimizer(model: nn.Module, lr_bb: float, lr_head_mult: float, wd: float, opt="adamw"):
-    # Works for TerraMind AND EncoderDecoderFactory models
-    assert hasattr(model, "parameters"), "Model should be nn.Module"
-    bb_params = []
-    if hasattr(model, "model") and hasattr(model.model, "backbone"):
-        bb_params = list(model.model.backbone.parameters())
-    elif hasattr(model, "backbone"):
-        bb_params = list(model.backbone.parameters())
-    else:
-        # fallback: try to find a child named 'backbone'
-        for n, m in model.named_children():
-            if n == "backbone":
-                bb_params = list(m.parameters())
-                break
 
-    bb_ids = {id(p) for p in bb_params}
-    head_params = [p for p in model.parameters() if id(p) not in bb_ids]
-    groups = [
-        {"params": head_params, "lr": lr_bb * float(lr_head_mult), "weight_decay": wd},
-        {"params": bb_params,   "lr": lr_bb,                      "weight_decay": wd},
-    ]
-    return (torch.optim.AdamW if opt=="adamw" else torch.optim.Adam)(groups)
+def _split_backbone_head_params(inner_model: nn.Module):
+    """
+    TerraTorch PixelWiseModel may not expose `.backbone`. Be defensive.
+    Returns (bb_params, head_params).
+    """
+    inner = inner_model
+    # If it's a wrapper that stores `model`, unwrap once
+    if hasattr(inner, "model") and isinstance(inner.model, nn.Module):
+        inner = inner.model
+
+    bb_params: List[nn.Parameter] = []
+    head_params: List[nn.Parameter] = []
+
+    if hasattr(inner, "backbone") and isinstance(inner.backbone, nn.Module):
+        bb_params = list(inner.backbone.parameters())
+        bb_ids = {id(p) for p in bb_params}
+        for p in inner_model.parameters():
+            if id(p) not in bb_ids:
+                head_params.append(p)
+    else:
+        # No explicit backbone handle — treat everything as "head"
+        head_params = list(inner_model.parameters())
+
+    return bb_params, head_params
+
+
+def _make_tm_optimizer(model: TerraMind, lr_bb: float, lr_head_mult: float, wd: float, opt="adamw"):
+    bb_params, head_params = _split_backbone_head_params(model)
+    if len(bb_params) == 0:
+        groups = [{"params": head_params, "lr": lr_bb * float(lr_head_mult), "weight_decay": wd}]
+    else:
+        groups = [
+            {"params": head_params, "lr": lr_bb * float(lr_head_mult), "weight_decay": wd},
+            {"params": bb_params,   "lr": lr_bb,                      "weight_decay": wd},
+        ]
+    return (torch.optim.AdamW if opt == "adamw" else torch.optim.Adam)(groups)
+
 
 def _set_backbone_requires_grad(model: nn.Module, requires_grad: bool):
-    target = None
-    if hasattr(model, "model") and hasattr(model.model, "backbone"):
-        target = model.model.backbone
-    elif hasattr(model, "backbone"):
-        target = model.backbone
-    if target is not None:
-        for p in target.parameters():
+    inner = model
+    if hasattr(inner, "model") and isinstance(inner.model, nn.Module):
+        inner = inner.model
+    if hasattr(inner, "backbone") and isinstance(inner.backbone, nn.Module):
+        for p in inner.backbone.parameters():
             p.requires_grad = requires_grad
 
-# Band mapping so Prithvi/SatMAE can reuse S2 embeddings for PS/AE inputs
-def _bands_for_modality(modality: str, n_channels: int, explicit_bands=None):
-    if explicit_bands is not None:
-        return explicit_bands
-    m = (modality or "S2").upper()
-    if m in ("PS", "AE"):                     # 4-band: [B,G,R,NIR]
-        return ["BLUE", "GREEN", "RED", "NIR_NARROW"]
-    if m == "S2":
-        if n_channels == 3: return ["BLUE", "GREEN", "RED"]
-        if n_channels == 4: return ["BLUE", "GREEN", "RED", "NIR_NARROW"]
-        return None
-    return None
 
-def _build_prithvi_or_satmae(
-    backbone_name: str,
-    num_classes: int,
-    decoder_name: str,
-    decoder_channels: int | List[int],
-    img_size: Tuple[int, int],
-    modality: str,
-    channels_used: List[bool] | List[int] | None = None,
-    bands_override: List[str] | None = None,
-    rescale: bool = True,
-) -> nn.Module:
-    H, W = img_size
-    factory = EncoderDecoderFactory()
-    # S2 reuse with band subsets if needed
-    n_ch = len([c for c in (channels_used or []) if c]) if isinstance(channels_used, list) else None
-    bands = _bands_for_modality(modality, n_ch or 4, bands_override)
-    # neck taps for 12-layer ViT-like backbones (robust default)
-    necks = [
-        {"name": "ReshapeTokensToImage", "remove_cls_token": False},
-        {"name": "SelectIndices", "indices": [2, 5, 8, 11]},
-        {"name": "LearnedInterpolateToPyramidal"},
-    ]
-    dec_ch = decoder_channels if isinstance(decoder_channels, list) else decoder_channels
-    model = factory.build_model(
-        task="segmentation",
-        backbone=backbone_name,
-        decoder=decoder_name,
-        num_classes=num_classes,
-        necks=necks,
-        rescale=rescale,
-        # backbone args
-        backbone_pretrained=True,
-        backbone_modalities=["S2L2A"],               # always reuse S2 embeddings
-        backbone_merge_method="mean",
-        backbone_bands={"S2L2A": bands} if bands is not None else None,
-        # decoder args
-        decoder_channels=dec_ch,
-    )
-    return model
+def _tm_raw_to_probs(raw: Union[torch.Tensor, Dict[str, Any], List[Any], tuple],
+                     num_classes: int = 1) -> torch.Tensor:
+    """
+    Robustly extract logits from TerraTorch-style outputs and convert to probabilities.
+    Out-of-place ops only (no in-place clamp) to keep autograd happy.
+    """
+    logits = None
+    if isinstance(raw, torch.Tensor):
+        logits = raw
+    elif hasattr(raw, "logits"):
+        logits = raw.logits  # typical ModelOutput
+    elif isinstance(raw, dict):
+        for k in ("logits", "pred", "y", "out", "output"):
+            if k in raw:
+                logits = raw[k]
+                break
+    elif isinstance(raw, (list, tuple)) and len(raw) > 0:
+        # Many libs put logits at index 0
+        logits = raw[0]
+
+    if logits is None or not isinstance(logits, torch.Tensor):
+        raise TypeError("TerraMind forward did not return a Tensor or a dict/tuple containing a Tensor.")
+
+    # binary vs multi-class
+    if (num_classes is None) or (num_classes <= 1) or (logits.shape[1] == 1):
+        probs = torch.sigmoid(logits)
+    else:
+        probs = torch.softmax(logits, dim=1)
+
+    probs = probs.float()
+    probs = torch.clamp(probs, 0.0, 1.0)  # OUT-OF-PLACE clamp
+    return probs
 
 
 # -----------------------
@@ -366,18 +422,11 @@ def _compile_with_optimizer(
         else:
             opt_obj = torch.optim.Adam(params, lr=float(lr))
 
-    # Loss: BCE + (1 - Dice) — robust; now auto-activate logits if needed
+    # Loss: BCE + (1 - Dice)
     def criterion(y_true, y_pred, w: Optional[torch.Tensor] = None):
         yt = _nan_to_num_torch(y_true.float(), 0.0).clamp(0.0, 1.0)
-        yp = y_pred
-        # logits → probs if values look out of [0,1]
-        with torch.no_grad():
-            mn = float(torch.min(yp).detach().cpu())
-            mx = float(torch.max(yp).detach().cpu())
-        if (mn < -1e-3) or (mx > 1.0 + 1e-3):
-            yp = torch.sigmoid(yp)
-        yp = _nan_to_num_torch(yp.float(), 0.5).clamp(1e-6, 1.0 - 1e-6)
-
+        # OUT-OF-PLACE clamp keeps graph intact
+        yp = torch.clamp(_nan_to_num_torch(y_pred.float(), 0.5), 1e-6, 1.0 - 1e-6)
         if w is None:
             bce_term = F.binary_cross_entropy(yp, yt)
         else:
@@ -420,7 +469,6 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
         if key in dl_cache:
             return dl_cache[key]
 
-        # Temporarily override config to build datasets with these knobs
         old_bs = getattr(conf, "train_batch_size", None)
         old_patch = getattr(conf, "patch_size", None)
         old_aug = getattr(conf, "augmenter_strength", None)
@@ -433,14 +481,25 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
 
         train_iter, val_iter, _ = create_train_val_datasets(frames)
 
-        # Restore originals
-        if old_bs is not None:       conf.train_batch_size = old_bs
-        if old_patch is not None:    conf.patch_size = old_patch
-        if old_aug is not None:      conf.augmenter_strength = old_aug
-        if old_minpos is not None:   conf.min_pos_frac = old_minpos
+        if old_bs is not None: conf.train_batch_size = old_bs
+        if old_patch is not None: conf.patch_size = old_patch
+        if old_aug is not None: conf.augmenter_strength = old_aug
+        if old_minpos is not None: conf.min_pos_frac = old_minpos
 
         dl_cache[key] = (train_iter, val_iter)
-        return train_iter, val_iter
+
+        if len(dl_cache) > 10:
+            for k in list(dl_cache.keys())[:-10]:
+                try:
+                    tr_dl, va_dl = dl_cache[k]
+                    _stop_dataloader_workers(tr_dl)
+                    _stop_dataloader_workers(va_dl)
+                except Exception:
+                    pass
+                del dl_cache[k]
+                gc.collect()
+
+        return dl_cache[key]
 
     # Study
     direction = "maximize"
@@ -469,7 +528,7 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
         was_frozen = None
 
         for epoch in range(1, max_epochs + 1):
-            # Optional freeze schedule (for foundation backbones)
+            # Optional freeze schedule (no-op if backbone not exposed)
             if freeze_ep > 0:
                 if epoch <= freeze_ep and was_frozen is not True:
                     _set_backbone_requires_grad(model, False); was_frozen = True
@@ -496,17 +555,23 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
 
                 optimizer.zero_grad(set_to_none=True)
                 with torch.cuda.amp.autocast(enabled=use_amp, dtype=torch.float16):
-                    out = model(x)
-                    # TerraTorch ModelOutput often exposes .prediction or .logits
-                    if hasattr(out, "prediction"):
-                        y_pred = out.prediction
-                    elif hasattr(out, "logits"):
-                        y_pred = out.logits
+                    # TerraMind path now mirrors training: safe autopad + robust decode
+                    if model_key == "tm":
+                        raw = _forward_with_autopad(model, x)
+                        num_classes = int(getattr(conf, "num_classes", 1))
+                        y_pred_full = _as_probs_from_terratorch_logits_first(raw, num_classes=num_classes)
+                        y_pred_full = _ensure_nchw(y_pred_full).float()
+                        if y_pred_full.shape[1] > 1:
+                            cls_idx = int(getattr(conf, "metrics_class", 1))
+                            cls_idx = max(0, min(cls_idx, y_pred_full.shape[1] - 1))
+                            y_pred = y_pred_full[:, cls_idx:cls_idx+1]
+                        else:
+                            y_pred = y_pred_full
                     else:
-                        y_pred = out
-                    # normalize to NCHW
-                    if y_pred.ndim == 3:  # [N,H,W] -> [N,1,H,W]
-                        y_pred = y_pred.unsqueeze(1)
+                        raw = model(x)  # Non-TM models
+                        # Non-TM models expected to output probabilities already
+                        y_pred = torch.as_tensor(raw, dtype=torch.float32, device=device)
+                        y_pred = torch.clamp(y_pred, 0.0, 1.0)  # OUT-OF-PLACE
                     loss = criterion(y, y_pred, w)
 
                 if torch.isnan(loss) or torch.isinf(loss):
@@ -538,22 +603,31 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
                     xv = xv.to(device, non_blocking=True)
                     yv = yv.to(device, non_blocking=True)
                     xv, yv = _sanitize_pair_xy(xv, yv)
-                    outv = model(xv)
-                    if hasattr(outv, "prediction"):
-                        yp = outv.prediction
-                    elif hasattr(outv, "logits"):
-                        yp = torch.sigmoid(outv.logits)
+
+                    if model_key == "tm":
+                        raw = _forward_with_autopad(model, xv)
+                        num_classes = int(getattr(conf, "num_classes", 1))
+                        yp_full = _as_probs_from_terratorch_logits_first(raw, num_classes=num_classes)
+                        yp_full = _ensure_nchw(yp_full).float()
+                        if yp_full.shape[1] > 1:
+                            cls_idx = int(getattr(conf, "metrics_class", 1))
+                            cls_idx = max(0, min(cls_idx, yp_full.shape[1] - 1))
+                            yp = yp_full[:, cls_idx:cls_idx+1]
+                        else:
+                            yp = yp_full
                     else:
-                        yp = outv
-                    if yp.ndim == 3: yp = yp.unsqueeze(1)
-                    yp = yp.float().clamp(0.0, 1.0)
+                        raw = model(xv)
+                        yp = torch.as_tensor(raw, dtype=torch.float32, device=device)
+                        yp = torch.clamp(yp, 0.0, 1.0)  # OUT-OF-PLACE
+
                     val_dice_accum += float(_safe_dice(yv, yp).cpu().item())
+
             val_dice = val_dice_accum / max(1, val_steps)
 
             if scheduler is not None and not step_per_batch:
                 scheduler.step()
 
-            trial.report(val_dice, epoch-1)
+            trial.report(val_dice, epoch - 1)
             if trial.should_prune():
                 raise optuna.TrialPruned()
 
@@ -584,8 +658,8 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
 
             train_iterable, val_iterable = _get_loaders_for(patch_h, patch_w, aug_str, minpos)
 
-            # ----- Foundation models: TerraMind / Prithvi / SatMAE -----
-            if model_key in ("tm", "prithvi", "satmae"):
+            if model_key == "tm":
+                # ---- search spaces / fixed values ----
                 if phase == "HB":
                     dec, dec_ch, head_do, freeze_ep, lr_bb, lr_head_mult, wd = _tm_space_hb(trial)
                     opt_name = trial.suggest_categorical("optimizer", ["adamw", "adam"])
@@ -600,56 +674,48 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
                     opt_name = fixed.get("optimizer", "adamw")
                     scheduler_name = fixed.get("scheduler", "none")
 
-                # Build model by family
-                if model_key == "tm":
-                    model = TerraMind(
-                        in_channels=len(getattr(conf, "channels_used", getattr(conf, "channel_list", [])) or [0,1,2,3]),
+                # ---- derive tm_size / indices (defensive) ----
+                bk_name = str(getattr(conf, "tm_backbone", "") or "").lower()
+                if "large" in bk_name:
+                    tm_size = "large"
+                elif "base" in bk_name or bk_name:
+                    tm_size = "base"
+                else:
+                    tm_size = getattr(conf, "tm_size", "base")
+
+                base_indices  = [2, 5, 8, 11]
+                large_indices = [5, 11, 17, 23]
+                indices_override = large_indices if tm_size == "large" else base_indices
+
+                # ---- build model (with retry on IndexError using base indices) ----
+                ch = len(getattr(conf, "channels_used", getattr(conf, "channel_list", []))) or len(conf.channel_list)
+                _dec_ch = dec_ch if dec == "UperNetDecoder" else [dec_ch, dec_ch, dec_ch, dec_ch]
+
+                def _build_tm(with_indices):
+                    return TerraMind(
+                        in_channels=ch,
                         num_classes=int(getattr(conf, "num_classes", 1)),
                         modality=getattr(conf, "modality", "S2"),
-                        tm_size=str(getattr(conf, "tm_backbone", "terramind_v1_base")).split("_")[-1],   # base|large...
-                        merge_method="mean",
-                        pretrained=True,
-                        ckpt_path=getattr(conf, "tm_backbone_ckpt_path", None),
-                        indices_override=None,
+                        tm_size=tm_size,
+                        decoder=dec,
+                        decoder_channels=_dec_ch,
+                        decoder_kwargs=dict(head_dropout=head_do) if head_do else None,
+                        backbone=getattr(conf, "tm_backbone", None),
                         bands_override=getattr(conf, "tm_bands", None),
-                        decoder_channels=int(dec_ch) if not isinstance(dec_ch, (list, tuple)) else int(dec_ch[0]),
+                        pretrained=True,
                         rescale=True,
-                    )
-                    # TerraMind wrapper exposes .model under the hood
-                    # we’ll add a light dropout to the head if available
-                    if hasattr(model, "model") and hasattr(model.model, "decode_head") and head_do > 0:
-                        if hasattr(model.model.decode_head, "dropout"):
-                            try:
-                                model.model.decode_head.dropout.p = float(head_do)
-                            except Exception:
-                                pass
-                else:
-                    # Prithvi / SatMAE via EncoderDecoderFactory
-                    if model_key == "prithvi":
-                        fm_backbone = getattr(conf, "prithvi_backbone", "prithvi_v2_eo_300")
-                    else:  # satmae
-                        fm_backbone = getattr(conf, "satmae_backbone", "satmae_eo_vit_b")
-                    try:
-                        model = _build_prithvi_or_satmae(
-                            backbone_name=fm_backbone,
-                            num_classes=int(getattr(conf, "num_classes", 1)),
-                            decoder_name=dec,
-                            decoder_channels=([dec_ch, dec_ch, dec_ch, dec_ch] if not isinstance(dec_ch, (list, tuple)) else list(dec_ch)),
-                            img_size=(patch_h, patch_w),
-                            modality=getattr(conf, "modality", "S2"),
-                            channels_used=getattr(conf, "channels_used", getattr(conf, "channel_list", [])),
-                            bands_override=None,
-                            rescale=True,
-                        ).to(device)
-                    except Exception as e:
-                        # If the backbone is not available in this install, prune the trial gracefully
-                        print(f"[{model_key}] backbone build failed ({e}); pruning trial.")
-                        raise optuna.TrialPruned()
+                        indices_override=with_indices,
+                    ).to(device)
 
-                model = model.to(device)
+                try:
+                    inner_tm = _build_tm(indices_override)
+                except IndexError:
+                    inner_tm = _build_tm(base_indices)
 
-                optimizer = _make_two_tier_optimizer(model, lr_bb, lr_head_mult, wd, opt=opt_name)
+                model = inner_tm  # train/val loops now use TerraMind-safe forward/decoder
 
+                # ---- optimizer & scheduler ----
+                optimizer = _make_tm_optimizer(inner_tm, lr_bb, lr_head_mult, wd, opt=opt_name)
                 scheduler, step_per_batch = (None, False)
                 if scheduler_name == "onecycle":
                     scheduler = torch.optim.lr_scheduler.OneCycleLR(
@@ -663,21 +729,14 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
                         eta_min=min(g["lr"] for g in optimizer.param_groups) * 0.01
                     )
 
-                # loss: BCE + (1 - Dice) (criterion already handles logits)
-                def criterion(y_true, y_pred, w=None):
-                    return _compile_with_optimizer(model, opt_name, 1.0, 0.0, "none", 1, 1, conf)[2](y_true, y_pred, w)
-
-                # Pretty header once per trial
+                # ---- header ----
                 hp_line = dict(
                     optimizer=opt_name, scheduler=scheduler_name,
-                    fm_backbone=(getattr(conf, "tm_backbone", None) if model_key=="tm"
-                                 else getattr(conf, "prithvi_backbone", None) if model_key=="prithvi"
-                                 else getattr(conf, "satmae_backbone", None)),
                     tm_decoder=dec, tm_decoder_channels=dec_ch, tm_head_dropout=head_do,
                     tm_lr_backbone=lr_bb, tm_lr_head_mult=lr_head_mult, tm_weight_decay=wd,
-                    tm_freeze_backbone_epochs=freeze_ep
+                    tm_freeze_backbone_epochs=freeze_ep, tm_size=tm_size,
                 )
-                _trial_banner(trial.number, model_key, hp_line,
+                _trial_banner(trial.number, "tm", hp_line,
                               dict(patch_h=patch_h, patch_w=patch_w,
                                    augmenter_strength=aug_str, min_pos_frac=minpos))
 
@@ -685,45 +744,19 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
                 cfg_current.update(dict(
                     patch_h=patch_h, patch_w=patch_w,
                     augmenter_strength=aug_str, min_pos_frac=minpos,
-                    model=model_key, phase=phase
+                    model="tm", phase=phase
                 ))
 
-                # Multiple executions per trial (average)
+                # ---- multiple executions per trial (average) ----
                 exec_vals: List[float] = []
                 for exec_idx in range(max(1, int(executions_per_trial))):
                     if exec_idx > 0:
-                        # rebuild fresh model/opt/scheduler for repeats
-                        if model_key == "tm":
-                            model = TerraMind(
-                                in_channels=len(getattr(conf, "channels_used", getattr(conf, "channel_list", [])) or [0,1,2,3]),
-                                num_classes=int(getattr(conf, "num_classes", 1)),
-                                modality=getattr(conf, "modality", "S2"),
-                                tm_size=str(getattr(conf, "tm_backbone", "terramind_v1_base")).split("_")[-1],
-                                merge_method="mean",
-                                pretrained=True,
-                                ckpt_path=getattr(conf, "tm_backbone_ckpt_path", None),
-                                indices_override=None,
-                                bands_override=getattr(conf, "tm_bands", None),
-                                decoder_channels=int(dec_ch) if not isinstance(dec_ch, (list, tuple)) else int(dec_ch[0]),
-                                rescale=True,
-                            ).to(device)
-                        else:
-                            fm_backbone = (getattr(conf, "prithvi_backbone", "prithvi_v2_eo_300")
-                                           if model_key=="prithvi" else
-                                           getattr(conf, "satmae_backbone", "satmae_eo_vit_b"))
-                            model = _build_prithvi_or_satmae(
-                                backbone_name=fm_backbone,
-                                num_classes=int(getattr(conf, "num_classes", 1)),
-                                decoder_name=dec,
-                                decoder_channels=([dec_ch, dec_ch, dec_ch, dec_ch] if not isinstance(dec_ch, (list, tuple)) else list(dec_ch)),
-                                img_size=(patch_h, patch_w),
-                                modality=getattr(conf, "modality", "S2"),
-                                channels_used=getattr(conf, "channels_used", getattr(conf, "channel_list", [])),
-                                bands_override=None,
-                                rescale=True,
-                            ).to(device)
-
-                        optimizer = _make_two_tier_optimizer(model, lr_bb, lr_head_mult, wd, opt=opt_name)
+                        try:
+                            inner_tm = _build_tm(indices_override)
+                        except IndexError:
+                            inner_tm = _build_tm(base_indices)
+                        model = inner_tm
+                        optimizer = _make_tm_optimizer(inner_tm, lr_bb, lr_head_mult, wd, opt=opt_name)
                         scheduler, step_per_batch = (None, False)
                         if scheduler_name == "onecycle":
                             scheduler = torch.optim.lr_scheduler.OneCycleLR(
@@ -737,9 +770,13 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
                                 eta_min=min(g["lr"] for g in optimizer.param_groups) * 0.01
                             )
 
-                    val = _single_execution(trial, train_iterable, val_iterable,
-                                            model, optimizer, criterion, scheduler, step_per_batch,
-                                            freeze_ep=freeze_ep)
+                    # Use the same criterion shape as earlier compile for parity
+                    criterion = _compile_with_optimizer(model, "adam", 1e-3, None, "none", steps, max_epochs, conf)[2]
+
+                    val = _single_execution(
+                        trial, train_iterable, val_iterable,
+                        model, optimizer, criterion, scheduler, step_per_batch, freeze_ep=freeze_ep
+                    )
                     exec_vals.append(val)
 
                 result = float(np.mean(exec_vals))
@@ -764,7 +801,7 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
 
                 return result
 
-            # ----- model knobs (original branches) -----
+            # ----- model knobs (UNet/Swin branches) -----
             trial_hps: Dict[str, Any] = {}
             if model_key == "swin":
                 if phase == "HB":
@@ -793,7 +830,7 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
                     trial_hps.update(dict(C=fixed.get("C", 64), ss_size=fixed.get("ss_size", 2),
                                           attn_drop=fixed.get("attn_drop", 0.0), proj_drop=fixed.get("proj_drop", 0.0),
                                           mlp_drop=fixed.get("mlp_drop", 0.0), drop_path=fixed.get("drop_path", 0.1)))
-            else:  # unet
+            else:
                 if phase == "HB":
                     dilation, layer_cnt, l2w, drp = _unet_space_hb(trial)
                 else:
@@ -945,6 +982,16 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
         json.dump(best_params, f, indent=2)
     print(f"\n[{tag} {phase}] best saved to: {best_json_path}")
 
+    # --- NEW: ensure loaders are shut down ---
+    try:
+        for _k, (tr_dl, va_dl) in list(dl_cache.items()):
+            _stop_dataloader_workers(tr_dl)
+            _stop_dataloader_workers(va_dl)
+        dl_cache.clear()
+    except Exception:
+        pass
+    gc.collect()
+
     return best_params, study
 
 
@@ -974,10 +1021,7 @@ def _tune_chained(conf, model_type: str = "unet",
                           min(8, _default(getattr(config, "train_batch_size", 8), 8)))
 
     logs_dir = _default(getattr(config, "logs_dir", "./logs"), "./logs")
-    key = model_type.lower().strip()
-    if key not in ("unet", "swin", "tm", "prithvi", "satmae"):
-        raise ValueError(f"Unknown model_type '{model_type}'. Choose from 'unet','swin','tm','prithvi','satmae'.")
-
+    key = "unet" if model_type.lower() == "unet" else ("swin" if model_type.lower() == "swin" else "tm")
     project_dir = os.path.join(logs_dir, f"{key}_tuning")
     _ensure_dir(project_dir)
 
@@ -997,8 +1041,8 @@ def _tune_chained(conf, model_type: str = "unet",
             min_pos_frac=hb_minpos,
             fixed=dict(patch_size=fixed_ps, window_size=fixed_ws),
         )
-    elif key in ("tm", "prithvi", "satmae"):
-        hb_patch_h, hb_patch_w = 384, 384  # multiples of 16 are fine
+    elif key == "tm":
+        hb_patch_h, hb_patch_w = 384, 384
         hb_data_hp = dict(
             patch_h=hb_patch_h,
             patch_w=hb_patch_w,
@@ -1048,7 +1092,7 @@ def _tune_chained(conf, model_type: str = "unet",
             "drop_path":     float(hb_best.get("drop_path", 0.1)),
         }
         bo_patch_h, bo_patch_w = int(hb_data_hp["patch_h"]), int(hb_data_hp["patch_w"])
-    else:  # tm / prithvi / satmae share the same fixed set
+    else:  # tm
         fixed = {
             "optimizer": hb_best.get("optimizer", _default(getattr(config, "optimizer_fn", "adamw"), "adamw")),
             "scheduler": hb_best.get("scheduler", "none"),
@@ -1099,25 +1143,13 @@ def _tune_chained(conf, model_type: str = "unet",
 def tune_UNet(conf) -> Dict[str, Any]:
     return _tune_chained(conf, model_type="unet")
 
+
 def tune_SwinUNetPP(conf) -> Dict[str, Any]:
     return _tune_chained(conf, model_type="swin")
 
+
 def tune_TerraMind(conf) -> Dict[str, Any]:
     return _tune_chained(conf, model_type="tm")
-
-# NEW
-def tune_Prithvi(conf) -> Dict[str, Any]:
-    # set a sensible default backbone if user hasn’t provided one
-    if not hasattr(conf, "prithvi_backbone"):
-        conf.prithvi_backbone = "prithvi_v2_eo_300"
-    return _tune_chained(conf, model_type="prithvi")
-
-# NEW
-def tune_SatMAE(conf) -> Dict[str, Any]:
-    # default; if missing in your install, trials will prune gracefully
-    if not hasattr(conf, "satmae_backbone"):
-        conf.satmae_backbone = "satmae_eo_vit_b"
-    return _tune_chained(conf, model_type="satmae")
 
 
 def apply_best_to_config(conf, best: Dict[str, Any], model_type: str) -> None:
@@ -1131,13 +1163,12 @@ def apply_best_to_config(conf, best: Dict[str, Any], model_type: str) -> None:
     conf.patch_size         = [int(best.get("patch_h", conf.patch_size[0])),
                                int(best.get("patch_w", conf.patch_size[1]))]
 
-    mt = model_type.lower()
-    if mt == "unet":
+    if model_type.lower() == "unet":
         conf.dilation_rate = best.get("dilation_rate", getattr(conf, "dilation_rate", 1))
         conf.layer_count   = best.get("layer_count", getattr(conf, "layer_count", 64))
         conf.l2_weight     = best.get("l2_weight", getattr(conf, "l2_weight", 1e-4))
         conf.dropout       = best.get("dropout", getattr(conf, "dropout", 0.0))
-    elif mt == "swin":
+    elif model_type.lower() == "swin":
         conf.swin_base_C     = best.get("C", getattr(conf, "swin_base_C", 64))
         conf.swin_patch_size = best.get("patch_size", getattr(conf, "swin_patch_size", 16))
         conf.swin_window     = best.get("window_size", getattr(conf, "swin_window", 4))
@@ -1146,8 +1177,7 @@ def apply_best_to_config(conf, best: Dict[str, Any], model_type: str) -> None:
         conf.swin_proj_drop  = best.get("proj_drop", getattr(conf, "swin_proj_drop", 0.0))
         conf.swin_mlp_drop   = best.get("mlp_drop", getattr(conf, "swin_mlp_drop", 0.0))
         conf.swin_drop_path  = best.get("drop_path", getattr(conf, "swin_drop_path", 0.1))
-    elif mt in ("tm", "prithvi", "satmae"):
-        # Common decoder/opt knobs for the foundation models
+    else:  # tm
         conf.tm_decoder                 = best.get("tm_decoder", getattr(conf, "tm_decoder", "UperNetDecoder"))
         conf.tm_decoder_channels        = best.get("tm_decoder_channels", getattr(conf, "tm_decoder_channels", 256))
         conf.tm_head_dropout            = best.get("tm_head_dropout", getattr(conf, "tm_head_dropout", 0.0))
@@ -1155,8 +1185,3 @@ def apply_best_to_config(conf, best: Dict[str, Any], model_type: str) -> None:
         conf.tm_lr_backbone             = best.get("tm_lr_backbone", getattr(conf, "tm_lr_backbone", 1e-5))
         conf.tm_lr_head_mult            = best.get("tm_lr_head_mult", getattr(conf, "tm_lr_head_mult", 10.0))
         conf.tm_weight_decay            = best.get("tm_weight_decay", getattr(conf, "tm_weight_decay", 1e-5))
-        # Family-specific backbone names (kept as simple attributes)
-        if mt == "prithvi" and "fm_backbone" in best:
-            conf.prithvi_backbone = best["fm_backbone"]
-        if mt == "satmae" and "fm_backbone" in best:
-            conf.satmae_backbone = best["fm_backbone"]

@@ -13,7 +13,7 @@ import tuning
 import training
 #import prediction
 import postprocessing
-#import evaluation
+import evaluation
 
 # USE PYTORCH ENV FOR THIS PROJECT
 
@@ -28,4 +28,7 @@ if __name__ == "__main__":
 
     # TRAINING
     # for i in range(10):
-    training.train_UNet(config)
+    #training.train_UNet(config)
+
+    # EVLAUATION
+    evaluation.evaluate_unet(config)

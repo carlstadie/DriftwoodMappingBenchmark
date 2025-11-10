@@ -53,6 +53,9 @@ class Configuration:
         self.saved_models_dir = "/isipd/projects/p_planetdw/data/methods_test/models"
         self.logs_dir = "/isipd/projects/p_planetdw/data/methods_test/logs"
 
+        # Paths where the results are stored
+        self.results_dir = "/isipd/projects/p_planetdw/data/methods_test/results"
+
         # ------- IMAGE CONFIG ---------
         # Image file type used to find images for training and prediction.
         # Supported: .tif and .jp2
@@ -95,8 +98,8 @@ class Configuration:
         # ------ OPTIM / SCHED / EPOCHS ------
         self.loss_fn = "tversky"        # selection of loss function
         self.optimizer_fn = "adam"      # selection of optimizer function
-        self.train_batch_size = 32
-        self.num_epochs = 100
+        self.train_batch_size = 8
+        self.num_epochs = 10
         self.num_training_steps = 100   # steps per epoch (train)
         self.num_validation_images = 50 # steps per epoch (val)
 
@@ -164,7 +167,7 @@ class Configuration:
         # ------ ADVANCED SETTINGS ------
         # GPU selection. Used for both training and prediction.
         # = CUDA id, 0 is first.  -1 to disable GPU and use CPU.
-        self.selected_GPU = 7
+        self.selected_GPU = 6
 
         # Preprocessing
         # used to find training images
