@@ -1,26 +1,25 @@
-# training.py (PyTorch) — BF16 + channels-last, EMA, progress bars, better visuals (raw | mask), robust logits→probs
-import os
-import json
-import time
+# training.py (PyTorch) - BF16 + channels-last, EMA, progress bars, better visuals (raw | mask), robust logits->probs
 import glob
+import json
+import os
 import shutil
+import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
-from typing import Iterable, Iterator, Tuple, Optional, Dict, Any
+from typing import Any, Dict, Iterable, Iterator, Optional, Tuple
 
-import h5py  # kept for old .h5 checkpoints compatibility
-import rasterio
+import h5py  # kept for old .h5 checkpoints compatibility in case I have a TF model. I dont think there are any left
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
-
+import rasterio
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import torch.nn.functional as F
-from torch.utils.data import IterableDataset, DataLoader
-from torch.utils.tensorboard import SummaryWriter
+import torch.optim as optim
 import torchvision.utils as vutils
-from contextlib import contextmanager
+from torch.utils.data import DataLoader, IterableDataset
+from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
 
 # ===== Fast execution defaults / mixed precision =====
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -34,49 +33,45 @@ _AMP_DTYPE = (
     else torch.float16
 )
 
-# ===== Your project imports =====
-from core.UNet import UNet
+# ===== project imports =====
 from core.Swin_UNetPP import SwinUNet
 from core.TerraMind import TerraMind
-from core.frame_info import FrameInfo
-from core.optimizers import get_optimizer
-from core.split_frames import split_dataset, summarize_positive_rates
-from core.dataset_generator import DataGenerator as Generator
-
-# Metrics / losses (PyTorch)
-from core.losses import (
-    accuracy,
-    dice_coef,
-    dice_loss,
-    specificity,
-    sensitivity,
-    f_beta,
-    f1_score,
-    IoU,
-    nominal_surface_distance,
-    Hausdorff_distance,
-    boundary_intersection_over_union,
-    get_loss,
-)
-
-# -------- shared helpers (moved to core.common) --------
+from core.UNet import UNet
+from core.common.console import _C, _col, _fmt_seconds, _format_logs_for_print
+from core.common.data import create_train_val_datasets, get_all_frames
 from core.common.model_utils import (
-    set_global_seed,
     ModelEMA,
-    _forward_with_autopad,
     _as_probs_from_terratorch,
     _as_probs_from_terratorch_logits_first,
-    _is_terramind_model,
     _ensure_nchw,
+    _forward_with_autopad,
+    _is_terramind_model,
+    set_global_seed,
 )
-from core.common.data import get_all_frames, create_train_val_datasets
 from core.common.vis import _log_triptych_and_optional_heatmap
-from core.common.console import _C, _col, _fmt_seconds, _format_logs_for_print
+from core.dataset_generator import DataGenerator as Generator
+from core.frame_info import FrameInfo
+from core.losses import (
+    Hausdorff_distance,
+    IoU,
+    accuracy,
+    boundary_intersection_over_union,
+    dice_coef,
+    dice_loss,
+    f1_score,
+    f_beta,
+    get_loss,
+    nominal_surface_distance,
+    sensitivity,
+    specificity,
+)
+from core.optimizers import get_optimizer
+from core.split_frames import split_dataset, summarize_positive_rates
 
 # -----------------------------
-# Global config holder (populated by train_* entrypoints)
+# Global config holder
 # -----------------------------
-config = None  # set in train_UNet / train_SwinUNetPP
+config = None  # set in train_UNet / train_SwinUNetPP etc
 
 
 # -----------------------------
@@ -103,41 +98,52 @@ def _build_model_swin() -> nn.Module:
     )
     return model
 
+
 def _build_model_terramind() -> nn.Module:
     # ---- derive channels ----
-    in_ch = len(getattr(config, "channels_used", getattr(config, "channel_list", [])))
+    in_ch = len(
+        getattr(config, "channels_used", getattr(config, "channel_list", []))
+    )
     num_classes = int(getattr(config, "num_classes", 1))
     modality = getattr(config, "modality", "S2")
 
     # ---- map your tm_* config to TerraMind kwargs ----
-    tm_backbone = getattr(config, "tm_backbone", None)                # e.g. "terramind_v1_large"
-    tm_decoder  = getattr(config, "tm_decoder", "UperNetDecoder")     # "UperNetDecoder" | "UNetDecoder" | ...
-    tm_dec_ch   = getattr(config, "tm_decoder_channels", 256)         # int or list[int]
-    tm_indices  = getattr(config, "tm_select_indices", None)          # list[int] or None
-    tm_bands    = getattr(config, "tm_bands", None)                   # list[str] or None
-    tm_ckpt     = getattr(config, "tm_backbone_ckpt_path", None)
-    tm_merge    = getattr(config, "terramind_merge_method", "mean")   # keep default if not provided
+    tm_backbone = getattr(config, "tm_backbone", None)  # e.g. "terramind_v1_large"
+    tm_decoder = getattr(config, "tm_decoder", "UperNetDecoder")  # "UperNetDecoder" | "UNetDecoder" | ...
+    tm_dec_ch = getattr(config, "tm_decoder_channels", 256)  # int or list[int]
+    tm_indices = getattr(config, "tm_select_indices", None)  # list[int] or None
+    tm_bands = getattr(config, "tm_bands", None)  # list[str] or None
+    tm_ckpt = getattr(config, "tm_backbone_ckpt_path", None)
+    tm_merge = getattr(config, "terramind_merge_method", "mean")
     tm_size_fallback = getattr(config, "terramind_size", "base")
 
     # Accept either a direct backbone name or infer size from the suffix
-    def _parse_size_from_backbone(s: str | None, default_size: str = "base") -> tuple[str | None, str]:
+    def _parse_size_from_backbone(
+        s: str | None, default_size: str = "base"
+    ) -> tuple[str | None, str]:
         if not s:
             return None, default_size
         lower = s.lower()
         if lower.startswith("terramind"):
-            size = "large" if "large" in lower else ("base" if "base" in lower else ("small" if "small" in lower else ("tiny" if "tiny" in lower else default_size)))
+            size = "large" if "large" in lower else (
+                "base" if "base" in lower else (
+                    "small" if "small" in lower else (
+                        "tiny" if "tiny" in lower else default_size
+                    )
+                )
+            )
             return s, size
-        # if it's not a full terramind id, treat it like a size token
+        # if it is not a full terramind id, treat it like a size token
         if lower in {"tiny", "small", "base", "large"}:
             return None, lower
         return None, default_size
 
-    backbone_override, tm_size = _parse_size_from_backbone(tm_backbone, tm_size_fallback)
+    backbone_override, tm_size = _parse_size_from_backbone(
+        tm_backbone, tm_size_fallback
+    )
 
-    # Optional extra decoder kwargs (add more if you expose them in config)
+    # Optional extra decoder kwargs
     decoder_kwargs = {}
-    # Example: if you ever add config.tm_decoder_dropout, pass it here:
-    # if hasattr(config, "tm_decoder_dropout"): decoder_kwargs["dropout"] = float(config.tm_decoder_dropout)
 
     model = TerraMind(
         in_channels=in_ch,
@@ -152,11 +158,11 @@ def _build_model_terramind() -> nn.Module:
         decoder=tm_decoder,
         decoder_channels=tm_dec_ch,
         decoder_kwargs=decoder_kwargs,
-        backbone=backbone_override,   # direct backbone string, if provided
+        backbone=backbone_override,  # direct backbone string, if provided
         rescale=True,
     )
 
-    # mark for downstream detection even if compiled later
+    # mark for downstream detection even if compiled later, technically does only matter for printing
     setattr(model, "_is_terramind", True)
 
     # Optional: full-backbone freeze at init
@@ -167,8 +173,9 @@ def _build_model_terramind() -> nn.Module:
 
     return model
 
+
 class BestModelSaver:
-    """Saves best model weights based on a monitored value (min mode)."""
+    """Saves best model weights based on a monitored value (her minimal loss)."""
 
     def __init__(self, model_path: str):
         self.model_path = model_path
@@ -179,25 +186,31 @@ class BestModelSaver:
         if current_val < self.best_val:
             self.best_val = current_val
             os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
-            # Save (typically EMA) weights
+            # Save (can be  EMA) weights
             torch.save(model.state_dict(), f"{self.model_path}.weights.pt")
-            print(_col(
-                f"New best! val_loss improved {prev:.6f} --> {current_val:.6f}. "
-                f"Saved: {self.model_path}.weights.pt",
-                _C.GREEN
-            ))
+            print(
+                _col(
+                    f"New best! val_loss improved {prev:.6f} -> {current_val:.6f}. "
+                    f"Saved: {self.model_path}.weights.pt",
+                    _C.GREEN,
+                )
+            )
             return True  # indicate improvement
         return False
 
+
 def _create_logging(model_path: str, log_suffix: str = "") -> Tuple[BestModelSaver, str]:
     """Define logging paths and return a best-saver + log_dir."""
-    log_dir = os.path.join(config.logs_dir, os.path.basename(model_path) + log_suffix)
+    log_dir = os.path.join(
+        config.logs_dir, os.path.basename(model_path) + log_suffix
+    )
     os.makedirs(log_dir, exist_ok=True)
     best_saver = BestModelSaver(model_path)
     return best_saver, log_dir
 
+
 class MetricsCSVLogger:
-    """Append all logs each epoch to a CSV in the run's log dir."""
+    """Append all logs each epoch to a CSV in the run log dir."""
 
     def __init__(self, csv_path: str):
         self.csv_path = csv_path
@@ -229,7 +242,9 @@ class HeavyMetricsEvaluator:
         self.steps = steps
         self.threshold = threshold
         self.tb_writer = SummaryWriter(os.path.join(log_dir, "heavy_metrics"))
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device or torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
 
         self.metric_fns = {
             "specificity": specificity,
@@ -252,9 +267,7 @@ class HeavyMetricsEvaluator:
         except Exception:
             return float("nan")
 
-    def run(
-        self, model: nn.Module, epoch: int, logs: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def run(self, model: nn.Module, epoch: int, logs: Dict[str, Any]) -> Dict[str, Any]:
         model.eval()
         accum: Dict[str, list] = {k: [] for k in self.metric_fns.keys()}
 
@@ -266,21 +279,27 @@ class HeavyMetricsEvaluator:
                 except StopIteration:
                     break
 
-                x = x.to(self.device, non_blocking=True).contiguous(memory_format=torch.channels_last)
+                x = x.to(
+                    self.device, non_blocking=True
+                ).contiguous(memory_format=torch.channels_last)
                 y_true = y_true.to(self.device, non_blocking=True)
 
                 # TerraMind-aware probabilities
                 y_pred_raw = _forward_with_autopad(model, x)
                 num_classes = int(getattr(config, "num_classes", 1))
                 if _is_terramind_model(model):
-                    y_prob_full = _as_probs_from_terratorch_logits_first(y_pred_raw, num_classes=num_classes)
+                    y_prob_full = _as_probs_from_terratorch_logits_first(
+                        y_pred_raw, num_classes=num_classes
+                    )
                 else:
-                    y_prob_full = _as_probs_from_terratorch(y_pred_raw, num_classes=num_classes)
+                    y_prob_full = _as_probs_from_terratorch(
+                        y_pred_raw, num_classes=num_classes
+                    )
                 y_prob_full = _ensure_nchw(y_prob_full).float()
                 if y_prob_full.shape[1] > 1:
                     cls_idx = int(getattr(config, "metrics_class", 1))
-                    cls_idx = max(0, min(cls_idx, y_prob_full.shape[1]-1))
-                    y_prob = y_prob_full[:, cls_idx:cls_idx+1]
+                    cls_idx = max(0, min(cls_idx, y_prob_full.shape[1] - 1))
+                    y_prob = y_prob_full[:, cls_idx : cls_idx + 1]
                 else:
                     y_prob = y_prob_full
 
@@ -303,7 +322,7 @@ class HeavyMetricsEvaluator:
 
 
 def _print_run_banner(model_key: str, log_dir: str):
-    """Pretty console banner like tuning, including the LOSS."""
+    """Pretty console banner like tuning, including the loss function. Waste of space, but I forget my confg sometimes."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
     ema_on = bool(getattr(config, "use_ema", False))
     aug = float(getattr(config, "augmenter_strength", 1.0))
@@ -316,27 +335,53 @@ def _print_run_banner(model_key: str, log_dir: str):
     optimizer_name = getattr(config, "optimizer_fn", "adam")
 
     def _dtype_str(dt):
-        if dt is torch.bfloat16: return "bf16"
-        if dt is torch.float16:  return "fp16"
-        if dt is torch.float32:  return "fp32"
+        if dt is torch.bfloat16:
+            return "bf16"
+        if dt is torch.float16:
+            return "fp16"
+        if dt is torch.float32:
+            return "fp32"
         return str(dt)
 
     print("\n" + "=" * 90)
-    print(f"[{model_key.upper()}][TRAIN]  run={getattr(config, 'run_name', 'run')}  model_name={config.model_name}")
-    print(f"[{model_key.upper()}][TRAIN]  device={device}, amp_dtype={_dtype_str(_AMP_DTYPE)}, channels_last=True")
-    print(f"[{model_key.upper()}][TRAIN]  ema={ema_on} (decay={getattr(config, 'ema_decay', 0.999)})")
-    print(f"[{model_key.upper()}][TRAIN]  epochs={config.num_epochs}, steps/epoch={config.num_training_steps}, "
-          f"val_steps={config.num_validation_images}, batch={config.train_batch_size}, workers={workers}")
-    print(f"[{model_key.upper()}][TRAIN]  patch={config.patch_size}, stride={stride}, "
-          f"aug={aug}, min_pos_frac={minpos}, pos_ratio={posr}")
+    print(
+        f"[{model_key.upper()}][TRAIN]  run={getattr(config, 'run_name', 'run')}  "
+        f"model_name={config.model_name}"
+    )
+    print(
+        f"[{model_key.upper()}][TRAIN]  device={device}, "
+        f"amp_dtype={_dtype_str(_AMP_DTYPE)}, channels_last=True"
+    )
+    print(
+        f"[{model_key.upper()}][TRAIN]  ema={ema_on} "
+        f"(decay={getattr(config, 'ema_decay', 0.999)})"
+    )
+    print(
+        f"[{model_key.upper()}][TRAIN]  epochs={config.num_epochs}, "
+        f"steps/epoch={config.num_training_steps}, "
+        f"val_steps={config.num_validation_images}, "
+        f"batch={config.train_batch_size}, workers={workers}"
+    )
+    print(
+        f"[{model_key.upper()}][TRAIN]  patch={config.patch_size}, stride={stride}, "
+        f"aug={aug}, min_pos_frac={minpos}, pos_ratio={posr}"
+    )
     if hasattr(config, "swin_patch_size"):
-        print(f"[{model_key.upper()}][TRAIN]  swin_patch={getattr(config,'swin_patch_size',16)}, "
-              f"window={getattr(config,'swin_window',4)}")
+        print(
+            f"[{model_key.upper()}][TRAIN]  swin_patch="
+            f"{getattr(config,'swin_patch_size',16)}, "
+            f"window={getattr(config,'swin_window',4)}"
+        )
     # Explicit loss + optimizer print
     if str(loss_name).lower().startswith("tversky"):
-        print(f"[{model_key.upper()}][TRAIN]  loss={loss_name} (alpha={ab[0]:.2f}, beta={ab[1]:.2f}), optimizer={optimizer_name}")
+        print(
+            f"[{model_key.upper()}][TRAIN]  loss={loss_name} "
+            f"(alpha={ab[0]:.2f}, beta={ab[1]:.2f}), optimizer={optimizer_name}"
+        )
     else:
-        print(f"[{model_key.upper()}][TRAIN]  loss={loss_name}, optimizer={optimizer_name}")
+        print(
+            f"[{model_key.upper()}][TRAIN]  loss={loss_name}, optimizer={optimizer_name}"
+        )
     print(f"[{model_key.upper()}][TRAIN]  logs_dir={log_dir}")
     print("=" * 90 + "\n")
 
@@ -359,11 +404,6 @@ def _fit_model(
     # TensorBoard writers
     tb = SummaryWriter(log_dir)
 
-    # --- ensure Images tab appears immediately ---
-    _dummy = torch.zeros(1, 3, 32, 32)  # [N,3,H,W]
-    tb.add_image("viz/boot/dummy", vutils.make_grid(_dummy).detach().cpu(), 0)
-    tb.flush()
-
     csv_path = os.path.join(
         config.logs_dir, f"{os.path.basename(model_path)}_metrics.csv"
     )
@@ -382,21 +422,20 @@ def _fit_model(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device).to(memory_format=torch.channels_last)
 
-    # === Overfit-one-batch mode: capture first batch and repeat forever ===
+    # ===>>> Overfit-one-batch mode: For debugging only!!!
     if getattr(config, "overfit_one_batch", False):
-
-        print('==== Overfitting on one Batch ====')
-        # get one CPU batch (as provided by your iterable)
+        print("==== Overfitting on one Batch ====")
+        # get one CP batch 
         first_it = iter(train_iterable)
         first_x, first_y = next(first_it)
 
-        # freeze data randomness: use exact same tensors every step
+        # use exact same tensors every step
         def _infinite_one_batch():
             while True:
-                # clone to avoid any accidental in-place ops piling up
+                # clone to avoid any accidental  operationss piling up
                 yield first_x.clone(), first_y.clone()
 
-        # validation also on the same batch (repeat N times)
+        # validation also on the same batch 
         def _repeat_val(n):
             for _ in range(int(n)):
                 yield first_x.clone(), first_y.clone()
@@ -404,7 +443,7 @@ def _fit_model(
         train_iterable = _infinite_one_batch()
         val_iterable = _repeat_val(getattr(config, "num_validation_images", 10))
 
-    # EMA (optional)
+    # EMA makes better generalisation (at least literature says so)
     use_ema = bool(getattr(config, "use_ema", False))
     ema_decay = float(getattr(config, "ema_decay", 0.999))
     ema = ModelEMA(model, decay=ema_decay) if use_ema else None
@@ -454,7 +493,9 @@ def _fit_model(
         # Iterate fixed number of steps per epoch (with progress bar)
         train_range = range(steps_per_epoch)
         if show_progress:
-            train_range = tqdm(train_range, desc=f"Epoch {epoch+1}/{total_epochs} [train]", leave=False)
+            train_range = tqdm(
+                train_range, desc=f"Epoch {epoch+1}/{total_epochs} [train]", leave=False
+            )
 
         train_it = iter(train_iterable)
         for step in train_range:
@@ -465,28 +506,38 @@ def _fit_model(
                 x, y = next(train_it)
 
             # Move + channels-last
-            x = x.to(device, non_blocking=True).contiguous(memory_format=torch.channels_last)
+            x = x.to(
+                device, non_blocking=True
+            ).contiguous(memory_format=torch.channels_last)
             y = y.to(device, non_blocking=True)
 
-            with torch.cuda.amp.autocast(enabled=torch.cuda.is_available(), dtype=_AMP_DTYPE):
+            with torch.cuda.amp.autocast(
+                enabled=torch.cuda.is_available(), dtype=_AMP_DTYPE
+            ):
                 y_pred_raw = _forward_with_autopad(model, x)
-                # TerraMind-only: decode logits→probs, else use default extractor
+                # TerraMind-only: decode logits->probs, else use default extractor
                 num_classes = int(getattr(config, "num_classes", 1))
                 if _is_terramind_model(model):
-                    y_prob_full = _as_probs_from_terratorch_logits_first(y_pred_raw, num_classes=num_classes)
+                    y_prob_full = _as_probs_from_terratorch_logits_first(
+                        y_pred_raw, num_classes=num_classes
+                    )
                 else:
-                    y_prob_full = _as_probs_from_terratorch(y_pred_raw, num_classes=num_classes)
+                    y_prob_full = _as_probs_from_terratorch(
+                        y_pred_raw, num_classes=num_classes
+                    )
                 y_prob_full = _ensure_nchw(y_prob_full).float()
                 # For binary-style losses/metrics, pick a single class if needed
                 if y_prob_full.shape[1] > 1:
                     cls_idx = int(getattr(config, "metrics_class", 1))
-                    cls_idx = max(0, min(cls_idx, y_prob_full.shape[1]-1))
-                    y_prob = y_prob_full[:, cls_idx:cls_idx+1]
+                    cls_idx = max(0, min(cls_idx, y_prob_full.shape[1] - 1))
+                    y_prob = y_prob_full[:, cls_idx : cls_idx + 1]
                 else:
                     y_prob = y_prob_full
-                # warn if gradients were severed (e.g., from argmax)
+                # warn if gradients were severed (e.g. from argmax) 
                 if _is_terramind_model(model) and not y_prob.requires_grad:
-                    print("WARNING: TerraMind y_prob has no grad — check decode path.")
+                    print(
+                        "WARNING: TerraMind y_prob has no grad - check decode path."
+                    )
 
                 loss = criterion(y, y_prob)
 
@@ -496,7 +547,9 @@ def _fit_model(
             if (step + 1) % grad_accum == 0:
                 if clip_norm > 0:
                     scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), max_norm=clip_norm
+                    )
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad(set_to_none=True)
@@ -511,7 +564,9 @@ def _fit_model(
                 except Exception:
                     val = fn(y, (y_prob >= 0.5).float())
                 metric_accums[fn.__name__] += float(
-                    val.detach().mean().cpu().item() if isinstance(val, torch.Tensor) else float(val)
+                    val.detach().mean().cpu().item()
+                    if isinstance(val, torch.Tensor)
+                    else float(val)
                 )
 
             global_step += 1
@@ -531,7 +586,7 @@ def _fit_model(
                         cls_idx=getattr(config, "viz_class", 1),  # pick class 1 by default
                         add_heatmap=True,
                     )
-                except Exception as _:
+                except Exception:
                     pass
 
             # Live postfix for progress
@@ -540,7 +595,7 @@ def _fit_model(
                 postfix = {
                     "loss": f"{avg_tr:.4f}",
                     "dice": f"{(metric_accums['dice_coef']/(step+1)):.4f}",
-                    "acc":  f"{(metric_accums['accuracy']/(step+1)):.4f}",
+                    "acc": f"{(metric_accums['accuracy']/(step+1)):.4f}",
                 }
                 try:
                     train_range.set_postfix(postfix)
@@ -571,11 +626,15 @@ def _fit_model(
             # Validation loop with progress bar
             val_range = range(max(1, val_steps)) if val_steps > 0 else range(0)
             if show_progress and val_steps > 0:
-                val_range = tqdm(val_range, desc=f"Epoch {epoch+1}/{total_epochs} [val]", leave=False)
+                val_range = tqdm(
+                    val_range, desc=f"Epoch {epoch+1}/{total_epochs} [val]", leave=False
+                )
 
             with torch.no_grad():
                 val_it = iter(val_iterable)
-                x_vis = None; y_vis = None; y_hat_vis = None  # for epoch-end viz
+                x_vis = None
+                y_vis = None
+                y_hat_vis = None  # for epoch-end viz
                 val_count = 0
                 for _ in val_range:
                     try:
@@ -583,20 +642,26 @@ def _fit_model(
                     except StopIteration:
                         break
                     val_count += 1
-                    x = x.to(device, non_blocking=True).contiguous(memory_format=torch.channels_last)
+                    x = x.to(
+                        device, non_blocking=True
+                    ).contiguous(memory_format=torch.channels_last)
                     y = y.to(device, non_blocking=True)
                     y_pred_raw = _forward_with_autopad(model, x)
                     # TerraMind-only decode in validation, else default
                     num_classes = int(getattr(config, "num_classes", 1))
                     if _is_terramind_model(model):
-                        y_prob_full = _as_probs_from_terratorch_logits_first(y_pred_raw, num_classes=num_classes)
+                        y_prob_full = _as_probs_from_terratorch_logits_first(
+                            y_pred_raw, num_classes=num_classes
+                        )
                     else:
-                        y_prob_full = _as_probs_from_terratorch(y_pred_raw, num_classes=num_classes)
+                        y_prob_full = _as_probs_from_terratorch(
+                            y_pred_raw, num_classes=num_classes
+                        )
                     y_prob_full = _ensure_nchw(y_prob_full).float()
                     if y_prob_full.shape[1] > 1:
                         cls_idx = int(getattr(config, "metrics_class", 1))
-                        cls_idx = max(0, min(cls_idx, y_prob_full.shape[1]-1))
-                        y_prob = y_prob_full[:, cls_idx:cls_idx+1]
+                        cls_idx = max(0, min(cls_idx, y_prob_full.shape[1] - 1))
+                        y_prob = y_prob_full[:, cls_idx : cls_idx + 1]
                     else:
                         y_prob = y_prob_full
 
@@ -608,11 +673,17 @@ def _fit_model(
                         except Exception:
                             v = fn(y, (y_prob >= 0.5).float())
                         val_metric_accums[fn.__name__] += float(
-                            v.detach().mean().cpu().item() if isinstance(v, torch.Tensor) else float(v)
+                            v.detach().mean().cpu().item()
+                            if isinstance(v, torch.Tensor)
+                            else float(v)
                         )
                     # keep first batch for visualization
                     if x_vis is None:
-                        x_vis, y_vis, y_hat_vis = x[:8].clone(), y[:8].clone(), y_prob[:8].clone()
+                        x_vis, y_vis, y_hat_vis = (
+                            x[:8].clone(),
+                            y[:8].clone(),
+                            y_prob[:8].clone(),
+                        )
 
                 denom = max(1, val_count if val_count > 0 else val_steps)
                 avg_val_loss = val_loss_accum / denom
@@ -630,7 +701,7 @@ def _fit_model(
                     best_val_loss = avg_val_loss
                     logs["best_val_loss"] = best_val_loss
 
-                # Visualization: epoch-end [ RGB | PRED | GT ]
+                # Visualisation: epoch-end [ RGB | PRED | GT ]
                 if x_vis is not None:
                     try:
                         _log_triptych_and_optional_heatmap(
@@ -648,16 +719,21 @@ def _fit_model(
                     except Exception:
                         pass
 
-        # If we evaluated/saved EMA weights and there was an improvement, also save RAW weights snapshot
+        # If we evaluated/saved EMA weights and there was an improvement,
+        # also save RAW weights snapshot
         if best_improved and eval_with_ema and ema is not None:
             try:
                 torch.save(model.state_dict(), f"{model_path}.raw.weights.pt")
-                print(_col(f"(Also saved raw weights snapshot) {model_path}.raw.weights.pt", _C.GREEN))
-            except Exception as _:
+                print(
+                    _col(
+                        f"==> Also saved raw weights {model_path}.raw.weights.pt",
+                        _C.GREEN,
+                    )
+                )
+            except Exception:
                 pass
 
-        # TensorBoard scalars — group train/val into one chart per metric using add_scalars
-        # Loss (train + val)
+        # TensorBoard scalars - group train/val into one chart per metric
         if "loss" in logs or "val_loss" in logs:
             pair = {}
             if "loss" in logs:
@@ -666,7 +742,6 @@ def _fit_model(
                 pair["val"] = logs["val_loss"]
             tb.add_scalars("loss", pair, epoch)
 
-        # Light metrics (e.g., dice_coef, accuracy) — grouped train/val per metric
         for fn in light_metric_fns:
             name = fn.__name__
             train_key = name
@@ -679,11 +754,16 @@ def _fit_model(
                     pair["val"] = logs[val_key]
                 tb.add_scalars(name, pair, epoch)
 
-        # Heavy metrics are primarily validation-only; log them grouped under the base metric name as "val"
         heavy_names = [
-            "val_specificity", "val_sensitivity", "val_f_beta", "val_f1_score", "val_IoU",
-            "val_nominal_surface_distance", "val_Hausdorff_distance", "val_boundary_intersection_over_union",
-            "val_dice_loss"
+            "val_specificity",
+            "val_sensitivity",
+            "val_f_beta",
+            "val_f1_score",
+            "val_IoU",
+            "val_nominal_surface_distance",
+            "val_Hausdorff_distance",
+            "val_boundary_intersection_over_union",
+            "val_dice_loss",
         ]
         for name in heavy_names:
             if name in logs:
@@ -691,12 +771,14 @@ def _fit_model(
                 tb.add_scalars(base, {"val": logs[name]}, epoch)
         tb.flush()
 
-        # Per-epoch metadata (mirrors your JSON)
+        # Per-epoch metadata JSON
         meta_data = {
             "name": config.model_name,
             "model_path": model_path,
             "patch_size": tuple(config.patch_size),
-            "channels_used": getattr(config, "channels_used", getattr(config, "channel_list", [])),
+            "channels_used": getattr(
+                config, "channels_used", getattr(config, "channel_list", [])
+            ),
             "resample_factor": getattr(config, "resample_factor", None),
             "frames_dir": config.preprocessed_dir,
             "train_ratio": float(f"{1 - config.val_ratio - config.test_ratio:.2f}"),
@@ -719,10 +801,15 @@ def _fit_model(
             "last_f_beta": logs.get("val_f_beta"),
             "last_f1_score": logs.get("val_f1_score"),
             "last_IoU": logs.get("val_IoU"),
-            "last_nominal_surface_distance": logs.get("val_nominal_surface_distance"),
+            "last_nominal_surface_distance": logs.get(
+                "val_nominal_surface_distance"
+            ),
             "last_Hausdorff_distance": logs.get("val_Hausdorff_distance"),
-            "last_boundary_intersection_over_union": logs.get("val_boundary_intersection_over_union"),
-            "start_time": getattr(_fit_model, "_start_time_str", None) or datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
+            "last_boundary_intersection_over_union": logs.get(
+                "val_boundary_intersection_over_union"
+            ),
+            "start_time": getattr(_fit_model, "_start_time_str", None)
+            or datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
             "elapsed_time": None,
         }
 
@@ -730,8 +817,10 @@ def _fit_model(
         if not hasattr(_fit_model, "_start_time_dt"):
             _fit_model._start_time_dt = datetime.now()
             _fit_model._start_time_str = meta_data["start_time"]
-        elapsed = (datetime.now() - _fit_model._start_time_dt)
-        meta_data["elapsed_time"] = (datetime.utcfromtimestamp(0) + elapsed).strftime("%H:%M:%S")
+        elapsed = datetime.now() - _fit_model._start_time_dt
+        meta_data["elapsed_time"] = (
+            datetime.utcfromtimestamp(0) + elapsed
+        ).strftime("%H:%M:%S")
 
         meta_path = f"{model_path}.metadata.json"
         with open(meta_path, "w") as f:
@@ -744,8 +833,12 @@ def _fit_model(
         if model_save_interval and (epoch + 1) % int(model_save_interval) == 0:
             torch.save(model.state_dict(), f"{model_path}.epoch{epoch+1}.weights.pt")
 
-        # ---- Verbose console print (all metrics) ----
-        if verbose and (((epoch + 1) % max(1, epoch_log_every) == 0) or (epoch == 0) or (epoch + 1 == total_epochs)):
+        # ---- Verbose console print of all metrics at end of validation ----
+        if verbose and (
+            ((epoch + 1) % max(1, epoch_log_every) == 0)
+            or (epoch == 0)
+            or (epoch + 1 == total_epochs)
+        ):
             lr_val = None
             try:
                 lr_val = optimizer.param_groups[0].get("lr", None)
@@ -758,18 +851,37 @@ def _fit_model(
             print(head)
             print("  " + _format_logs_for_print(logs))
             if print_heavy:
-                heavy_keys = [k for k in logs.keys() if k.startswith("val_") and k not in ("val_loss", "val_accuracy", "val_dice_coef")]
+                heavy_keys = [
+                    k
+                    for k in logs.keys()
+                    if k.startswith("val_")
+                    and k
+                    not in ("val_loss", "val_accuracy", "val_dice_coef")
+                ]
                 if len(heavy_keys) > 0:
-                    print("  heavy: " + " | ".join([f"{k}={logs[k]:.4f}" for k in sorted(heavy_keys)]))
+                    print(
+                        "  heavy: "
+                        + " | ".join(
+                            [f"{k}={logs[k]:.4f}" for k in sorted(heavy_keys)]
+                        )
+                    )
 
-    # End of training: export full model (state dict) once
+    # End of training: export full model once
     final_export_path = f"{model_path}.pt"
     try:
         os.makedirs(os.path.dirname(model_path), exist_ok=True)
-        torch.save({"model_state": model.state_dict(), "config": getattr(config, "__dict__", {})}, final_export_path)
+        torch.save(
+            {"model_state": model.state_dict(), "config": getattr(config, "__dict__", {})},
+            final_export_path,
+        )
         print(_col(f"Saved final model to: {final_export_path}", _C.GREEN))
     except Exception as exc:
-        print(_col(f"Warning: final model save failed ({exc}). Attempting to save weights-only.", _C.YELLOW))
+        print(
+            _col(
+                f"Warning: final model save failed ({exc}). Attempting to save weights-only.",
+                _C.YELLOW,
+            )
+        )
         torch.save(model.state_dict(), f"{model_path}.final.weights.pt")
 
     print(_col("Training completed.\n", _C.GREEN))
@@ -797,8 +909,7 @@ def _prepare_model_and_logging(model_path: str) -> Tuple[Optional[str], int]:
 
         # Copy logs forward so TB shows a continuous curve
         old_log_dir = os.path.join(
-            config.logs_dir,
-            os.path.basename(config.continue_model_path).split(".")[0],
+            config.logs_dir, os.path.basename(config.continue_model_path).split(".")[0]
         )
         new_log_dir = os.path.join(config.logs_dir, os.path.basename(model_path))
         if os.path.exists(old_log_dir) and not os.path.exists(new_log_dir):
@@ -811,7 +922,7 @@ def _prepare_model_and_logging(model_path: str) -> Tuple[Optional[str], int]:
 
 
 # -----------------------------
-# Public training functions (entrypoints preserved)
+# Public training functions 
 # -----------------------------
 def train_UNet(conf):
     """Create and train a new UNet model with fast execution and extensive logging."""
@@ -845,8 +956,12 @@ def train_UNet(conf):
             pass
 
     # Optimizer / loss
-    optimizer = get_optimizer(config.optimizer_fn, config.num_epochs, config.num_training_steps, model)
-    criterion = get_loss(config.loss_fn, getattr(config, "tversky_alphabeta", (0.5, 0.5)))
+    optimizer = get_optimizer(
+        config.optimizer_fn, config.num_epochs, config.num_training_steps, model
+    )
+    criterion = get_loss(
+        config.loss_fn, getattr(config, "tversky_alphabeta", (0.5, 0.5))
+    )
 
     # Resume if path given
     if state_path and os.path.exists(state_path):
@@ -858,7 +973,11 @@ def train_UNet(conf):
                 model.load_state_dict(state)
             print(f"Loaded weights from: {state_path}")
         except Exception as exc:
-            print(_col(f"Could not load PyTorch weights from {state_path}: {exc}", _C.RED))
+            print(
+                _col(
+                    f"Could not load PyTorch weights from {state_path}: {exc}", _C.RED
+                )
+            )
 
     # Fit
     _fit_model(
@@ -872,7 +991,13 @@ def train_UNet(conf):
         criterion=criterion,
     )
 
-    print(_col(f"Training completed in {str(timedelta(seconds=time.time() - start)).split('.')[0]}.\n", _C.GREEN))
+    print(
+        _col(
+            f"Training completed in "
+            f"{str(timedelta(seconds=time.time() - start)).split('.')[0]}.\n",
+            _C.GREEN,
+        )
+    )
 
 
 def train_SwinUNetPP(conf):
@@ -908,7 +1033,9 @@ def train_SwinUNetPP(conf):
 
     # Optimizer / loss
     optimizer = get_optimizer(config.optimizer_fn, None, None, model)
-    criterion = get_loss(config.loss_fn, getattr(config, "tversky_alphabeta", (0.5, 0.5)))
+    criterion = get_loss(
+        config.loss_fn, getattr(config, "tversky_alphabeta", (0.5, 0.5))
+    )
 
     # Resume if path given
     if state_path and os.path.exists(state_path):
@@ -920,7 +1047,11 @@ def train_SwinUNetPP(conf):
                 model.load_state_dict(state)
             print(f"Loaded weights from: {state_path}")
         except Exception as exc:
-            print(_col(f"Could not load PyTorch weights from {state_path}: {exc}", _C.RED))
+            print(
+                _col(
+                    f"Could not load PyTorch weights from {state_path}: {exc}", _C.RED
+                )
+            )
 
     # Fit
     _fit_model(
@@ -934,7 +1065,14 @@ def train_SwinUNetPP(conf):
         criterion=criterion,
     )
 
-    print(_col(f"Training completed in {str(timedelta(seconds=time.time() - start)).split('.')[0]}.\n", _C.GREEN))
+    print(
+        _col(
+            f"Training completed in "
+            f"{str(timedelta(seconds=time.time() - start)).split('.')[0]}.\n",
+            _C.GREEN,
+        )
+    )
+
 
 def train_TerraMind(conf):
     """Create and train a TerraMind-based segmentation model with your fast loop."""
@@ -962,7 +1100,9 @@ def train_TerraMind(conf):
             pass
 
     optimizer = get_optimizer(config.optimizer_fn, None, None, model)
-    criterion = get_loss(config.loss_fn, getattr(config, "tversky_alphabeta", (0.5, 0.5)))
+    criterion = get_loss(
+        config.loss_fn, getattr(config, "tversky_alphabeta", (0.5, 0.5))
+    )
 
     if state_path and os.path.exists(state_path):
         try:
@@ -973,7 +1113,11 @@ def train_TerraMind(conf):
                 model.load_state_dict(state)
             print(f"Loaded weights from: {state_path}")
         except Exception as exc:
-            print(_col(f"Could not load PyTorch weights from {state_path}: {exc}", _C.RED))
+            print(
+                _col(
+                    f"Could not load PyTorch weights from {state_path}: {exc}", _C.RED
+                )
+            )
 
     _fit_model(
         model,
@@ -986,4 +1130,10 @@ def train_TerraMind(conf):
         criterion=criterion,
     )
 
-    print(_col(f"Training completed in {str(timedelta(seconds=time.time() - start)).split('.')[0]}.\n", _C.GREEN))
+    print(
+        _col(
+            f"Training completed in "
+            f"{str(timedelta(seconds=time.time() - start)).split('.')[0]}.\n",
+            _C.GREEN,
+        )
+    )

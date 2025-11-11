@@ -1,45 +1,54 @@
 # core/common/vis.py
 from __future__ import annotations
 
-from typing import Tuple, Optional, Any
+from typing import Any, Optional, Tuple
 
 import torch
 import torchvision.utils as vutils
 from torch.utils.tensorboard import SummaryWriter
 
-# reuse probability helper from model_utils to avoid duplication
+#probability helper from model_utils
 from .model_utils import _ensure_probabilities
 
-# Optional runtime config (used only for default viz colors if present)
+# Optional runtime config 
 config: Any = None
 
 
 def _to_cpu_image(t: torch.Tensor) -> torch.Tensor:
-    """Detach → float32 → CPU so SummaryWriter.add_image always works."""
+    """Detach --> float32 --> CPU so SummaryWriter.add_image always works.
+    Just for TerraTorch compatibility.
+    """
     return t.detach().to(device="cpu", dtype=torch.float32)
 
 
 def _pick_vis_channel(prob: torch.Tensor, cls_idx: Optional[int] = None) -> torch.Tensor:
     """
     Ensure probs are [N,1,H,W] for visualization.
-    - Binary: already [N,1,H,W] → return as is
-    - Multi-class: [N,C,H,W] → pick cls_idx (default=1) or argmax mask if None
+
+    Binary:
+        Already [N,1,H,W] → return as is.
+    Multi-class:
+        [N,C,H,W] → pick cls_idx (default=1) or argmax mask if None.
     """
     if prob.dim() == 4 and prob.size(1) > 1:
         if cls_idx is None:
             arg = prob.argmax(dim=1, keepdim=True)
             cls = 1
             return (arg == cls).float()
-        return prob[:, cls_idx:cls_idx+1]
-    return prob  # already single-channel
+        return prob[:, cls_idx : cls_idx + 1]
+    return prob  # Already single-channel.
 
 
 def _overlay_heatmap_on_rgb(rgb: torch.Tensor, prob: torch.Tensor, alpha: float = 0.4) -> torch.Tensor:
     """
     Overlay probability heatmap on RGB image.
-    rgb: [N,3,H,W] in [0,1]
-    prob: [N,1,H,W] in [0,1]
-    Returns: [N,3,H,W] blended image
+
+    Args:
+        rgb: [N,3,H,W] in [0,1]
+        prob: [N,1,H,W] in [0,1]
+
+    Returns:
+        [N,3,H,W] blended image.
     """
     p = prob.clamp(0, 1)
     heat_r = p
@@ -71,36 +80,44 @@ def _rgb_from_x(
     gamma: float = 1.0,
 ) -> torch.Tensor:
     """
-    x_nchw: [N,C,H,W] → returns [N,3,H,W] in [0,1]
-    Selects channels by rgb_idx; falls back gracefully if fewer than 3 channels.
-    Per-sample robust stretch using percentiles.
+    Convert NCHW input to an RGB visualization.
+
+    What it does:
+        Selects channels by rgb_idx; falls back if fewer than 3
+        channels, then applies a robust per-sample stretch using percentiles.
+
+    Args:
+        x_nchw: [N,C,H,W]
+
+    Returns:
+        [N,3,H,W] in [0,1]
     """
     x = x_nchw.detach().to(dtype=torch.float32, device=x_nchw.device)
-    N, C, H, W = x.shape
-    idx = [i for i in rgb_idx if i < C]
+    n, c, h, w = x.shape
+    idx = [i for i in rgb_idx if i < c]
     if len(idx) == 0:
-        rgb = x.new_zeros((N, 3, H, W))
+        rgb = x.new_zeros((n, 3, h, w))
     elif len(idx) == 1:
-        rgb = x[:, idx[0]:idx[0]+1].repeat(1, 3, 1, 1)
+        rgb = x[:, idx[0] : idx[0] + 1].repeat(1, 3, 1, 1)
     elif len(idx) == 2:
-        rgb = torch.zeros(N, 3, H, W, device=x.device, dtype=x.dtype)
+        rgb = torch.zeros(n, 3, h, w, device=x.device, dtype=x.dtype)
         rgb[:, :2] = x[:, idx]
     else:
         rgb = x[:, idx[:3]]
 
     if use_quantiles:
-        flat = rgb.view(N, 3, -1)
+        flat = rgb.view(n, 3, -1)
         try:
-            lo = torch.quantile(flat, q_lo, dim=-1, method="nearest").view(N, 3, 1, 1)
-            hi = torch.quantile(flat, q_hi, dim=-1, method="nearest").view(N, 3, 1, 1)
+            lo = torch.quantile(flat, q_lo, dim=-1, method="nearest").view(n, 3, 1, 1)
+            hi = torch.quantile(flat, q_hi, dim=-1, method="nearest").view(n, 3, 1, 1)
         except TypeError:
-            lo = torch.quantile(flat, q_lo, dim=-1, interpolation="nearest").view(N, 3, 1, 1)
-            hi = torch.quantile(flat, q_hi, dim=-1, interpolation="nearest").view(N, 3, 1, 1)
+            lo = torch.quantile(flat, q_lo, dim=-1, interpolation="nearest").view(n, 3, 1, 1)
+            hi = torch.quantile(flat, q_hi, dim=-1, interpolation="nearest").view(n, 3, 1, 1)
         rgb = (rgb - lo) / (hi - lo + 1e-6)
     else:
-        flat = rgb.view(N, 3, -1)
-        mn = flat.min(dim=-1, keepdim=True).values.view(N, 3, 1, 1)
-        mx = flat.max(dim=-1, keepdim=True).values.view(N, 3, 1, 1)
+        flat = rgb.view(n, 3, -1)
+        mn = flat.min(dim=-1, keepdim=True).values.view(n, 3, 1, 1)
+        mx = flat.max(dim=-1, keepdim=True).values.view(n, 3, 1, 1)
         rgb = (rgb - mn) / (mx - mn + 1e-6)
 
     rgb = rgb.clamp_(0, 1)
@@ -110,14 +127,14 @@ def _rgb_from_x(
 
 
 def _mask_to_rgb(mask_n1hw: torch.Tensor, color: Tuple[float, float, float] = (1.0, 0.0, 0.0)) -> torch.Tensor:
-    """mask_n1hw: [N,1,H,W] in [0,1] → [N,3,H,W] (colored mask)"""
+    """Convert [N,1,H,W] mask in [0,1] to a colorized RGB image [N,3,H,W]."""
     m = _mask01(mask_n1hw)
     col = torch.tensor(color, device=m.device, dtype=m.dtype).view(1, 3, 1, 1)
     return (m.repeat(1, 3, 1, 1) * col).clamp(0, 1)
 
 
 def _make_panel_side_by_side(x_rgb: torch.Tensor, right_rgb: torch.Tensor) -> torch.Tensor:
-    """Concatenate horizontally: [ left=x_rgb | right=right_rgb ]"""
+    """Concatenate horizontally: [ left=x_rgb | right=right_rgb ]."""
     return torch.cat([x_rgb, right_rgb], dim=-1).clamp(0, 1)
 
 
@@ -125,11 +142,13 @@ def _mask_to_two_tone(
     mask_n1hw: torch.Tensor,
     threshold: float = 0.5,
     pos: Tuple[float, float, float] = (1.0, 1.0, 0.0),
-    neg: Tuple[float, float, float] = (0.0, 0.0, 1.0)
+    neg: Tuple[float, float, float] = (0.0, 0.0, 1.0),
 ) -> torch.Tensor:
     """
-    Convert a binary/probability mask to a two-tone RGB image:
-      >= threshold -> 'pos' color (class 1), else 'neg' color (class 0).
+    Convert a binary/probability mask to a two-tone RGB image.
+
+    Rule:
+        >= threshold --> 'pos' color (class 1), else 'neg' color (class 0).
     """
     m = _mask01(mask_n1hw)
     mb = (m >= threshold).float()
@@ -146,11 +165,14 @@ def _make_triptych_rgb_pred_gt(
     threshold: float = 0.5,
     pos: Tuple[float, float, float] = (1.0, 1.0, 0.0),
     neg: Tuple[float, float, float] = (0.0, 0.0, 1.0),
-    overlay_heatmap: bool = False
+    overlay_heatmap: bool = False,
 ) -> torch.Tensor:
     """
     Build a horizontal triptych [ RGB (opt heatmap) | PRED | GT ].
-    Returns [N,3,H,3W].
+    Found that looks cool... maybe reomve 
+
+    Returns:
+        [N,3,H,3W]
     """
     rgb = _rgb_from_x(x_nchw, rgb_idx=rgb_idx)
     pred_prob = _ensure_probabilities(y_pred_n1hw)
@@ -174,18 +196,31 @@ def _log_triptych_and_optional_heatmap(
     add_heatmap: bool = True,
 ):
     """
-    Logs: triptych [ RGB with heatmap overlay | PRED(thresholded two-tone) | GT(two-tone) ]
+    Log triptych:
+        [ RGB with heatmap overlay | PRED(thresholded two-tone) | GT(two-tone) ]
+
     Works on CPU or CUDA tensors and binary or multi-class y_prob.
+    Again, might be helpfull for model debugging/inspection. but essentially cosmetic.
     """
     n = min(8, x.size(0))
     prob_vis = _pick_vis_channel(y_prob[:n], cls_idx=cls_idx)
 
-    # default viz colors (optionally from a runtime config if present)
-    pos_col = tuple(getattr(config, "viz_pos_color", (1.0, 1.0, 0.0))) if (isinstance(config, object)) else (1.0, 1.0, 0.0)
-    neg_col = tuple(getattr(config, "viz_neg_color", (0.0, 0.0, 1.0))) if (isinstance(config, object)) else (0.0, 0.0, 1.0)
+    # Default viz colors (optionally from a runtime config if present).
+    pos_col = (
+        tuple(getattr(config, "viz_pos_color", (1.0, 1.0, 0.0)))
+        if (isinstance(config, object))
+        else (1.0, 1.0, 0.0)
+    )
+    neg_col = (
+        tuple(getattr(config, "viz_neg_color", (0.0, 0.0, 1.0)))
+        if (isinstance(config, object))
+        else (0.0, 0.0, 1.0)
+    )
 
     panel = _make_triptych_rgb_pred_gt(
-        x[:n], prob_vis, y_true[:n],
+        x[:n],
+        prob_vis,
+        y_true[:n],
         rgb_idx=rgb_idx,
         threshold=threshold,
         pos=pos_col,

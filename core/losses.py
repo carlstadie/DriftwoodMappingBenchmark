@@ -1,8 +1,8 @@
-# core/losses_pytorch.py
-#    Edited by Sizhuo Li
+# core/losses.py
+#    Edited by Sizhuo Li and Carl Stadie
 #    Author: Ankit Kariryaa, University of Bremen
 #
-#    PyTorch rewrite aligned to the TensorFlow/Keras version
+#    Basically PyTorch rewrite aligned to the old TensorFlow/Keras version
 
 from __future__ import annotations
 
@@ -15,8 +15,10 @@ def get_loss(loss_fn, tversky_alpha_beta=None):
     if loss_fn == "tversky":
         if tversky_alpha_beta:
             alpha, beta = tversky_alpha_beta
+
             def _tversky(y_true, y_pred):
                 return tversky(y_true, y_pred, alpha=alpha, beta=beta)
+
             return _tversky
         return tversky
     elif loss_fn == "dice":
@@ -27,6 +29,7 @@ def get_loss(loss_fn, tversky_alpha_beta=None):
 
 
 # --- helpers ---
+
 
 def _ensure_ch1(y: torch.Tensor) -> torch.Tensor:
     """
@@ -44,20 +47,26 @@ def _ensure_ch1(y: torch.Tensor) -> torch.Tensor:
 
 # --- losses / metrics (constants match TF) ---
 
-def tversky(y_true: torch.Tensor, y_pred: torch.Tensor, alpha: float = 0.40, beta: float = 0.60):
+
+def tversky(
+    y_true: torch.Tensor,
+    y_pred: torch.Tensor,
+    alpha: float = 0.40,
+    beta: float = 0.60,
+):
     """
     Tversky loss (TF equivalent).
     TF uses EPSILON = 1e-5 in the denominator.
     """
     y_t = _ensure_ch1(y_true).float()
-    p0 = y_pred.float()                 # prob of class
-    p1 = 1.0 - p0                       # prob of not-class
+    p0 = y_pred.float()  # prob of class
+    p1 = 1.0 - p0  # prob of not-class
     g0 = y_t
     g1 = 1.0 - y_t
 
     tp = torch.sum(p0 * g0)
     fp = alpha * torch.sum(p0 * g1)
-    fn = beta  * torch.sum(p1 * g0)
+    fn = beta * torch.sum(p1 * g0)
 
     eps = 1.0e-5
     score = tp / (tp + fp + fn + eps)
@@ -65,9 +74,7 @@ def tversky(y_true: torch.Tensor, y_pred: torch.Tensor, alpha: float = 0.40, bet
 
 
 def dice_coef(y_true: torch.Tensor, y_pred: torch.Tensor, smooth: float = 1.0e-7):
-    """
-    Dice coefficient (mirrors TF formula & smooth).
-    """
+    """Dice coefficient (mirrors TF formula & smooth)."""
     y_t = _ensure_ch1(y_true).float()
     y_p = y_pred.float()
     intersection = torch.sum(torch.abs(y_t * y_p))
@@ -92,21 +99,25 @@ def accuracy(y_true: torch.Tensor, y_pred: torch.Tensor):
 
 
 def true_positives(y_true: torch.Tensor, y_pred: torch.Tensor):
+    """Element-wise true positives mask (rounded)."""
     y_t = _ensure_ch1(y_true).float()
     return torch.round(y_t * y_pred.float())
 
 
 def false_positives(y_true: torch.Tensor, y_pred: torch.Tensor):
+    """Element-wise false positives mask (rounded)."""
     y_t = _ensure_ch1(y_true).float()
     return torch.round((1.0 - y_t) * y_pred.float())
 
 
 def true_negatives(y_true: torch.Tensor, y_pred: torch.Tensor):
+    """Element-wise true negatives mask (rounded)."""
     y_t = _ensure_ch1(y_true).float()
     return torch.round((1.0 - y_t) * (1.0 - y_pred.float()))
 
 
 def false_negatives(y_true: torch.Tensor, y_pred: torch.Tensor):
+    """Element-wise false negatives mask (rounded)."""
     y_t = _ensure_ch1(y_true).float()
     return torch.round(y_t * (1.0 - y_pred.float()))
 
@@ -116,7 +127,7 @@ def sensitivity(y_true: torch.Tensor, y_pred: torch.Tensor):
     tp = true_positives(y_true, y_pred)
     fn = false_negatives(y_true, y_pred)
     denom = torch.sum(tp) + torch.sum(fn)
-    return torch.sum(tp) / (denom + 1e-12)  # tiny guard; TF has no eps here
+    return torch.sum(tp) / (denom + 1e-12) 
 
 
 def specificity(y_true: torch.Tensor, y_pred: torch.Tensor):
@@ -124,27 +135,31 @@ def specificity(y_true: torch.Tensor, y_pred: torch.Tensor):
     tn = true_negatives(y_true, y_pred)
     fp = false_positives(y_true, y_pred)
     denom = torch.sum(tn) + torch.sum(fp)
-    return torch.sum(tn) / (denom + 1e-12)  # tiny guard; TF has no eps here
+    return torch.sum(tn) / (denom + 1e-12) 
 
 
 def f_beta(y_true: torch.Tensor, y_pred: torch.Tensor, beta: float = 1):
     """
     F-beta score.
-    TF uses K.epsilon() only in the final denominator; we keep tiny guards in precision/recall too
-    to avoid NaNs while keeping behavior effectively identical.
+
+    TF uses K.epsilon() only in the final denominator; we keep tiny guards in
+    precision/recall too to avoid NaNs while keeping behavior effectively identical.
     """
     tp = true_positives(y_true, y_pred)
     fp = false_positives(y_true, y_pred)
     fn = false_negatives(y_true, y_pred)
 
     precision = torch.sum(tp) / (torch.sum(tp) + torch.sum(fp) + 1e-12)
-    recall    = torch.sum(tp) / (torch.sum(tp) + torch.sum(fn) + 1e-12)
+    recall = torch.sum(tp) / (torch.sum(tp) + torch.sum(fn) + 1e-12)
 
     beta2 = float(beta) ** 2
-    return (1 + beta2) * precision * recall / (beta2 * precision + recall + 1e-7)  # 1e-7 ~ K.epsilon()
+    return (1 + beta2) * precision * recall / (
+        beta2 * precision + recall + 1e-7
+    )  # 1e-7 ~ K.epsilon()
 
 
 def f1_score(y_true: torch.Tensor, y_pred: torch.Tensor):
+    """F1 score (F-beta with beta=1)."""
     return f_beta(y_true, y_pred, beta=1)
 
 

@@ -8,10 +8,11 @@ import torch.nn.functional as F
 
 class ConvBlock(nn.Module):
     """
-    Two 3x3 convs (optional dilation), ReLU after each conv,
-    then BatchNorm and optional Dropout (after BN) — matches TF.
-    TF BN defaults: epsilon=1e-3, momentum=0.99 (batch weight 0.01).
-    PyTorch BN uses 'momentum' = batch weight, so set 0.01.
+    Two 3x3 convs (optional dilation) with ReLU after each,
+    then BatchNorm and optional Dropout (after BN) to match TF.
+
+    using old TF BN defaults to stay true to the holy Ronneberger: epsilon=1e-3, momentum=0.99 (batch weight 0.01).
+    PyTorch BN uses 'momentum' as batch weight, so set 0.01.
     """
 
     def __init__(
@@ -39,7 +40,9 @@ class ConvBlock(nn.Module):
             bias=True,
         )
         # Align BN with TF defaults
-        self.bn = nn.BatchNorm2d(out_channels, eps=1e-3, momentum=0.01, affine=True, track_running_stats=True)
+        self.bn = nn.BatchNorm2d(
+            out_channels, eps=1e-3, momentum=0.01, affine=True, track_running_stats=True
+        )
         self.do = nn.Dropout(p=dropout) if dropout and dropout > 0 else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -51,9 +54,7 @@ class ConvBlock(nn.Module):
 
 
 class AttentionGate2D(nn.Module):
-    """
-    Attention gate for skip connections.
-    """
+    """Attention gate used to modulate skip connections."""
 
     def __init__(
         self,
@@ -66,8 +67,8 @@ class AttentionGate2D(nn.Module):
             inter_channels = max(1, in_channels_g // 4)
 
         self.theta_x = nn.Conv2d(in_channels_x, inter_channels, kernel_size=1, bias=True)
-        self.phi_g   = nn.Conv2d(in_channels_g, inter_channels, kernel_size=1, bias=True)
-        self.psi     = nn.Conv2d(inter_channels, 1, kernel_size=1, bias=True)
+        self.phi_g = nn.Conv2d(in_channels_g, inter_channels, kernel_size=1, bias=True)
+        self.psi = nn.Conv2d(inter_channels, 1, kernel_size=1, bias=True)
 
     @staticmethod
     def _resize_like(src: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
@@ -75,21 +76,20 @@ class AttentionGate2D(nn.Module):
 
     def forward(self, x: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
         theta_x = self.theta_x(x)
-        phi_g   = self.phi_g(g)
+        phi_g = self.phi_g(g)
 
         if theta_x.shape[-2:] != phi_g.shape[-2:]:
             phi_g = self._resize_like(phi_g, theta_x)
 
-        f    = F.relu(theta_x + phi_g, inplace=False)
-        psi  = self.psi(f)
+        f = F.relu(theta_x + phi_g, inplace=False)
+        psi = self.psi(f)
         rate = torch.sigmoid(psi)  # (N,1,H,W)
         return x * rate
 
 
 class UNetAttention(nn.Module):
     """
-    UNet with attention-based skip connections (PyTorch).
-    Matches TF graph structure & activations.
+    UNet with attention-based skip connections.
     """
 
     def __init__(
@@ -128,8 +128,8 @@ class UNetAttention(nn.Module):
         # Decoder
         self.dec6 = ConvBlock(in_channels=24 * lc, out_channels=8 * lc, dilation=1, dropout=dropout)
         self.dec7 = ConvBlock(in_channels=12 * lc, out_channels=4 * lc, dilation=1, dropout=dropout)
-        self.dec8 = ConvBlock(in_channels=6  * lc, out_channels=2 * lc, dilation=1, dropout=dropout)
-        self.dec9 = ConvBlock(in_channels=3  * lc, out_channels=1 * lc, dilation=1, dropout=dropout)
+        self.dec8 = ConvBlock(in_channels=6 * lc, out_channels=2 * lc, dilation=1, dropout=dropout)
+        self.dec9 = ConvBlock(in_channels=3 * lc, out_channels=1 * lc, dilation=1, dropout=dropout)
 
         # Head
         self.head = nn.Conv2d(1 * lc, num_classes, kernel_size=1, bias=True)
@@ -142,39 +142,50 @@ class UNetAttention(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Encoder
-        c1 = self.enc1(x); p1 = self.pool1(c1)
-        c2 = self.enc2(p1); p2 = self.pool2(c2)
-        c3 = self.enc3(p2); p3 = self.pool3(c3)
-        c4 = self.enc4(p3); p4 = self.pool4(c4)
+        c1 = self.enc1(x)
+        p1 = self.pool1(c1)
+
+        c2 = self.enc2(p1)
+        p2 = self.pool2(c2)
+
+        c3 = self.enc3(p2)
+        p3 = self.pool3(c3)
+
+        c4 = self.enc4(p3)
+        p4 = self.pool4(c4)
+
         c5 = self.center(p4)
 
         # Decoder + attention-gated skips
-        u6  = F.interpolate(c5, scale_factor=2.0, mode="bilinear", align_corners=False)
-        u6  = self._upsample_like(u6, c4)
-        a6  = self.att6(c4, u6)
-        c6  = self.dec6(torch.cat([u6, a6], dim=1))
+        u6 = F.interpolate(c5, scale_factor=2.0, mode="bilinear", align_corners=False)
+        u6 = self._upsample_like(u6, c4)
+        a6 = self.att6(c4, u6)
+        c6 = self.dec6(torch.cat([u6, a6], dim=1))
 
-        u7  = F.interpolate(c6, scale_factor=2.0, mode="bilinear", align_corners=False)
-        u7  = self._upsample_like(u7, c3)
-        a7  = self.att7(c3, u7)
-        c7  = self.dec7(torch.cat([u7, a7], dim=1))
+        u7 = F.interpolate(c6, scale_factor=2.0, mode="bilinear", align_corners=False)
+        u7 = self._upsample_like(u7, c3)
+        a7 = self.att7(c3, u7)
+        c7 = self.dec7(torch.cat([u7, a7], dim=1))
 
-        u8  = F.interpolate(c7, scale_factor=2.0, mode="bilinear", align_corners=False)
-        u8  = self._upsample_like(u8, c2)
-        a8  = self.att8(c2, u8)
-        c8  = self.dec8(torch.cat([u8, a8], dim=1))
+        u8 = F.interpolate(c7, scale_factor=2.0, mode="bilinear", align_corners=False)
+        u8 = self._upsample_like(u8, c2)
+        a8 = self.att8(c2, u8)
+        c8 = self.dec8(torch.cat([u8, a8], dim=1))
 
-        u9  = F.interpolate(c8, scale_factor=2.0, mode="bilinear", align_corners=False)
-        u9  = self._upsample_like(u9, c1)
-        a9  = self.att9(c1, u9)
-        c9  = self.dec9(torch.cat([u9, a9], dim=1))
+        u9 = F.interpolate(c8, scale_factor=2.0, mode="bilinear", align_corners=False)
+        u9 = self._upsample_like(u9, c1)
+        a9 = self.att9(c1, u9)
+        c9 = self.dec9(torch.cat([u9, a9], dim=1))
 
         out = torch.sigmoid(self.head(c9))
         return out
 
 
 def _normalize_num_classes(input_label_channels: Union[int, Iterable[int]]) -> int:
-    if isinstance(input_label_channels, Iterable) and not isinstance(input_label_channels, (str, bytes)):
+    """Normalize class-channel spec into an int."""
+    if isinstance(input_label_channels, Iterable) and not isinstance(
+        input_label_channels, (str, bytes)
+    ):
         try:
             return len(list(input_label_channels))
         except Exception:
@@ -192,7 +203,12 @@ def UNet(
     weight_file: str = None,
     summary: bool = False,
 ) -> nn.Module:
-    """Factory that mirrors the TF signature."""
+    """
+
+    Args:
+        input_shape: Shape-like with channels last; only last value is used.
+        input_label_channels: Number of output channels or iterable of class ids.
+    """
     in_channels = int(input_shape[-1])
     num_classes = _normalize_num_classes(input_label_channels)
 
@@ -215,12 +231,15 @@ def UNet(
             else:
                 model = state
         except Exception as exc:
-            raise RuntimeError(f"Failed to load PyTorch weights from '{weight_file}': {exc}") from exc
+            raise RuntimeError(
+                f"Failed to load PyTorch weights from '{weight_file}': {exc}"
+            ) from exc
 
     if summary:
         total = sum(p.numel() for p in model.parameters())
         trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print("[UNET][MODEL] Architecture:")
         print(model)
-        print(f"Total params: {total:,}  •  Trainable: {trainable:,}")
+        print(f"[UNET][MODEL] Total params: {total:,} - Trainable: {trainable:,}")
 
     return model

@@ -5,9 +5,9 @@ import math
 from typing import Optional
 
 import torch
-from torch.optim import Optimizer
 import torch.optim as optim
 from torch.nn.utils import clip_grad_norm_
+from torch.optim import Optimizer
 
 
 class WarmUpCosineDecay:
@@ -51,6 +51,7 @@ class _AdamWithHooks(optim.Adam):
     Adam that supports:
       - global-norm gradient clipping (clipnorm)
       - per-step LR scheduling via a callable schedule(step)->lr
+
     No changes are required in the training loop; the optimizer updates LR internally.
     """
 
@@ -67,7 +68,12 @@ class _AdamWithHooks(optim.Adam):
         schedule: Optional[WarmUpCosineDecay] = None,
     ):
         super().__init__(
-            params, lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, amsgrad=amsgrad
+            params,
+            lr=lr,
+            betas=betas,
+            eps=eps,
+            weight_decay=weight_decay,
+            amsgrad=amsgrad,
         )
         self._global_step = 0
         self._clipnorm = float(clipnorm) if clipnorm else None
@@ -94,6 +100,8 @@ class _AdamWithHooks(optim.Adam):
 
 
 class _NAdamWithClip(optim.NAdam):
+    """NAdam with optional global-norm clipping."""
+
     def __init__(
         self,
         params,
@@ -118,6 +126,8 @@ class _NAdamWithClip(optim.NAdam):
 
 
 class _AdadeltaWithClip(optim.Adadelta):
+    """Adadelta with optional global-norm clipping."""
+
     def __init__(
         self,
         params,
@@ -142,6 +152,8 @@ class _AdadeltaWithClip(optim.Adadelta):
 
 
 class _AdagradWithClip(optim.Adagrad):
+    """Adagrad with optional global-norm clipping."""
+
     def __init__(
         self,
         params,
@@ -195,7 +207,8 @@ def get_optimizer(
     Mirrors the original Keras behavior and defaults.
 
     Args:
-        optimizer_fn: one of {"adam", "adam1", "adaDelta", "nadam", "adagrad"} or an Optimizer instance.
+        optimizer_fn: one of {"adam", "adam1", "adaDelta", "nadam", "adagrad"}
+                      or an Optimizer instance.
         num_epochs: total epochs for scheduling (optional).
         steps_per_epoch: steps per epoch for scheduling (optional).
         model: torch.nn.Module; if it defines 'l2_weight', it's used as weight_decay.
@@ -216,7 +229,10 @@ def get_optimizer(
         if num_epochs and steps_per_epoch:
             total_steps = int(num_epochs) * int(steps_per_epoch)
             schedule = WarmUpCosineDecay(
-                base_lr=base_lr, total_steps=total_steps, warmup_steps=1000, final_lr_scale=0.1
+                base_lr=base_lr,
+                total_steps=total_steps,
+                warmup_steps=1000,
+                final_lr_scale=0.1,
             )
         return _AdamWithHooks(
             model.parameters() if model is not None else [],

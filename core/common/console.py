@@ -1,7 +1,7 @@
 # core/common/console.py
 from __future__ import annotations
 
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
 
 # --------- Console color helpers ---------
@@ -26,25 +26,41 @@ def _fmt_seconds(s: float) -> str:
 
 
 def _ordered_metric_names() -> List[str]:
-    """Preferred display order for printed logs."""
+    """Preferred display order for printed logs. Basically diplay all we have lol."""
     return [
-        "loss", "val_loss",
-        "dice_coef", "val_dice_coef",
-        "accuracy", "val_accuracy",
-        "sensitivity", "val_sensitivity",
-        "specificity", "val_specificity",
-        "f1_score", "val_f1_score",
-        "f_beta", "val_f_beta",
-        "IoU", "val_IoU",
-        "dice_loss", "val_dice_loss",
-        "nominal_surface_distance", "val_nominal_surface_distance",
-        "Hausdorff_distance", "val_Hausdorff_distance",
-        "boundary_intersection_over_union", "val_boundary_intersection_over_union",
+        "loss",
+        "val_loss",
+        "dice_coef",
+        "val_dice_coef",
+        "accuracy",
+        "val_accuracy",
+        "sensitivity",
+        "val_sensitivity",
+        "specificity",
+        "val_specificity",
+        "f1_score",
+        "val_f1_score",
+        "f_beta",
+        "val_f_beta",
+        "IoU",
+        "val_IoU",
+        "dice_loss",
+        "val_dice_loss",
+        "nominal_surface_distance",
+        "val_nominal_surface_distance",
+        "Hausdorff_distance",
+        "val_Hausdorff_distance",
+        "boundary_intersection_over_union",
+        "val_boundary_intersection_over_union",
     ]
 
 
 def _format_logs_for_print(logs: Dict[str, Any]) -> str:
-    """Turn a logs dict into a single readable console line using the preferred order."""
+    """
+    Turn a logs dict into a single readable console line using the preferred order.
+
+    Keeps epoch summaries compact and consistent with progress-bar style output.
+    """
     keys = _ordered_metric_names()
     parts = []
     for k in keys:
@@ -53,7 +69,7 @@ def _format_logs_for_print(logs: Dict[str, Any]) -> str:
                 parts.append(f"{k}={float(logs[k]):.4f}")
             except Exception:
                 parts.append(f"{k}={logs[k]}")
-    # append any extra metrics that weren't in preferred list
+    # Append any extra metrics that weren't in the preferred list.
     for k, v in logs.items():
         if k not in keys:
             try:

@@ -1,32 +1,38 @@
 from __future__ import annotations
-import os, json, time, random, gc
+
+import gc
+import json
+import os
+import random
+import time
 from datetime import datetime
-from typing import Dict, Any, Tuple, List, Optional, Iterable, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim.lr_scheduler import OneCycleLR, CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, OneCycleLR
 
 try:
     import optuna
     from optuna.pruners import HyperbandPruner
     from optuna.samplers import TPESampler
 except Exception as _e:
-    raise ImportError("Optuna is required for tuning. Install with `pip install optuna`.") from _e
+    raise ImportError(
+        "Optuna is required for tuning. Install with `pip install optuna`."
+    ) from _e
 
-from core.common.data import get_all_frames, create_train_val_datasets
-from core.UNet import UNet
 from core.Swin_UNetPP import SwinUNet
-from core.optimizers import get_optimizer  # optional project-level optimizer factory
 from core.TerraMind import TerraMind
-# NEW: import the same forward/decoder helpers used in training
+from core.UNet import UNet
+from core.common.data import create_train_val_datasets, get_all_frames
 from core.common.model_utils import (
-    _forward_with_autopad,
     _as_probs_from_terratorch_logits_first,
     _ensure_nchw,
+    _forward_with_autopad,
 )
+from core.optimizers import get_optimizer  # project-level optimizer factory
 
 
 # -----------------------
@@ -38,7 +44,7 @@ def _seed(seed: int = 42) -> None:
     random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.use_deterministic_algorithms(False)  # match TF defaults
+    torch.use_deterministic_algorithms(False)  
 
 
 def _ensure_dir(path: str) -> None:
@@ -50,7 +56,11 @@ def _default(val, fallback):
 
 
 def _nan_to_num_torch(x: torch.Tensor, constant: float) -> torch.Tensor:
-    return torch.where(torch.isfinite(x), x, torch.as_tensor(constant, dtype=x.dtype, device=x.device))
+    return torch.where(
+        torch.isfinite(x),
+        x,
+        torch.as_tensor(constant, dtype=x.dtype, device=x.device),
+    )
 
 
 def _sanitize_pair_xy(x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -68,7 +78,9 @@ def _sanitize_weights(w: torch.Tensor) -> torch.Tensor:
     return w
 
 
-def _snap_hw_for_swin(H: int, W: int, patch_size: int, window_size: int, down_levels: int = 3) -> Tuple[int, int]:
+def _snap_hw_for_swin(
+    H: int, W: int, patch_size: int, window_size: int, down_levels: int = 3
+) -> Tuple[int, int]:
     need = window_size * (2 ** down_levels)
     t_h = int(np.ceil(H / patch_size))
     t_w = int(np.ceil(W / patch_size))
@@ -105,10 +117,9 @@ def _safe_iou(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = 1e-6) -> 
     return iou.mean()
 
 
-# --- NEW: best-effort worker shutdown for PyTorch DataLoader ---
 def _stop_dataloader_workers(dl: Optional[Iterable]) -> None:
     """
-    Best-effort shutdown of DataLoader worker processes/threads.
+    hutdown of DataLoader worker processes/threads.
     Safe to call on loaders with 0 workers or non-standard iterables.
     """
     if dl is None:
@@ -116,7 +127,6 @@ def _stop_dataloader_workers(dl: Optional[Iterable]) -> None:
     try:
         it = getattr(dl, "_iterator", None)
         if it is not None:
-            # PyTorch internal: _MultiProcessingDataLoaderIter
             shut = getattr(it, "_shutdown_workers", None)
             if callable(shut):
                 shut()
@@ -142,24 +152,39 @@ def _stop_dataloader_workers(dl: Optional[Iterable]) -> None:
 # Logging helpers (concise / readable)
 # -----------------------
 def _phase_banner(model_key: str, phase: str, max_epochs: int, steps: int, val_steps: int, tune_batch: int):
-    print(f"\n=== [{model_key.upper()}][{phase}] epochs={max_epochs}, "
-          f"steps/epoch={steps}, val_steps={val_steps}, batch={tune_batch} ===")
+    print(
+        f"\n=== [{model_key.upper()}][{phase}] epochs={max_epochs}, "
+        f"steps/epoch={steps}, val_steps={val_steps}, batch={tune_batch} ==="
+    )
 
 
 def _trial_banner(trial_num: int, model_key: str, hp: Dict[str, Any], data_hp: Dict[str, Any]):
     arch_bits = []
     if model_key == "unet":
         for k in ("dilation_rate", "layer_count", "l2_weight", "dropout"):
-            if k in hp: arch_bits.append(f"{k}={hp[k]}")
+            if k in hp:
+                arch_bits.append(f"{k}={hp[k]}")
     elif model_key == "swin":
         for k in ("C", "attn_drop", "proj_drop", "mlp_drop", "drop_path", "ss_size"):
-            if k in hp: arch_bits.append(f"{k}={hp[k]}")
+            if k in hp:
+                arch_bits.append(f"{k}={hp[k]}")
     else:
-        for k in ("tm_decoder", "tm_decoder_channels", "tm_head_dropout",
-                  "tm_lr_backbone", "tm_lr_head_mult", "tm_weight_decay",
-                  "tm_freeze_backbone_epochs", "tm_size"):
-            if k in hp: arch_bits.append(f"{k}={hp[k]}")
-    data_bits = f"{data_hp['patch_h']}x{data_hp['patch_w']}, aug={data_hp['augmenter_strength']}, minpos={data_hp['min_pos_frac']}"
+        for k in (
+            "tm_decoder",
+            "tm_decoder_channels",
+            "tm_head_dropout",
+            "tm_lr_backbone",
+            "tm_lr_head_mult",
+            "tm_weight_decay",
+            "tm_freeze_backbone_epochs",
+            "tm_size",
+        ):
+            if k in hp:
+                arch_bits.append(f"{k}={hp[k]}")
+    data_bits = (
+        f"{data_hp['patch_h']}x{data_hp['patch_w']}, aug={data_hp['augmenter_strength']}, "
+        f"minpos={data_hp['min_pos_frac']}"
+    )
     opt_bits = f"opt={hp['optimizer']}" if "optimizer" in hp else ""
     if "learning_rate" in hp:
         opt_bits += f", lr={hp['learning_rate']:.3g}"
@@ -172,11 +197,12 @@ def _trial_banner(trial_num: int, model_key: str, hp: Dict[str, Any], data_hp: D
 
 def _epoch_line(epoch: int, best: float, cur: float, extra: str = ""):
     msg = f"  epoch {epoch:02d}: val_dice={cur:.4f} (best={best:.4f})"
-    if extra: msg += f" | {extra}"
+    if extra:
+        msg += f" | {extra}"
     print(msg)
 
 
-# --------- Console color helpers (match training style) ---------
+# --------- Console color helpers ---------
 class _C:
     RED = "\033[31m"
     YELLOW = "\033[33m"
@@ -198,8 +224,9 @@ def _format_val(v):
     return str(v)
 
 
-def _print_sxs_diff(prev_cfg: Dict[str, Any], curr_cfg: Dict[str, Any],
-                    prev_score: Optional[float], curr_score: float) -> None:
+def _print_sxs_diff(
+    prev_cfg: Dict[str, Any], curr_cfg: Dict[str, Any], prev_score: Optional[float], curr_score: float
+) -> None:
     if prev_cfg is None:
         print("\n   baseline: no previous best to compare.")
         return
@@ -211,7 +238,7 @@ def _print_sxs_diff(prev_cfg: Dict[str, Any], curr_cfg: Dict[str, Any],
         b = curr_cfg.get(k, "-")
         rows.append((k, _format_val(a), _format_val(b), a != b))
 
-    key_w  = max(len(k) for k, *_ in rows) if rows else 0
+    key_w = max(len(k) for k, *_ in rows) if rows else 0
     prev_w = max(len(p) for _, p, _, _ in rows) if rows else 0
     curr_w = max(len(c) for _, _, c, _ in rows) if rows else 0
 
@@ -227,13 +254,16 @@ def _print_sxs_diff(prev_cfg: Dict[str, Any], curr_cfg: Dict[str, Any],
         sign = "+" if delta >= 0 else ""
         delta_str = f"{sign}{delta:.5f}"
         color = _C.GREEN if delta > 0 else (_C.RED if delta < 0 else _C.CYAN)
-        print(f"\n   score: prev={prev_score:>{prev_w}.5f} | curr={curr_score:>{curr_w}.5f} ({_col(delta_str, color)})")
+        print(
+            f"\n   score: prev={prev_score:>{prev_w}.5f} | "
+            f"curr={curr_score:>{curr_w}.5f} ({_col(delta_str, color)})"
+        )
 
 
 # -----------------------
-# Impact-focused search spaces
+# SEARCH SPACE: HB is Hyperband, BO is Bayesian Optimization. HB is discrete/categorical, BO is continuous.
 # -----------------------
-def _optimizer_space_hb(trial: optuna.Trial) -> Tuple[str, float, Optional[float]]:
+def _optimizer_space_hb(trial: "optuna.Trial") -> Tuple[str, float, Optional[float]]:
     opt = trial.suggest_categorical("optimizer", ["adam", "adamw"])
     lr = trial.suggest_float("learning_rate", 1e-5, 5e-3, log=True)
     wd = None
@@ -242,11 +272,11 @@ def _optimizer_space_hb(trial: optuna.Trial) -> Tuple[str, float, Optional[float
     return opt, lr, wd
 
 
-def _schedule_space_hb(trial: optuna.Trial) -> str:
+def _schedule_space_hb(trial: "optuna.Trial") -> str:
     return trial.suggest_categorical("scheduler", ["none", "cosine", "onecycle"])
 
 
-def _optimizer_space_bo(trial: optuna.Trial, fixed_opt: str) -> Tuple[str, float, Optional[float]]:
+def _optimizer_space_bo(trial: "optuna.Trial", fixed_opt: str) -> Tuple[str, float, Optional[float]]:
     lr = trial.suggest_float("learning_rate", 1e-5, 5e-3, log=True)
     wd = None
     if fixed_opt == "adamw":
@@ -254,7 +284,7 @@ def _optimizer_space_bo(trial: optuna.Trial, fixed_opt: str) -> Tuple[str, float
     return fixed_opt, lr, wd
 
 
-def _unet_space_hb(trial: optuna.Trial) -> Tuple[int, int, float, float]:
+def _unet_space_hb(trial: "optuna.Trial") -> Tuple[int, int, float, float]:
     dilation = trial.suggest_categorical("dilation_rate", [1, 2, 4])
     layer_cnt = trial.suggest_categorical("layer_count", [32, 64, 96])
     l2w = trial.suggest_categorical("l2_weight", [0.0, 1e-5, 1e-4])
@@ -262,7 +292,7 @@ def _unet_space_hb(trial: optuna.Trial) -> Tuple[int, int, float, float]:
     return int(dilation), int(layer_cnt), float(l2w), float(drp)
 
 
-def _swin_space_hb(trial: optuna.Trial) -> Tuple[int, int, float, float, float, float]:
+def _swin_space_hb(trial: "optuna.Trial") -> Tuple[int, int, float, float, float, float]:
     C = trial.suggest_categorical("C", [48, 64, 96])
     ss_half = trial.suggest_categorical("use_shift", [0, 1])
     attn_drop = trial.suggest_categorical("attn_drop", [0.0, 0.1])
@@ -272,9 +302,28 @@ def _swin_space_hb(trial: optuna.Trial) -> Tuple[int, int, float, float, float, 
     return int(C), int(ss_half), float(attn_drop), float(proj_drop), float(mlp_drop), float(drop_path)
 
 
-def _data_space_hb(trial: optuna.Trial) -> Tuple[int, int, float, float]:
-    valid_sizes = [32, 48, 64, 80, 96, 112, 128, 160, 192, 224,
-                   256, 288, 320, 352, 384, 416, 448, 480, 512]
+def _data_space_hb(trial: "optuna.Trial") -> Tuple[int, int, float, float]:
+    valid_sizes = [
+        32,
+        48,
+        64,
+        80,
+        96,
+        112,
+        128,
+        160,
+        192,
+        224,
+        256,
+        288,
+        320,
+        352,
+        384,
+        416,
+        448,
+        480,
+        512,
+    ]
     patch_h = trial.suggest_categorical("patch_h", valid_sizes)
     patch_w = patch_h
     aug_str = trial.suggest_categorical("augmenter_strength", [0.0, 0.5, 1.0])
@@ -282,8 +331,8 @@ def _data_space_hb(trial: optuna.Trial) -> Tuple[int, int, float, float]:
     return int(patch_h), int(patch_w), float(aug_str), float(minpos)
 
 
-# -------- TerraMind search spaces & helpers --------
-def _tm_space_hb(trial: optuna.Trial):
+# -------- TerraMind search spaces and helpers --------
+def _tm_space_hb(trial: "optuna.Trial"):
     dec = trial.suggest_categorical("tm_decoder", ["UNetDecoder", "UperNetDecoder"])
     dec_ch = trial.suggest_categorical("tm_decoder_channels", [128, 192, 256, 384])
     head_do = trial.suggest_float("tm_head_dropout", 0.0, 0.2)
@@ -294,7 +343,7 @@ def _tm_space_hb(trial: optuna.Trial):
     return dec, dec_ch, head_do, freeze_ep, lr_backbone, lr_head_mult, wd
 
 
-def _tm_space_bo(trial: optuna.Trial, fixed):
+def _tm_space_bo(trial: "optuna.Trial", fixed):
     lr_backbone = trial.suggest_float("tm_lr_backbone", 1e-6, 3e-5, log=True)
     lr_head_mult = trial.suggest_categorical("tm_lr_head_mult", [5.0, 10.0])
     wd = trial.suggest_float("tm_weight_decay", 1e-6, 5e-4, log=True)
@@ -307,7 +356,7 @@ def _split_backbone_head_params(inner_model: nn.Module):
     Returns (bb_params, head_params).
     """
     inner = inner_model
-    # If it's a wrapper that stores `model`, unwrap once
+    # If it is a wrapper that stores `model`, unwrap once
     if hasattr(inner, "model") and isinstance(inner.model, nn.Module):
         inner = inner.model
 
@@ -321,20 +370,20 @@ def _split_backbone_head_params(inner_model: nn.Module):
             if id(p) not in bb_ids:
                 head_params.append(p)
     else:
-        # No explicit backbone handle — treat everything as "head"
+        # No explicit backbone handle - treat everything as "head"
         head_params = list(inner_model.parameters())
 
     return bb_params, head_params
 
 
-def _make_tm_optimizer(model: TerraMind, lr_bb: float, lr_head_mult: float, wd: float, opt="adamw"):
+def _make_tm_optimizer(model: TerraMind, lr_bb: float, lr_head_mult: float, wd: float, opt: str = "adamw"):
     bb_params, head_params = _split_backbone_head_params(model)
     if len(bb_params) == 0:
         groups = [{"params": head_params, "lr": lr_bb * float(lr_head_mult), "weight_decay": wd}]
     else:
         groups = [
             {"params": head_params, "lr": lr_bb * float(lr_head_mult), "weight_decay": wd},
-            {"params": bb_params,   "lr": lr_bb,                      "weight_decay": wd},
+            {"params": bb_params, "lr": lr_bb, "weight_decay": wd},
         ]
     return (torch.optim.AdamW if opt == "adamw" else torch.optim.Adam)(groups)
 
@@ -348,8 +397,9 @@ def _set_backbone_requires_grad(model: nn.Module, requires_grad: bool):
             p.requires_grad = requires_grad
 
 
-def _tm_raw_to_probs(raw: Union[torch.Tensor, Dict[str, Any], List[Any], tuple],
-                     num_classes: int = 1) -> torch.Tensor:
+def _tm_raw_to_probs(
+    raw: Union[torch.Tensor, Dict[str, Any], List[Any], tuple], num_classes: int = 1
+) -> torch.Tensor:
     """
     Robustly extract logits from TerraTorch-style outputs and convert to probabilities.
     Out-of-place ops only (no in-place clamp) to keep autograd happy.
@@ -369,7 +419,9 @@ def _tm_raw_to_probs(raw: Union[torch.Tensor, Dict[str, Any], List[Any], tuple],
         logits = raw[0]
 
     if logits is None or not isinstance(logits, torch.Tensor):
-        raise TypeError("TerraMind forward did not return a Tensor or a dict/tuple containing a Tensor.")
+        raise TypeError(
+            "TerraMind forward did not return a Tensor or a dict/tuple containing a Tensor."
+        )
 
     # binary vs multi-class
     if (num_classes is None) or (num_classes <= 1) or (logits.shape[1] == 1):
@@ -378,7 +430,7 @@ def _tm_raw_to_probs(raw: Union[torch.Tensor, Dict[str, Any], List[Any], tuple],
         probs = torch.softmax(logits, dim=1)
 
     probs = probs.float()
-    probs = torch.clamp(probs, 0.0, 1.0)  # OUT-OF-PLACE clamp
+    probs = torch.clamp(probs, 0.0, 1.0)  
     return probs
 
 
@@ -387,9 +439,13 @@ def _tm_raw_to_probs(raw: Union[torch.Tensor, Dict[str, Any], List[Any], tuple],
 # -----------------------
 def _compile_with_optimizer(
     model: nn.Module,
-    opt_name: str, lr: float, wd: Optional[float],
-    scheduler_name: str, steps_per_epoch: int, max_epochs: int,
-    conf
+    opt_name: str,
+    lr: float,
+    wd: Optional[float],
+    scheduler_name: str,
+    steps_per_epoch: int,
+    max_epochs: int,
+    conf,
 ) -> Tuple[nn.Module, torch.optim.Optimizer, Any, Optional[Any], bool]:
     """
     Returns: model, optimizer, criterion, scheduler, scheduler_steps_per_batch
@@ -404,7 +460,7 @@ def _compile_with_optimizer(
             _default(opt_name, getattr(conf, "optimizer_fn", "adam")),
             _default(getattr(conf, "num_epochs", max_epochs), max_epochs),
             _default(getattr(conf, "num_training_steps", steps_per_epoch), steps_per_epoch),
-            model
+            model,
         )
         if hasattr(opt_obj, "param_groups"):
             for g in opt_obj.param_groups:
@@ -418,7 +474,9 @@ def _compile_with_optimizer(
     if opt_obj is None or isinstance(opt_obj, str):
         params = model.parameters()
         if (opt_name or "adam").lower() == "adamw":
-            opt_obj = torch.optim.AdamW(params, lr=float(lr), weight_decay=float(_default(wd, 1e-6)))
+            opt_obj = torch.optim.AdamW(
+                params, lr=float(lr), weight_decay=float(_default(wd, 1e-6))
+            )
         else:
             opt_obj = torch.optim.Adam(params, lr=float(lr))
 
@@ -442,8 +500,9 @@ def _compile_with_optimizer(
     step_per_batch = False
     scheduler_name = (scheduler_name or "none").lower()
     if scheduler_name == "onecycle":
-        scheduler = OneCycleLR(opt_obj, max_lr=float(lr),
-                               steps_per_epoch=int(steps_per_epoch), epochs=int(max_epochs))
+        scheduler = OneCycleLR(
+            opt_obj, max_lr=float(lr), steps_per_epoch=int(steps_per_epoch), epochs=int(max_epochs)
+        )
         step_per_batch = True
     elif scheduler_name == "cosine":
         scheduler = CosineAnnealingLR(opt_obj, T_max=int(max_epochs), eta_min=lr * 0.01)
@@ -454,11 +513,19 @@ def _compile_with_optimizer(
 # -----------------------
 # Phase runner (HB / BO)
 # -----------------------
-def _run_phase(conf, model_key: str, phase: str, project_dir: str,
-               tune_batch: int, max_epochs: int, steps: int, val_steps: int,
-               executions_per_trial: int, overwrite: bool,
-               hb_data_hp: Dict[str, Any]) -> Tuple[Dict[str, Any], optuna.Study]:
-
+def _run_phase(
+    conf,
+    model_key: str,
+    phase: str,
+    project_dir: str,
+    tune_batch: int,
+    max_epochs: int,
+    steps: int,
+    val_steps: int,
+    executions_per_trial: int,
+    overwrite: bool,
+    hb_data_hp: Dict[str, Any],
+) -> Tuple[Dict[str, Any], "optuna.Study"]:
     frames = get_all_frames(conf)
 
     # cache dataloaders for (patch_h, patch_w, aug, minpos) combos (batch fixed)
@@ -481,14 +548,18 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
 
         train_iter, val_iter, _ = create_train_val_datasets(frames)
 
-        if old_bs is not None: conf.train_batch_size = old_bs
-        if old_patch is not None: conf.patch_size = old_patch
-        if old_aug is not None: conf.augmenter_strength = old_aug
-        if old_minpos is not None: conf.min_pos_frac = old_minpos
+        if old_bs is not None:
+            conf.train_batch_size = old_bs
+        if old_patch is not None:
+            conf.patch_size = old_patch
+        if old_aug is not None:
+            conf.augmenter_strength = old_aug
+        if old_minpos is not None:
+            conf.min_pos_frac = old_minpos
 
         dl_cache[key] = (train_iter, val_iter)
 
-        if len(dl_cache) > 10:
+        if len(dl_cache) > 10: # keep cache size small
             for k in list(dl_cache.keys())[:-10]:
                 try:
                     tr_dl, va_dl = dl_cache[k]
@@ -507,8 +578,9 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
     pruner = HyperbandPruner() if phase == "HB" else None
     sampler = TPESampler(seed=_default(getattr(conf, "seed", None), 42))
     _ensure_dir(project_dir)
-    study = optuna.create_study(direction=direction, sampler=sampler, pruner=pruner,
-                                study_name=study_name, storage=None)
+    study = optuna.create_study(
+        direction=direction, sampler=sampler, pruner=pruner, study_name=study_name, storage=None
+    )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_amp = False
@@ -516,12 +588,20 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
 
     _phase_banner(model_key, phase, max_epochs, steps, val_steps, tune_batch)
 
-    # Track best within this phase for nicer printing (does NOT affect Optuna)
+    # Track best within this phase for nicer printing 
     best_print = {"score": None, "cfg": None}
 
-    def _single_execution(trial, train_iterable, val_iterable,
-                          model: nn.Module, optimizer: torch.optim.Optimizer,
-                          criterion, scheduler, step_per_batch: bool, freeze_ep: int = 0) -> float:
+    def _single_execution(
+        trial,
+        train_iterable,
+        val_iterable,
+        model: nn.Module,
+        optimizer: torch.optim.Optimizer,
+        criterion,
+        scheduler,
+        step_per_batch: bool,
+        freeze_ep: int = 0,
+    ) -> float:
         best_val_dice = -float("inf")
         patience = 5
         no_improve = 0
@@ -531,9 +611,11 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
             # Optional freeze schedule (no-op if backbone not exposed)
             if freeze_ep > 0:
                 if epoch <= freeze_ep and was_frozen is not True:
-                    _set_backbone_requires_grad(model, False); was_frozen = True
+                    _set_backbone_requires_grad(model, False)
+                    was_frozen = True
                 elif epoch == freeze_ep + 1 and was_frozen:
-                    _set_backbone_requires_grad(model, True); was_frozen = False
+                    _set_backbone_requires_grad(model, True)
+                    was_frozen = False
 
             model.train()
             train_it = iter(train_iterable)
@@ -555,16 +637,18 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
 
                 optimizer.zero_grad(set_to_none=True)
                 with torch.cuda.amp.autocast(enabled=use_amp, dtype=torch.float16):
-                    # TerraMind path now mirrors training: safe autopad + robust decode
+                    # TerraMind path similar to training loop elsewhere
                     if model_key == "tm":
                         raw = _forward_with_autopad(model, x)
                         num_classes = int(getattr(conf, "num_classes", 1))
-                        y_pred_full = _as_probs_from_terratorch_logits_first(raw, num_classes=num_classes)
+                        y_pred_full = _as_probs_from_terratorch_logits_first(
+                            raw, num_classes=num_classes
+                        )
                         y_pred_full = _ensure_nchw(y_pred_full).float()
                         if y_pred_full.shape[1] > 1:
                             cls_idx = int(getattr(conf, "metrics_class", 1))
                             cls_idx = max(0, min(cls_idx, y_pred_full.shape[1] - 1))
-                            y_pred = y_pred_full[:, cls_idx:cls_idx+1]
+                            y_pred = y_pred_full[:, cls_idx : cls_idx + 1]
                         else:
                             y_pred = y_pred_full
                     else:
@@ -607,377 +691,112 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
                     if model_key == "tm":
                         raw = _forward_with_autopad(model, xv)
                         num_classes = int(getattr(conf, "num_classes", 1))
-                        yp_full = _as_probs_from_terratorch_logits_first(raw, num_classes=num_classes)
+                        yp_full = _as_probs_from_terratorch_logits_first(
+                            raw, num_classes=num_classes
+                        )
                         yp_full = _ensure_nchw(yp_full).float()
                         if yp_full.shape[1] > 1:
                             cls_idx = int(getattr(conf, "metrics_class", 1))
                             cls_idx = max(0, min(cls_idx, yp_full.shape[1] - 1))
-                            yp = yp_full[:, cls_idx:cls_idx+1]
+                            yp = yp_full[:, cls_idx : cls_idx + 1]
                         else:
                             yp = yp_full
                     else:
                         raw = model(xv)
                         yp = torch.as_tensor(raw, dtype=torch.float32, device=device)
-                        yp = torch.clamp(yp, 0.0, 1.0)  # OUT-OF-PLACE
+                        yp = torch.clamp(yp, 0.0, 1.0)
 
-                    val_dice_accum += float(_safe_dice(yv, yp).cpu().item())
+                    val_dice_accum += float(_safe_dice(yv, yp).detach().cpu().item())
 
-            val_dice = val_dice_accum / max(1, val_steps)
-
-            if scheduler is not None and not step_per_batch:
-                scheduler.step()
-
-            trial.report(val_dice, epoch - 1)
-            if trial.should_prune():
-                raise optuna.TrialPruned()
-
-            if val_dice > best_val_dice + 1e-6:
-                best_val_dice = val_dice
+            cur = val_dice_accum / max(1, val_steps)
+            if cur > best_val_dice:
+                best_val_dice = cur
                 no_improve = 0
             else:
                 no_improve += 1
                 if no_improve >= patience:
-                    _epoch_line(epoch, best_val_dice, val_dice, "early-stop")
                     break
 
-            _epoch_line(epoch, best_val_dice, val_dice)
+            _epoch_line(epoch, best_val_dice, cur)
 
-        return float(best_val_dice)
+            if scheduler is not None and not step_per_batch:
+                scheduler.step()
 
-    def objective(trial: optuna.Trial) -> float:
-        trial_t0 = time.time()
-        try:
-            # ----- data knobs -----
-            if model_key == "unet" and phase == "HB":
-                patch_h, patch_w, aug_str, minpos = _data_space_hb(trial)
-            else:
-                patch_h = int(hb_data_hp["patch_h"])
-                patch_w = int(hb_data_hp["patch_w"])
-                aug_str = float(hb_data_hp["augmenter_strength"])
-                minpos = float(hb_data_hp["min_pos_frac"])
+        return best_val_dice
 
-            train_iterable, val_iterable = _get_loaders_for(patch_h, patch_w, aug_str, minpos)
+    # Objective
+    def objective(trial: "optuna.Trial") -> float:
+        # Sample HPs
+        if model_key == "unet":
+            dilation, layer_cnt, l2w, drp = _unet_space_hb(trial) if phase == "HB" else (None, None, None, None)
+            opt, lr, wd = _optimizer_space_hb(trial) if phase == "HB" else _optimizer_space_bo(trial, fixed.get("optimizer", "adam"))
+            sched = _schedule_space_hb(trial) if phase == "HB" else trial.suggest_categorical("scheduler", ["none", "cosine", "onecycle"])
+        elif model_key == "swin":
+            C, use_shift, attn_drop, proj_drop, mlp_drop, drop_path = _swin_space_hb(trial) if phase == "HB" else (None, None, None, None, None, None)
+            opt, lr, wd = _optimizer_space_hb(trial) if phase == "HB" else _optimizer_space_bo(trial, fixed.get("optimizer", "adam"))
+            sched = _schedule_space_hb(trial) if phase == "HB" else trial.suggest_categorical("scheduler", ["none", "cosine", "onecycle"])
+        else:  # tm
+            dec, dec_ch, head_do, freeze_ep, lr_backbone, lr_head_mult, wdtm = _tm_space_hb(trial) if phase == "HB" else (None, None, None, None, None, None, None)
+            opt, lr, wd = _optimizer_space_hb(trial) if phase == "HB" else _optimizer_space_bo(trial, fixed.get("optimizer", "adamw"))
+            sched = _schedule_space_hb(trial) if phase == "HB" else trial.suggest_categorical("scheduler", ["none", "cosine", "onecycle"])
 
-            if model_key == "tm":
-                # ---- search spaces / fixed values ----
-                if phase == "HB":
-                    dec, dec_ch, head_do, freeze_ep, lr_bb, lr_head_mult, wd = _tm_space_hb(trial)
-                    opt_name = trial.suggest_categorical("optimizer", ["adamw", "adam"])
-                    scheduler_name = trial.suggest_categorical("scheduler", ["none", "cosine", "onecycle"])
-                else:
-                    fixed = hb_data_hp.get("fixed", {})
-                    dec       = fixed.get("tm_decoder", "UperNetDecoder")
-                    dec_ch    = fixed.get("tm_decoder_channels", 256)
-                    head_do   = fixed.get("tm_head_dropout", 0.0)
-                    freeze_ep = fixed.get("tm_freeze_backbone_epochs", 1)
-                    lr_bb, lr_head_mult, wd = _tm_space_bo(trial, fixed)
-                    opt_name = fixed.get("optimizer", "adamw")
-                    scheduler_name = fixed.get("scheduler", "none")
+        # Data HPs
+        patch_h = hb_data_hp["patch_h"]
+        patch_w = hb_data_hp["patch_w"]
+        aug = hb_data_hp["augmenter_strength"]
+        minpos = hb_data_hp["min_pos_frac"]
 
-                # ---- derive tm_size / indices (defensive) ----
-                bk_name = str(getattr(conf, "tm_backbone", "") or "").lower()
-                if "large" in bk_name:
-                    tm_size = "large"
-                elif "base" in bk_name or bk_name:
-                    tm_size = "base"
-                else:
-                    tm_size = getattr(conf, "tm_size", "base")
+        # Build data loaders for this configuration
+        train_iter, val_iter = _get_loaders_for(patch_h, patch_w, aug, minpos)
 
-                base_indices  = [2, 5, 8, 11]
-                large_indices = [5, 11, 17, 23]
-                indices_override = large_indices if tm_size == "large" else base_indices
+        # Build model
+        if model_key == "unet":
+            model = UNet([conf.train_batch_size, patch_h, patch_w, len(getattr(conf, "channel_list", []))],
+                         [len(getattr(conf, "channel_list", []))],
+                         getattr(conf, "dilation_rate", 1))
+        elif model_key == "swin":
+            model = SwinUNet(h=patch_h, w=patch_w, ch=len(getattr(conf, "channel_list", [])),
+                             c=getattr(conf, "swin_base_channels", 64),
+                             patch_size=hb_data_hp["fixed"]["patch_size"])
+        else:
+            model = TerraMind(in_channels=len(getattr(conf, "channel_list", [])),
+                              num_classes=int(getattr(conf, "num_classes", 1)),
+                              modality=getattr(conf, "modality", "S2"),
+                              tm_size=getattr(conf, "terramind_size", "base"),
+                              merge_method=getattr(conf, "terramind_merge_method", "mean"),
+                              pretrained=True)
 
-                # ---- build model (with retry on IndexError using base indices) ----
-                ch = len(getattr(conf, "channels_used", getattr(conf, "channel_list", []))) or len(conf.channel_list)
-                _dec_ch = dec_ch if dec == "UperNetDecoder" else [dec_ch, dec_ch, dec_ch, dec_ch]
+        # Compile
+        model, optimizer, criterion, scheduler, step_per_batch = _compile_with_optimizer(
+            model, opt, lr, wd, sched, steps, max_epochs, conf
+        )
 
-                def _build_tm(with_indices):
-                    return TerraMind(
-                        in_channels=ch,
-                        num_classes=int(getattr(conf, "num_classes", 1)),
-                        modality=getattr(conf, "modality", "S2"),
-                        tm_size=tm_size,
-                        decoder=dec,
-                        decoder_channels=_dec_ch,
-                        decoder_kwargs=dict(head_dropout=head_do) if head_do else None,
-                        backbone=getattr(conf, "tm_backbone", None),
-                        bands_override=getattr(conf, "tm_bands", None),
-                        pretrained=True,
-                        rescale=True,
-                        indices_override=with_indices,
-                    ).to(device)
+        # Optional: freeze backbone for first epochs (TM)
+        freeze_for = int(freeze_ep) if (model_key == "tm" and freeze_ep is not None) else 0
 
-                try:
-                    inner_tm = _build_tm(indices_override)
-                except IndexError:
-                    inner_tm = _build_tm(base_indices)
-
-                model = inner_tm  # train/val loops now use TerraMind-safe forward/decoder
-
-                # ---- optimizer & scheduler ----
-                optimizer = _make_tm_optimizer(inner_tm, lr_bb, lr_head_mult, wd, opt=opt_name)
-                scheduler, step_per_batch = (None, False)
-                if scheduler_name == "onecycle":
-                    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-                        optimizer, max_lr=[g["lr"] for g in optimizer.param_groups],
-                        steps_per_epoch=steps, epochs=max_epochs
-                    )
-                    step_per_batch = True
-                elif scheduler_name == "cosine":
-                    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                        optimizer, T_max=max_epochs,
-                        eta_min=min(g["lr"] for g in optimizer.param_groups) * 0.01
-                    )
-
-                # ---- header ----
-                hp_line = dict(
-                    optimizer=opt_name, scheduler=scheduler_name,
-                    tm_decoder=dec, tm_decoder_channels=dec_ch, tm_head_dropout=head_do,
-                    tm_lr_backbone=lr_bb, tm_lr_head_mult=lr_head_mult, tm_weight_decay=wd,
-                    tm_freeze_backbone_epochs=freeze_ep, tm_size=tm_size,
-                )
-                _trial_banner(trial.number, "tm", hp_line,
-                              dict(patch_h=patch_h, patch_w=patch_w,
-                                   augmenter_strength=aug_str, min_pos_frac=minpos))
-
-                cfg_current = dict(hp_line)
-                cfg_current.update(dict(
-                    patch_h=patch_h, patch_w=patch_w,
-                    augmenter_strength=aug_str, min_pos_frac=minpos,
-                    model="tm", phase=phase
-                ))
-
-                # ---- multiple executions per trial (average) ----
-                exec_vals: List[float] = []
-                for exec_idx in range(max(1, int(executions_per_trial))):
-                    if exec_idx > 0:
-                        try:
-                            inner_tm = _build_tm(indices_override)
-                        except IndexError:
-                            inner_tm = _build_tm(base_indices)
-                        model = inner_tm
-                        optimizer = _make_tm_optimizer(inner_tm, lr_bb, lr_head_mult, wd, opt=opt_name)
-                        scheduler, step_per_batch = (None, False)
-                        if scheduler_name == "onecycle":
-                            scheduler = torch.optim.lr_scheduler.OneCycleLR(
-                                optimizer, max_lr=[g["lr"] for g in optimizer.param_groups],
-                                steps_per_epoch=steps, epochs=max_epochs
-                            )
-                            step_per_batch = True
-                        elif scheduler_name == "cosine":
-                            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                                optimizer, T_max=max_epochs,
-                                eta_min=min(g["lr"] for g in optimizer.param_groups) * 0.01
-                            )
-
-                    # Use the same criterion shape as earlier compile for parity
-                    criterion = _compile_with_optimizer(model, "adam", 1e-3, None, "none", steps, max_epochs, conf)[2]
-
-                    val = _single_execution(
-                        trial, train_iterable, val_iterable,
-                        model, optimizer, criterion, scheduler, step_per_batch, freeze_ep=freeze_ep
-                    )
-                    exec_vals.append(val)
-
-                result = float(np.mean(exec_vals))
-                dur = time.time() - trial_t0
-                print(f"\n  --> trial {trial.number} done: val_dice={result:.5f}, time={time.strftime('%H:%M:%S', time.gmtime(dur))}")
-
-                prev_score = best_print["score"]
-                prev_cfg = best_print["cfg"]
-                _print_sxs_diff(prev_cfg, cfg_current, prev_score, result)
-
-                if (prev_score is None) or (result > prev_score + 1e-12):
-                    if prev_score is None:
-                        print(_col("   ✅ Baseline established (first completed trial).", _C.GREEN))
-                    else:
-                        delta = result - prev_score
-                        print(_col(f"   ✅ NEW BEST! Improved by +{delta:.5f}", _C.GREEN))
-                    best_print["score"] = result
-                    best_print["cfg"] = cfg_current
-                else:
-                    gap = prev_score - result
-                    print(_col(f"\n   ==> Off current best by {gap:.5f}", _C.CYAN))
-
-                return result
-
-            # ----- model knobs (UNet/Swin branches) -----
-            trial_hps: Dict[str, Any] = {}
-            if model_key == "swin":
-                if phase == "HB":
-                    C, ss_half, attn_d, proj_d, mlp_d, drop_p = _swin_space_hb(trial)
-                    ss_size = 0 if ss_half == 0 else hb_data_hp["fixed"]["window_size"] // 2
-                    ch = len(getattr(conf, "channels_used", getattr(conf, "channel_list", []))) or len(conf.channel_list)
-                    model = SwinUNet(h=patch_h, w=patch_w, ch=ch, c=C,
-                                     patch_size=hb_data_hp["fixed"]["patch_size"],
-                                     window_size=hb_data_hp["fixed"]["window_size"],
-                                     ss_size=ss_size, attn_drop=attn_d, proj_drop=proj_d,
-                                     mlp_drop=mlp_d, drop_path=drop_p)
-                    trial_hps.update(dict(C=C, ss_size=ss_size, attn_drop=attn_d,
-                                          proj_drop=proj_d, mlp_drop=mlp_d, drop_path=drop_p))
-                else:
-                    fixed = hb_data_hp["fixed"]
-                    ch = len(getattr(conf, "channels_used", getattr(conf, "channel_list", []))) or len(conf.channel_list)
-                    model = SwinUNet(h=patch_h, w=patch_w, ch=ch,
-                                     c=fixed.get("C", 64),
-                                     patch_size=fixed.get("patch_size", 16),
-                                     window_size=fixed.get("window_size", 4),
-                                     ss_size=fixed.get("ss_size", 2),
-                                     attn_drop=fixed.get("attn_drop", 0.0),
-                                     proj_drop=fixed.get("proj_drop", 0.0),
-                                     mlp_drop=fixed.get("mlp_drop", 0.0),
-                                     drop_path=fixed.get("drop_path", 0.1))
-                    trial_hps.update(dict(C=fixed.get("C", 64), ss_size=fixed.get("ss_size", 2),
-                                          attn_drop=fixed.get("attn_drop", 0.0), proj_drop=fixed.get("proj_drop", 0.0),
-                                          mlp_drop=fixed.get("mlp_drop", 0.0), drop_path=fixed.get("drop_path", 0.1)))
-            else:
-                if phase == "HB":
-                    dilation, layer_cnt, l2w, drp = _unet_space_hb(trial)
-                else:
-                    fixed = hb_data_hp["fixed"]
-                    dilation = fixed.get("dilation_rate", 1)
-                    layer_cnt = fixed.get("layer_count", 64)
-                    l2w = float(fixed.get("l2_weight", 1e-4))
-                    drp = float(fixed.get("dropout", 0.0))
-                input_shape = [tune_batch, patch_h, patch_w, len(getattr(conf, "channel_list", []))]
-                model = UNet(input_shape, 1, dilation_rate=dilation, layer_count=layer_cnt,
-                             l2_weight=l2w, dropout=drp)
-                trial_hps.update({"dilation_rate": dilation, "layer_count": layer_cnt,
-                                  "l2_weight": l2w, "dropout": drp})
-
-            # ----- optimizer & scheduler -----
-            if phase == "HB":
-                opt_name, lr, wd = _optimizer_space_hb(trial)
-                scheduler_name = _schedule_space_hb(trial)
-            else:
-                fixed_opt = hb_data_hp["fixed"]["optimizer"]
-                opt_name, lr, wd = _optimizer_space_bo(trial, fixed_opt)
-                scheduler_name = hb_data_hp["fixed"]["scheduler"]
-
-            # Build/compile
-            model, optimizer, criterion, scheduler, step_per_batch = _compile_with_optimizer(
-                model, opt_name, lr, wd, scheduler_name, steps, max_epochs, conf
+        # Multiple executions per trial
+        scores = []
+        for _ in range(int(executions_per_trial)):
+            score = _single_execution(
+                trial, train_iter, val_iter, model, optimizer, criterion, scheduler, step_per_batch, freeze_for
             )
+            scores.append(score)
 
-            # Pretty header once per trial
-            hp_line = dict(optimizer=opt_name, learning_rate=lr, scheduler=scheduler_name)
-            if wd is not None: hp_line["weight_decay"] = wd
-            hp_line.update(trial_hps)
-            _trial_banner(trial.number, model_key, hp_line,
-                          dict(patch_h=patch_h, patch_w=patch_w,
-                               augmenter_strength=aug_str, min_pos_frac=minpos))
+        best_score = float(np.max(scores))
+        return best_score
 
-            cfg_current = dict(hp_line)
-            cfg_current.update(dict(
-                patch_h=patch_h, patch_w=patch_w,
-                augmenter_strength=aug_str, min_pos_frac=minpos,
-                model=model_key, phase=phase
-            ))
-
-            # ----- multiple executions per trial (average objective) -----
-            exec_vals: List[float] = []
-            for exec_idx in range(max(1, int(executions_per_trial))):
-                if exec_idx > 0:
-                    model, optimizer, criterion, scheduler, step_per_batch = _compile_with_optimizer(
-                        UNet(input_shape, 1, dilation_rate=trial_hps.get("dilation_rate", 1),
-                             layer_count=trial_hps.get("layer_count", 64),
-                             l2_weight=trial_hps.get("l2_weight", 1e-4),
-                             dropout=trial_hps.get("dropout", 0.0)).to(device)
-                        if model_key == "unet"
-                        else SwinUNet(h=patch_h, w=patch_w, ch=len(getattr(conf, "channel_list", [])),
-                                      c=trial_hps.get("C", 64),
-                                      patch_size=hb_data_hp["fixed"].get("patch_size", 16),
-                                      window_size=hb_data_hp["fixed"].get("window_size", 4),
-                                      ss_size=trial_hps.get("ss_size", 2),
-                                      attn_drop=trial_hps.get("attn_drop", 0.0),
-                                      proj_drop=trial_hps.get("proj_drop", 0.0),
-                                      mlp_drop=trial_hps.get("mlp_drop", 0.0),
-                                      drop_path=trial_hps.get("drop_path", 0.1)).to(device),
-                        opt_name, lr, wd, scheduler_name, steps, max_epochs, conf
-                    )
-
-                val = _single_execution(trial, train_iterable, val_iterable,
-                                        model, optimizer, criterion, scheduler, step_per_batch)
-                exec_vals.append(val)
-
-            result = float(np.mean(exec_vals))
-            dur = time.time() - trial_t0
-            print(f"\n  --> trial {trial.number} done: val_dice={result:.5f}, time={time.strftime('%H:%M:%S', time.gmtime(dur))}")
-
-            prev_score = best_print["score"]
-            prev_cfg = best_print["cfg"]
-            _print_sxs_diff(prev_cfg, cfg_current, prev_score, result)
-
-            if (prev_score is None) or (result > prev_score + 1e-12):
-                if prev_score is None:
-                    print(_col("   ✅ Baseline established (first completed trial).", _C.GREEN))
-                else:
-                    delta = result - prev_score
-                    print(_col(f"   ✅ NEW BEST! Improved by +{delta:.5f}", _C.GREEN))
-                best_print["score"] = result
-                best_print["cfg"] = cfg_current
-            else:
-                gap = prev_score - result
-                print(_col(f"\n   ==> Off current best by {gap:.5f}", _C.CYAN))
-
-            return result
-
-        except RuntimeError as e:
-            if "out of memory" in str(e).lower():
-                try: torch.cuda.empty_cache()
-                except Exception: pass
-                raise optuna.TrialPruned()
-            raise
-
-    n_trials = _default(getattr(conf, "tune_hb_max_trials", None), 30) if phase == "HB" \
-               else _default(getattr(conf, "tune_max_trials", None), 30)
-
+    # Run study
+    tag = f"{model_key} tuning"
+    fixed = hb_data_hp.get("fixed", {})
+    n_trials = _default(getattr(conf, "tune_trials", None), 20)
+    if phase == "HB":
+        n_trials = _default(getattr(conf, "tune_trials_hb", None), n_trials)
     study.optimize(objective, n_trials=int(n_trials), gc_after_trial=True)
 
-    # Artifacts (compact)
-    trials_sorted = [t for t in study.trials if t.value is not None]
-    trials_sorted.sort(key=lambda t: t.value, reverse=True)
-
-    # Persist CSV of trials
-    tag = f"{model_key}_tuning"
-    _ensure_dir(project_dir)
-    csv_path = os.path.join(project_dir, f"{tag}_{phase}_all_trials.csv")
-    hp_names = sorted({k for t in trials_sorted for k in t.params.keys()})
-    lines = [",".join(["trial_id", "value"] + hp_names)]
-    for t in trials_sorted:
-        row = [str(t.number), "" if t.value is None else str(t.value)]
-        for name in hp_names:
-            row.append(str(t.params.get(name, "")))
-        lines.append(",".join(row))
-    with open(csv_path, "w") as f:
-        f.write("\n".join(lines))
-
-    # Short MD summary
-    best_top = trials_sorted[: min(5, len(trials_sorted))]
-    md_lines = [
-        f"# {tag} — {phase} summary",
-        f"- date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        f"- objective: val__safe_dice (max)",
-        f"- max_epochs: {max_epochs}",
-        f"- steps_per_epoch: {steps}",
-        f"- val_steps: {val_steps}",
-        f"- tune_batch_size: {tune_batch}",
-        "",
-        "## top trials"
-    ]
-    for i, tr in enumerate(best_top, 1):
-        hp_str = ", ".join([f"{k}={v}" for k, v in tr.params.items()])
-        md_lines += [f"### {i}. trial {tr.number}", f"- score: {tr.value}", f"- hparams: {hp_str}", ""]
-    md_lines += ["## files",
-                 f"- all trials csv: {csv_path}",
-                 f"- tensorboard: {project_dir}"]
-    with open(os.path.join(project_dir, f"{tag}_{phase}_summary.md"), "w") as f:
-        f.write("\n".join(md_lines))
-
-    # Save best params JSON
-    best_params = dict(study.best_trial.params)
+    # Save best
+    best_params = study.best_params
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    best_json_path = os.path.join(project_dir, f"{stamp}_{tag}_{phase}_best_hparams.json")
+    best_json_path = os.path.join(project_dir, f"{stamp}_{model_key}_{phase}_best.json")
     with open(best_json_path, "w") as f:
         json.dump(best_params, f, indent=2)
     print(f"\n[{tag} {phase}] best saved to: {best_json_path}")
@@ -996,10 +815,11 @@ def _run_phase(conf, model_key: str, phase: str, project_dir: str,
 
 
 # -----------------------
-# Chained tuner (HB --> BO)
+# Chained tuner (HB -> BO)
 # -----------------------
-def _tune_chained(conf, model_type: str = "unet",
-                  executions_per_trial: int = 1, overwrite: bool = False) -> Dict[str, Any]:
+def _tune_chained(
+    conf, model_type: str = "unet", executions_per_trial: int = 1, overwrite: bool = False
+) -> Dict[str, Any]:
     """
     Two-stage tuning: HyperBand (broad) then Bayesian Optimization (refinement).
     Batch stays fixed; BCE+(1-Dice) loss; clipnorm=1.0; AMP off for parity/stability.
@@ -1013,20 +833,28 @@ def _tune_chained(conf, model_type: str = "unet",
     # Budgets
     hb_epochs = _default(getattr(config, "tune_num_epochs", None), 20)
     bo_epochs = _default(getattr(config, "tune_num_epochs_bo", None), hb_epochs)
-    steps     = _default(getattr(config, "tune_steps_per_epoch", None),
-                         min(100, _default(getattr(config, "num_training_steps", 100), 100)))
-    val_steps = _default(getattr(config, "tune_validation_steps", None),
-                         min(50, _default(getattr(config, "num_validation_images", 50), 50)))
-    tune_batch = _default(getattr(config, "tune_batch_size", None),
-                          min(8, _default(getattr(config, "train_batch_size", 8), 8)))
+    steps = _default(
+        getattr(config, "tune_steps_per_epoch", None),
+        min(100, _default(getattr(config, "num_training_steps", 100), 100)),
+    )
+    val_steps = _default(
+        getattr(config, "tune_validation_steps", None),
+        min(50, _default(getattr(config, "num_validation_images", 50), 50)),
+    )
+    tune_batch = _default(
+        getattr(config, "tune_batch_size", None),
+        min(8, _default(getattr(config, "train_batch_size", 8), 8)),
+    )
 
     logs_dir = _default(getattr(config, "logs_dir", "./logs"), "./logs")
-    key = "unet" if model_type.lower() == "unet" else ("swin" if model_type.lower() == "swin" else "tm")
+    key = (
+        "unet" if model_type.lower() == "unet" else ("swin" if model_type.lower() == "swin" else "tm")
+    )
     project_dir = os.path.join(logs_dir, f"{key}_tuning")
     _ensure_dir(project_dir)
 
     # HB data defaults
-    hb_aug    = _default(getattr(config, "augmenter_strength", None), 1.0)
+    hb_aug = _default(getattr(config, "augmenter_strength", None), 1.0)
     hb_minpos = _default(getattr(config, "min_pos_frac", None), 0.0)
 
     if key == "swin":
@@ -1048,7 +876,7 @@ def _tune_chained(conf, model_type: str = "unet",
             patch_w=hb_patch_w,
             augmenter_strength=hb_aug,
             min_pos_frac=hb_minpos,
-            fixed={},  # will be filled from HB winners for BO
+            fixed={},
         )
     else:
         hb_patch_h, hb_patch_w = 384, 384
@@ -1057,48 +885,62 @@ def _tune_chained(conf, model_type: str = "unet",
             patch_w=hb_patch_w,
             augmenter_strength=hb_aug,
             min_pos_frac=hb_minpos,
+            fixed={},
         )
 
     # Phase 1: HB
-    hb_best, _ = _run_phase(
-        config, key, "HB", project_dir,
-        tune_batch, hb_epochs, steps, val_steps,
-        executions_per_trial, overwrite, hb_data_hp
+    hb_best, study_hb = _run_phase(
+        config,
+        key,
+        "HB",
+        project_dir,
+        tune_batch,
+        hb_epochs,
+        steps,
+        val_steps,
+        executions_per_trial,
+        overwrite,
+        hb_data_hp,
     )
 
-    # Build BO fixed set from HB winners
+    # Merge HB best and set up BO fixed settings
     if key == "unet":
-        fixed = {
-            "optimizer": hb_best.get("optimizer", _default(getattr(config, "optimizer_fn", "adam"), "adam")),
-            "scheduler": hb_best.get("scheduler", "none"),
-            "dilation_rate": hb_best.get("dilation_rate", _default(getattr(config, "dilation_rate", 1), 1)),
-            "layer_count":   hb_best.get("layer_count", 64),
-            "l2_weight":     float(hb_best.get("l2_weight", 1e-4)),
-            "dropout":       float(hb_best.get("dropout", 0.0)),
-        }
-        bo_patch_h = int(hb_best.get("patch_h", hb_patch_h))
-        bo_patch_w = int(hb_best.get("patch_w", hb_patch_w))
+        fixed = dict(
+            optimizer=hb_best.get("optimizer", _default(getattr(config, "optimizer_fn", "adam"), "adam")),
+            scheduler=hb_best.get("scheduler", "none"),
+            dilation_rate=int(hb_best.get("dilation_rate", getattr(config, "dilation_rate", 1))),
+            layer_count=int(hb_best.get("layer_count", getattr(config, "layer_count", 64))),
+            l2_weight=float(hb_best.get("l2_weight", getattr(config, "l2_weight", 0.0))),
+            dropout=float(hb_best.get("dropout", getattr(config, "dropout", 0.0))),
+        )
+        bo_patch_h, bo_patch_w = int(hb_data_hp["patch_h"]), int(hb_data_hp["patch_w"])
     elif key == "swin":
         fixed = {
-            "optimizer": hb_best.get("optimizer", _default(getattr(config, "optimizer_fn", "adam"), "adam")),
+            "optimizer": hb_best.get(
+                "optimizer", _default(getattr(config, "optimizer_fn", "adam"), "adam")
+            ),
             "scheduler": hb_best.get("scheduler", "none"),
-            "C":             hb_best.get("C", _default(getattr(config, "swin_base_C", 64), 64)),
-            "patch_size":    hb_data_hp["fixed"]["patch_size"],
-            "window_size":   hb_data_hp["fixed"]["window_size"],
-            "ss_size":       (hb_data_hp["fixed"]["window_size"] // 2) if int(hb_best.get("use_shift", 1)) == 1 else 0,
-            "attn_drop":     float(hb_best.get("attn_drop", 0.0)),
-            "proj_drop":     float(hb_best.get("proj_drop", 0.0)),
-            "mlp_drop":      float(hb_best.get("mlp_drop", 0.0)),
-            "drop_path":     float(hb_best.get("drop_path", 0.1)),
+            "C": int(hb_best.get("C", getattr(config, "swin_base_C", 64))),
+            "patch_size": hb_data_hp["fixed"]["patch_size"],
+            "window_size": hb_data_hp["fixed"]["window_size"],
+            "ss_size": (hb_data_hp["fixed"]["window_size"] // 2)
+            if int(hb_best.get("use_shift", 1)) == 1
+            else 0,
+            "attn_drop": float(hb_best.get("attn_drop", 0.0)),
+            "proj_drop": float(hb_best.get("proj_drop", 0.0)),
+            "mlp_drop": float(hb_best.get("mlp_drop", 0.0)),
+            "drop_path": float(hb_best.get("drop_path", 0.1)),
         }
         bo_patch_h, bo_patch_w = int(hb_data_hp["patch_h"]), int(hb_data_hp["patch_w"])
     else:  # tm
         fixed = {
-            "optimizer": hb_best.get("optimizer", _default(getattr(config, "optimizer_fn", "adamw"), "adamw")),
+            "optimizer": hb_best.get(
+                "optimizer", _default(getattr(config, "optimizer_fn", "adamw"), "adamw")
+            ),
             "scheduler": hb_best.get("scheduler", "none"),
-            "tm_decoder":              hb_best.get("tm_decoder", "UperNetDecoder"),
-            "tm_decoder_channels":     int(hb_best.get("tm_decoder_channels", 256)),
-            "tm_head_dropout":         float(hb_best.get("tm_head_dropout", 0.0)),
+            "tm_decoder": hb_best.get("tm_decoder", "UperNetDecoder"),
+            "tm_decoder_channels": int(hb_best.get("tm_decoder_channels", 256)),
+            "tm_head_dropout": float(hb_best.get("tm_head_dropout", 0.0)),
             "tm_freeze_backbone_epochs": int(hb_best.get("tm_freeze_backbone_epochs", 1)),
         }
         bo_patch_h, bo_patch_w = int(hb_data_hp["patch_h"]), int(hb_data_hp["patch_w"])
@@ -1112,15 +954,25 @@ def _tune_chained(conf, model_type: str = "unet",
         fixed=fixed,
     )
     bo_best, _ = _run_phase(
-        config, key, "BO", project_dir,
-        tune_batch, bo_epochs, steps, val_steps,
-        executions_per_trial, overwrite, bo_data_hp
+        config,
+        key,
+        "BO",
+        project_dir,
+        tune_batch,
+        bo_epochs,
+        steps,
+        val_steps,
+        executions_per_trial,
+        overwrite,
+        bo_data_hp,
     )
 
     # Merge final settings
     final = dict(fixed)
-    if "learning_rate" in bo_best: final["learning_rate"] = float(bo_best["learning_rate"])
-    if "weight_decay" in bo_best:  final["weight_decay"]  = float(bo_best["weight_decay"])
+    if "learning_rate" in bo_best:
+        final["learning_rate"] = float(bo_best["learning_rate"])
+    if "weight_decay" in bo_best:
+        final["weight_decay"] = float(bo_best["weight_decay"])
     final["patch_h"] = bo_patch_h
     final["patch_w"] = bo_patch_w
     final["augmenter_strength"] = float(hb_aug)
@@ -1130,10 +982,10 @@ def _tune_chained(conf, model_type: str = "unet",
     final_path = os.path.join(project_dir, f"{stamp}_{key}_tuning_FINAL_best_hparams.json")
     with open(final_path, "w") as f:
         json.dump(final, f, indent=2)
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print(f"[{key} tuning] FINAL merged best saved to: {final_path}")
     print(json.dumps(final, indent=2))
-    print("="*60 + "\n")
+    print("=" * 60 + "\n")
     return final
 
 
@@ -1151,37 +1003,3 @@ def tune_SwinUNetPP(conf) -> Dict[str, Any]:
 def tune_TerraMind(conf) -> Dict[str, Any]:
     return _tune_chained(conf, model_type="tm")
 
-
-def apply_best_to_config(conf, best: Dict[str, Any], model_type: str) -> None:
-    if "optimizer" in best:      conf.optimizer_fn = best["optimizer"]
-    if "learning_rate" in best:  conf.learning_rate = best["learning_rate"]
-    if "weight_decay" in best:   conf.weight_decay  = best["weight_decay"]
-    if "scheduler" in best:      conf.scheduler     = best["scheduler"]
-
-    conf.augmenter_strength = best.get("augmenter_strength", getattr(conf, "augmenter_strength", 1.0))
-    conf.min_pos_frac       = best.get("min_pos_frac", getattr(conf, "min_pos_frac", 0.0))
-    conf.patch_size         = [int(best.get("patch_h", conf.patch_size[0])),
-                               int(best.get("patch_w", conf.patch_size[1]))]
-
-    if model_type.lower() == "unet":
-        conf.dilation_rate = best.get("dilation_rate", getattr(conf, "dilation_rate", 1))
-        conf.layer_count   = best.get("layer_count", getattr(conf, "layer_count", 64))
-        conf.l2_weight     = best.get("l2_weight", getattr(conf, "l2_weight", 1e-4))
-        conf.dropout       = best.get("dropout", getattr(conf, "dropout", 0.0))
-    elif model_type.lower() == "swin":
-        conf.swin_base_C     = best.get("C", getattr(conf, "swin_base_C", 64))
-        conf.swin_patch_size = best.get("patch_size", getattr(conf, "swin_patch_size", 16))
-        conf.swin_window     = best.get("window_size", getattr(conf, "swin_window", 4))
-        conf.swin_ss_size    = best.get("ss_size", getattr(conf, "swin_ss_size", 2))
-        conf.swin_attn_drop  = best.get("attn_drop", getattr(conf, "swin_attn_drop", 0.0))
-        conf.swin_proj_drop  = best.get("proj_drop", getattr(conf, "swin_proj_drop", 0.0))
-        conf.swin_mlp_drop   = best.get("mlp_drop", getattr(conf, "swin_mlp_drop", 0.0))
-        conf.swin_drop_path  = best.get("drop_path", getattr(conf, "swin_drop_path", 0.1))
-    else:  # tm
-        conf.tm_decoder                 = best.get("tm_decoder", getattr(conf, "tm_decoder", "UperNetDecoder"))
-        conf.tm_decoder_channels        = best.get("tm_decoder_channels", getattr(conf, "tm_decoder_channels", 256))
-        conf.tm_head_dropout            = best.get("tm_head_dropout", getattr(conf, "tm_head_dropout", 0.0))
-        conf.tm_freeze_backbone_epochs  = best.get("tm_freeze_backbone_epochs", getattr(conf, "tm_freeze_backbone_epochs", 1))
-        conf.tm_lr_backbone             = best.get("tm_lr_backbone", getattr(conf, "tm_lr_backbone", 1e-5))
-        conf.tm_lr_head_mult            = best.get("tm_lr_head_mult", getattr(conf, "tm_lr_head_mult", 10.0))
-        conf.tm_weight_decay            = best.get("tm_weight_decay", getattr(conf, "tm_weight_decay", 1e-5))
