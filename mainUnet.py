@@ -1,31 +1,32 @@
 # Main script to run preprocessing, training or prediction tasks.
-# Convert this to a notebook if you are using jupyter.
+# Convert this to a notebook if you are using Jupyter.
 
 # This is where you can change which config to use
 import config.configUnet as configuration
 
+# For running on differnt Modalities, adjust the modality in the config file.
+
 # INIT
 config = configuration.Configuration().validate()
+
+# Project modules
 import preprocessing
+import tuning
 import training
-import prediction
-import postprocessing
 import evaluation
 
-if __name__ == "__main__":
+# USE PYTORCH ENV FOR THIS PROJECT
 
+if __name__ == "__main__":
     # PREPROCESSING
-    #preprocessing.preprocess_all(config)
+    preprocessing.preprocess_all(config)
+
+    # HYPERPARAMETER TUNING
+    best = tuning.tune_UNet(config)
 
     # TRAINING
-
-    # train a UNet model
     for i in range(10):
         training.train_UNet(config)
-  
 
-    # Strain a SwinUNet transformer model
-    #training.train_SwinUNetPP(config)
-
-
-
+    # EVLAUATION
+    evaluation.evaluate_unet(config)

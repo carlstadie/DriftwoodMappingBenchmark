@@ -1,3 +1,5 @@
+# configUnet.py
+
 import os
 import warnings
 import numpy as np
@@ -5,120 +7,134 @@ from osgeo import gdal
 
 
 class Configuration:
-    """ Configuration of all parameters used in preprocessing.py, training.py and prediction.py """
-    def __init__(self):
+    """
+    Configuration used by preprocessing.py, training.py, tuning.py and evaluation.py (UNet).
+    Only includes parameters actually referenced by the UNet workflows.
+    """
 
+    def __init__(self):
         # --------- RUN NAME ---------
-        self.run_name = 'Unet_Planet_utm8'                     # custom name for this run, eg resampled_x3, alpha60, new_train etc
+        self.run_name = f"UNETx{self.modality}"
 
         # ---------- PATHS -----------
+        # Modality to be run can be AE, PS or S2
+        self.modality = "AE"
 
-        # Modality to be preprocessed
+        # Training data and imagery
+        self.training_data_dir = (
+            f"/isipd/projects/p_planetdw/data/dw_detection/aerial/training/{self.modality}"
+        )
+        self.training_area_fn = "aoi_UNK.gpkg"
+        self.training_polygon_fn = "dw_UNK.gpkg"
+        self.training_image_dir = (
+            f"/isipd/projects/p_planetdw/data/dw_detection/aerial/training_images/{self.modality}"
+        )
 
-        self.modality = 'PS'                          # 'MACS', 'PS', 'S2'
+        # Preprocessed data roots
+        self.preprocessed_base_dir = (
+            f"/isipd/projects/p_planetdw/data/dw_detection/aerial/preprocessed"
+        )
+        # Keep explicit override exactly as provided
+        self.preprocessed_dir = (
+            "/isipd/projects/p_planetdw/data/methods_test/training_data/MACS/"
+            "20250429-1208_MACS_test_utm8"
+        )
 
-        # Path to training areas and polygons shapefiles
-        self.training_data_dir = f'/isipd/projects/p_planetdw/data/methods_test/training/{self.modality}/'  # path to training data
-        self.training_area_fn = 'aoi_utm_8a.gpkg'#'merged_rectangles.gpkg' 
-        self.training_polygon_fn = 'dw_utm_8p.gpkg' #'merged_polygons.gpkg' 
-        
-        # Path to training images
-        self.training_image_dir = f'/isipd/projects/p_planetdw/data/methods_test/training_images/{self.modality}/'  # path to training images
-        # Output base path where all preprocessed data folders will be created, change paths depending on image modality
-        self.preprocessed_base_dir = f'/isipd/projects/p_planetdw/data/methods_test/training_data/{self.modality}/'  # path to preprocessed data
+        # Checkpointing / logs / results
+        self.continue_model_path = None
+        self.saved_models_dir = f"/isipd/projects/p_planetdw/data/methods_test/models/UNET/{self.modality}"
+        self.logs_dir = f"/isipd/projects/p_planetdw/data/methods_test/logs/UNET/{self.modality}"
+        self.results_dir = f"/isipd/projects/p_planetdw/data/methods_test/results/UNET/{self.modality}"
 
-        # Path to preprocessed data to use for this training
-        # Preprocessed frames are a tif file per area, with bands [normalised img bands + label band]
-        self.preprocessed_dir = f'/isipd/projects/p_planetdw/data/methods_test/training_data/{self.modality}/20250604-0816_Unet_Planet_utm8'               # if set to None, it will use the most recent preprocessing data
+        # -------- IMAGE / CHANNELS --------
+        self.image_file_type = ".tif"
+        self.resample_factor = 1
+        self.channels_used = [True, True, True]
+        self.preprocessing_bands = np.where(self.channels_used)[0]
+        self.channel_list = self.preprocessing_bands
 
-        # Path to existing model to be used to continue training on [optional]
-        self.continue_model_path = None 
-
-        
-        # Path where trained models and training logs will be stored
-        self.saved_models_dir = '/isipd/projects/p_planetdw/data/methods_test/models'
-        self.logs_dir = '/isipd/projects/p_planetdw/data/methods_test/logs'
-        
-       
-
-        # ------- IMAGE CONFIG ---------
-        # Image file type, used to find images for training and prediction.
-        self.image_file_type = ".jp2"              # supported are .tif and .jp2
-
-        # Up-sampling factor to use during preprocessing and prediction. 1 ->no up-sampling, 2 ->double resolution, etc
-        self.resample_factor = 3
-
-        # Selection of channels to include.
-        self.channels_used = [True, True, True, True]
-
-        # ------ TRAINING CONFIG -------
-        # Split of input frames into training, test and validation data   (train_ratio = 1 - test_ratio - val_ratio)
+        # -------- DATA SPLIT --------
         self.test_ratio = 0.2
         self.val_ratio = 0.2
+        # train is 1 - test_ratio - val_ratio
 
-        # Model configuration
+        # -------- TRAINING (CORE) --------
         self.patch_size = (256, 256)
-        self.tversky_alphabeta = (0.7, 0.3)        # alpha is weight of false positives, beta weight of false negatives
+        self.tune_patch_h = None
+        self.tune_patch_w = None
+        self.tversky_alphabeta = (0.6, 0.4)
+        self.dilation_rate = 1
+        self.model_name = self.run_name
 
-        # Batch and epoch numbers
-        self.train_batch_size = 16
-        self.num_epochs = 150
-        self.num_training_steps = 500
+        # ------ OPTIM / SCHED / EPOCHS ------
+        self.loss_fn = "tversky"
+        self.optimizer_fn = "adam"
+        self.train_batch_size = 8
+        self.num_epochs = 10
+        self.num_training_steps = 100
         self.num_validation_images = 50
 
-        # --- POSTPROCESSING CONFIG ----
-        self.create_polygons = True                # To polygonize the raster predictions to polygon VRT
-        self.postproc_workers = 12                 # number of CPU threads for parallel processing of polygons/centroids
+        # ------ EMA ------
+        self.use_ema = False
+        self.ema_decay = 0.999
+        self.eval_with_ema = True
 
+        # ------ CHECKPOINTING / LOGGING ------
+        self.model_save_interval = None
+        self.overfit_one_batch = False
+        self.train_verbose = True
+        self.train_epoch_log_every = 1
+        self.train_print_heavy = True
+        self.show_progress = True
+        self.log_visuals_every = 5
+        self.vis_rgb_idx = (0, 1, 2)
 
-        # ------ ADVANCED SETTINGS ------
-        # GPU selection, if you have multiple GPUS.
-        # Used for both training and prediction, so use multiple config files to run on two GPUs in parallel.
-        self.selected_GPU = 7 # =CUDA id, 0 is first.    -1 to disable GPU and use CPU
+        # ------ AUG / SAMPLING / DATALOADER ------
+        self.augmenter_strength = 0.7
+        self.min_pos_frac = 0.02
+        self.pos_ratio = 0.5
+        self.patch_stride = None
+        self.fit_workers = 8
+        self.steps_per_execution = 1
 
-        # Preprocessing
-        self.train_image_type = self.image_file_type           # used to find training images
-        self.train_image_prefix = ''               # to filter only certain images by prefix, eg ps_
-        self.preprocessing_bands = np.where(self.channels_used)[0]         # [0, 1, 2, 3] etc
-        self.preprocessed_name = self.run_name
-        self.rasterize_borders = False             # whether to include borders when rasterizing label polygons
+        # ------ EVALUATION ------
+        self.eval_threshold = 0.5
+        self.heavy_eval_steps = 50
 
+        # ------ MIXED PRECISION / COMPILE / REPRO ------
+        self.use_torch_compile = False
+        self.seed = None
+        self.clip_norm = 0.0
 
-        # Training
-        self.loss_fn = 'tversky'                   # selection of loss function
-        self.optimizer_fn = 'adam1'             # selection of optimizer function
-        self.dilation_rate = 1                  # dilation rate for dilated convolutions, 1 is no dilation
-        self.model_name = self.run_name            # this is used as saved model name (concat with timestamp)
-        self.boundary_weight = 5                  # weighting applied to boundaries, (rest of image is 1)
-        self.model_save_interval = None            # [optional] save model every N epochs. If None, only best is saved
-        self.channel_list = self.preprocessing_bands
-        self.input_shape = (self.patch_size[0], self.patch_size[1], len(self.channel_list))
+        # --- POSTPROCESSING (kept for downstream scripts) ----
+        self.create_polygons = True
+        self.postproc_workers = 12
 
-        # Prediction
-        self.predict_images_file_type = self.image_file_type  # used to find images to predict
-        self.predict_images_prefix = ''            # to filter only certain images by prefix, eg ps_
-        self.overwrite_analysed_files = False      # whether to overwrite existing files previously predicted
-        self.prediction_name = self.run_name       # this is used in the prediction folder name (concat with timestamp)
-        self.prediction_output_dir = None         # set dynamically at prediction time
-        self.prediction_patch_size = None          # if set to None, patch size is automatically read from loaded model
-        self.prediction_operator = "MAX"           # "MAX" or "MIN": used to choose value for overlapping predictions
-        self.output_prefix = 'det_' + self.prediction_name + '_'
-        self.output_dtype = 'bool'                 # 'bool' is smallest size, 'uint8' has nodata (255), 'float32' is raw
+        # Prediction outputs (for completeness with your tools)
+        self.predict_images_file_type = self.image_file_type
+        self.predict_images_prefix = ""
+        self.overwrite_analysed_files = False
+        self.prediction_name = self.run_name
+        self.prediction_output_dir = None
+        self.prediction_patch_size = None
+        self.prediction_operator = "MAX"
+        self.output_prefix = "det_" + self.prediction_name + "_"
+        self.output_dtype = "bool"
 
-        # Set overall GDAL settings
-        gdal.UseExceptions()                       # Enable exceptions, instead of failing silently
-        gdal.SetCacheMax(32000000000)              # IO cache size in KB, used when warping/resampling. higher is better
-        gdal.SetConfigOption('CPL_LOG', '/dev/null')
-        warnings.filterwarnings('ignore')          # Disable warnings
+        # ------ GPU / ENV ------
+        self.selected_GPU = 6
+        gdal.UseExceptions()
+        gdal.SetCacheMax(32000000000)
+        gdal.SetConfigOption("CPL_LOG", "/dev/null")
+        warnings.filterwarnings("ignore")
 
-        # Set up tensorflow environment variables before importing tensorflow
-        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'   # Hide TF logs.  [Levels: 0->DEBUG, 1->INFO, 2->WARNING, 3->ERROR]
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(self.selected_GPU)
+        if int(self.selected_GPU) == -1:
+            os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(self.selected_GPU)
 
     def validate(self):
-        """Validate config to catch errors early, and not during or at the end of processing"""
-
-        # Check that training data paths exist
+        # Basic path checks
         if not os.path.exists(self.training_data_dir):
             raise ConfigError(f"Invalid path: config.training_data_dir = {self.training_data_dir}")
         if not os.path.exists(os.path.join(self.training_data_dir, self.training_area_fn)):
@@ -128,38 +144,20 @@ class Configuration:
         if not os.path.exists(self.training_image_dir):
             raise ConfigError(f"Invalid path: config.training_image_dir = {self.training_image_dir}")
 
-        # Create required output folders if not existing
-        for config_dir in ["preprocessed_base_dir", "saved_models_dir", "logs_dir"]:
-            if not os.path.exists(getattr(self, config_dir)):
+        for cfg_dir in ["preprocessed_base_dir", "saved_models_dir", "logs_dir"]:
+            target = getattr(self, cfg_dir)
+            if not os.path.exists(target):
                 try:
-                    os.mkdir(getattr(self, config_dir))
-                except OSError:
-                    raise ConfigError(f"Unable to create folder config.{config_dir} = {getattr(self, config_dir)}")
+                    os.mkdir(target)
+                except OSError as exc:
+                    raise ConfigError(f"Unable to create folder config.{cfg_dir} = {target}") from exc
 
-        # Check valid output formats
         if self.predict_images_file_type not in [".tif", ".jp2"]:
-            raise ConfigError("Invalid format for config.predict_images_file_type. Supported formats are .tif and .jp2")
+            raise ConfigError("Invalid format for config.predict_images_file_type. Supported: .tif, .jp2")
         if self.output_dtype not in ["bool", "uint8", "float32"]:
-            raise ConfigError("Invalid format for config.output_dtype: Must be one of 'bool', 'uint8' and 'float32'"
-                              "\n['bool' writes as binary data for smallest file size, but no nodata values. 'uint8' "
-                              "writes background as 0, trees as 1 and nodata value 255 for missing/masked areas. "
-                              "'float32' writes the raw prediction values, ignoring config.prediction_threshold.] ")
-
-        # Check that tensorflow can see the specified GPU
-        import tensorflow as tf
-        if not tf.compat.v1.config.list_physical_devices("GPU"):
-            if int(self.selected_GPU) == -1:
-                pass
-            elif int(self.selected_GPU) == 0:
-                raise ConfigError(f"Tensorflow cannot detect a GPU. Enable TF logging and fix the symlinks until "
-                                  f"there are no more errors for .so libraries that couldn't be loaded")
-            else:
-                raise ConfigError(f"Tensorflow cannot detect your GPU with CUDA id {self.selected_GPU}")
-
+            raise ConfigError("Invalid config.output_dtype: choose 'bool', 'uint8' or 'float32'")
         return self
 
 
 class ConfigError(Exception):
     pass
-    
-    

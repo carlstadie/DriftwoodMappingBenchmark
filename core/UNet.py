@@ -1,103 +1,245 @@
-from tensorflow.keras import models, layers, regularizers
-from tensorflow.keras import backend as K
-#import keras
-#from keras import backend as k
+# core/UNet.py
+from typing import Iterable, Union, Optional
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 
-def UNet(input_shape, input_label_channels, dilation_rate = 1, layer_count=64, regularizers=regularizers.l2(0.0001), weight_file=None,
-         summary=False):
-    """ Method to declare the UNet model.
-    Args:
-        input_shape: tuple(int, int, int, int)
-            Shape of the input in the format (batch, height, width, channels).
-        input_label_channels: list([int])
-            list of index of label channels, used for calculating the number of channels in model output.
-        dilation_rate: int
-            Dilation rate for the convolutional layers.
-        layer_count: (int, optional)
-            Count of kernels in first layer. Number of kernels in other layers grows with a fixed factor.
-        regularizers: keras.regularizers
-            regularizers to use in each layer.
-        weight_file: str
-            path to the weight file.
-        summary: bool
-            Whether to print the model summary
+class ConvBlock(nn.Module):
+    """
+    Two 3x3 convs (optional dilation) with ReLU after each,
+    then BatchNorm and optional Dropout (after BN) to match TF.
+
+    using old TF BN defaults to stay true to the holy Ronneberger: epsilon=1e-3, momentum=0.99 (batch weight 0.01).
+    PyTorch BN uses 'momentum' as batch weight, so set 0.01.
     """
 
-    input_img = layers.Input(input_shape[1:], name='Input')
-    pp_in_layer = input_img
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        dilation: int = 1,
+        dropout: float = 0.0,
+    ) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size=3,
+            padding=dilation,
+            dilation=dilation,
+            bias=True,
+        )
+        self.conv2 = nn.Conv2d(
+            out_channels,
+            out_channels,
+            kernel_size=3,
+            padding=dilation,
+            dilation=dilation,
+            bias=True,
+        )
+        # Align BN with TF defaults
+        self.bn = nn.BatchNorm2d(
+            out_channels, eps=1e-3, momentum=0.01, affine=True, track_running_stats=True
+        )
+        self.do = nn.Dropout(p=dropout) if dropout and dropout > 0 else nn.Identity()
 
-    c1 = layers.Conv2D(1 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(dilation_rate, dilation_rate))(pp_in_layer)
-    c1 = layers.Conv2D(1 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(dilation_rate, dilation_rate))(c1)
-    n1 = layers.BatchNormalization()(c1)
-    p1 = layers.MaxPooling2D((2, 2))(n1)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.relu(self.conv1(x), inplace=False)
+        x = F.relu(self.conv2(x), inplace=False)
+        x = self.bn(x)
+        x = self.do(x)
+        return x
 
-    c2 = layers.Conv2D(2 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(dilation_rate, dilation_rate))(p1)
-    c2 = layers.Conv2D(2 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(dilation_rate, dilation_rate))(c2)
-    n2 = layers.BatchNormalization()(c2)
-    p2 = layers.MaxPooling2D((2, 2))(n2)
 
-    c3 = layers.Conv2D(4 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(dilation_rate, dilation_rate))(p2)
-    c3 = layers.Conv2D(4 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(dilation_rate, dilation_rate))(c3)
-    n3 = layers.BatchNormalization()(c3)
-    p3 = layers.MaxPooling2D((2, 2))(n3)
+class AttentionGate2D(nn.Module):
+    """Attention gate used to modulate skip connections."""
 
-    c4 = layers.Conv2D(8 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(dilation_rate, dilation_rate))(p3)
-    c4 = layers.Conv2D(8 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(dilation_rate, dilation_rate))(c4)
-    n4 = layers.BatchNormalization()(c4)
-    p4 = layers.MaxPooling2D(pool_size=(2, 2))(n4)
+    def __init__(
+        self,
+        in_channels_x: int,
+        in_channels_g: int,
+        inter_channels: Optional[int] = None,
+    ) -> None:
+        super().__init__()
+        if inter_channels is None:
+            inter_channels = max(1, in_channels_g // 4)
 
-    c5 = layers.Conv2D(16 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(dilation_rate, dilation_rate))(p4)
-    c5 = layers.Conv2D(16 * layer_count, (3, 3), activation='relu', padding='same', dilation_rate=(dilation_rate, dilation_rate))(c5)
-    n5 = layers.BatchNormalization()(c5)
+        self.theta_x = nn.Conv2d(in_channels_x, inter_channels, kernel_size=1, bias=True)
+        self.phi_g = nn.Conv2d(in_channels_g, inter_channels, kernel_size=1, bias=True)
+        self.psi = nn.Conv2d(inter_channels, 1, kernel_size=1, bias=True)
 
-    u6 = attention_up_and_concat(n5, n4)
-    c6 = layers.Conv2D(8 * layer_count, (3, 3), activation='relu', padding='same')(u6)
-    c6 = layers.Conv2D(8 * layer_count, (3, 3), activation='relu', padding='same')(c6)
-    n6 = layers.BatchNormalization()(c6)
+    @staticmethod
+    def _resize_like(src: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+        return F.interpolate(src, size=ref.shape[-2:], mode="bilinear", align_corners=False)
 
-    u7 = attention_up_and_concat(n6, n3)
-    c7 = layers.Conv2D(4 * layer_count, (3, 3), activation='relu', padding='same')(u7)
-    c7 = layers.Conv2D(4 * layer_count, (3, 3), activation='relu', padding='same')(c7)
-    n7 = layers.BatchNormalization()(c7)
+    def forward(self, x: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+        theta_x = self.theta_x(x)
+        phi_g = self.phi_g(g)
 
-    u8 = attention_up_and_concat(n7, n2)
-    c8 = layers.Conv2D(2 * layer_count, (3, 3), activation='relu', padding='same')(u8)
-    c8 = layers.Conv2D(2 * layer_count, (3, 3), activation='relu', padding='same')(c8)
-    n8 = layers.BatchNormalization()(c8)
+        if theta_x.shape[-2:] != phi_g.shape[-2:]:
+            phi_g = self._resize_like(phi_g, theta_x)
 
-    u9 = attention_up_and_concat(n8, n1)
-    c9 = layers.Conv2D(1 * layer_count, (3, 3), activation='relu', padding='same')(u9)
-    c9 = layers.Conv2D(1 * layer_count, (3, 3), activation='relu', padding='same')(c9)
-    n9 = layers.BatchNormalization()(c9)
+        f = F.relu(theta_x + phi_g, inplace=False)
+        psi = self.psi(f)
+        rate = torch.sigmoid(psi)  # (N,1,H,W)
+        return x * rate
 
-    d = layers.Conv2D(len(input_label_channels), (1, 1), activation='sigmoid', kernel_regularizer=regularizers)(n9)
 
-    seg_model = models.Model(inputs=[input_img], outputs=[d])
+class UNetAttention(nn.Module):
+    """
+    UNet with attention-based skip connections.
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        num_classes: int,
+        dilation_rate: int = 1,
+        layer_count: int = 64,
+        dropout: float = 0.0,
+        l2_weight: float = 1e-4,
+    ) -> None:
+        super().__init__()
+        lc = layer_count
+
+        # Encoder
+        self.enc1 = ConvBlock(in_channels, 1 * lc, dilation=dilation_rate, dropout=dropout)
+        self.pool1 = nn.MaxPool2d(2)
+
+        self.enc2 = ConvBlock(1 * lc, 2 * lc, dilation=dilation_rate, dropout=dropout)
+        self.pool2 = nn.MaxPool2d(2)
+
+        self.enc3 = ConvBlock(2 * lc, 4 * lc, dilation=dilation_rate, dropout=dropout)
+        self.pool3 = nn.MaxPool2d(2)
+
+        self.enc4 = ConvBlock(4 * lc, 8 * lc, dilation=dilation_rate, dropout=dropout)
+        self.pool4 = nn.MaxPool2d(2)
+
+        self.center = ConvBlock(8 * lc, 16 * lc, dilation=dilation_rate, dropout=dropout)
+
+        # Attention gates
+        self.att6 = AttentionGate2D(in_channels_x=8 * lc, in_channels_g=16 * lc)
+        self.att7 = AttentionGate2D(in_channels_x=4 * lc, in_channels_g=8 * lc)
+        self.att8 = AttentionGate2D(in_channels_x=2 * lc, in_channels_g=4 * lc)
+        self.att9 = AttentionGate2D(in_channels_x=1 * lc, in_channels_g=2 * lc)
+
+        # Decoder
+        self.dec6 = ConvBlock(in_channels=24 * lc, out_channels=8 * lc, dilation=1, dropout=dropout)
+        self.dec7 = ConvBlock(in_channels=12 * lc, out_channels=4 * lc, dilation=1, dropout=dropout)
+        self.dec8 = ConvBlock(in_channels=6 * lc, out_channels=2 * lc, dilation=1, dropout=dropout)
+        self.dec9 = ConvBlock(in_channels=3 * lc, out_channels=1 * lc, dilation=1, dropout=dropout)
+
+        # Head
+        self.head = nn.Conv2d(1 * lc, num_classes, kernel_size=1, bias=True)
+
+        self.l2_weight = float(l2_weight) if l2_weight is not None else 0.0
+
+    @staticmethod
+    def _upsample_like(x: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+        return F.interpolate(x, size=ref.shape[-2:], mode="bilinear", align_corners=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Encoder
+        c1 = self.enc1(x)
+        p1 = self.pool1(c1)
+
+        c2 = self.enc2(p1)
+        p2 = self.pool2(c2)
+
+        c3 = self.enc3(p2)
+        p3 = self.pool3(c3)
+
+        c4 = self.enc4(p3)
+        p4 = self.pool4(c4)
+
+        c5 = self.center(p4)
+
+        # Decoder + attention-gated skips
+        u6 = F.interpolate(c5, scale_factor=2.0, mode="bilinear", align_corners=False)
+        u6 = self._upsample_like(u6, c4)
+        a6 = self.att6(c4, u6)
+        c6 = self.dec6(torch.cat([u6, a6], dim=1))
+
+        u7 = F.interpolate(c6, scale_factor=2.0, mode="bilinear", align_corners=False)
+        u7 = self._upsample_like(u7, c3)
+        a7 = self.att7(c3, u7)
+        c7 = self.dec7(torch.cat([u7, a7], dim=1))
+
+        u8 = F.interpolate(c7, scale_factor=2.0, mode="bilinear", align_corners=False)
+        u8 = self._upsample_like(u8, c2)
+        a8 = self.att8(c2, u8)
+        c8 = self.dec8(torch.cat([u8, a8], dim=1))
+
+        u9 = F.interpolate(c8, scale_factor=2.0, mode="bilinear", align_corners=False)
+        u9 = self._upsample_like(u9, c1)
+        a9 = self.att9(c1, u9)
+        c9 = self.dec9(torch.cat([u9, a9], dim=1))
+
+        out = torch.sigmoid(self.head(c9))
+        return out
+
+
+def _normalize_num_classes(input_label_channels: Union[int, Iterable[int]]) -> int:
+    """Normalize class-channel spec into an int."""
+    if isinstance(input_label_channels, Iterable) and not isinstance(
+        input_label_channels, (str, bytes)
+    ):
+        try:
+            return len(list(input_label_channels))
+        except Exception:
+            return int(input_label_channels)
+    return int(input_label_channels)
+
+
+def UNet(
+    input_shape,
+    input_label_channels: Union[int, Iterable[int]],
+    dilation_rate: int = 1,
+    layer_count: int = 64,
+    l2_weight: float = 1e-4,
+    dropout: float = 0.0,
+    weight_file: str = None,
+    summary: bool = False,
+) -> nn.Module:
+    """
+
+    Args:
+        input_shape: Shape-like with channels last; only last value is used.
+        input_label_channels: Number of output channels or iterable of class ids.
+    """
+    in_channels = int(input_shape[-1])
+    num_classes = _normalize_num_classes(input_label_channels)
+
+    model = UNetAttention(
+        in_channels=in_channels,
+        num_classes=num_classes,
+        dilation_rate=dilation_rate,
+        layer_count=layer_count,
+        dropout=dropout,
+        l2_weight=l2_weight,
+    )
+
     if weight_file:
-        seg_model.load_weights(weight_file)
+        try:
+            state = torch.load(weight_file, map_location="cpu")
+            if isinstance(state, dict) and "state_dict" in state:
+                model.load_state_dict(state["state_dict"])
+            elif isinstance(state, dict):
+                model.load_state_dict(state)
+            else:
+                model = state
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to load PyTorch weights from '{weight_file}': {exc}"
+            ) from exc
+
     if summary:
-        seg_model.summary()
+        total = sum(p.numel() for p in model.parameters())
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print("[UNET][MODEL] Architecture:")
+        print(model)
+        print(f"[UNET][MODEL] Total params: {total:,} - Trainable: {trainable:,}")
 
-    return seg_model
-
-
-def attention_up_and_concat(down_layer, layer):
-    in_channel = down_layer.get_shape().as_list()[3]
-    up = layers.UpSampling2D(size=(2, 2))(down_layer)
-    layer = attention_block_2d(x=layer, g=up, inter_channel=in_channel // 4)
-    my_concat = layers.Lambda(lambda x: K.concatenate([x[0], x[1]], axis=3))
-    concat = my_concat([up, layer])
-
-    return concat
-
-
-def attention_block_2d(x, g, inter_channel):
-    theta_x = layers.Conv2D(inter_channel, [1, 1], strides=[1, 1])(x)
-    phi_g = layers.Conv2D(inter_channel, [1, 1], strides=[1, 1])(g)
-    f = layers.Activation('relu')(layers.add([theta_x, phi_g]))
-    psi_f = layers.Conv2D(1, [1, 1], strides=[1, 1])(f)
-    rate = layers.Activation('sigmoid')(psi_f)
-    att_x = layers.multiply([x, rate])
-
-    return att_x
+    return model

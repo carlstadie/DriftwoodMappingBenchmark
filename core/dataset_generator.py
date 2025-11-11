@@ -1,119 +1,197 @@
-#    Author: Ankit Kariryaa, University of Bremen
+# core/dataset_generator.py
 
-from imgaug import augmenters as iaa
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+import albumentations as A
 import numpy as np
 
 
-# Sometimes(0.5, ...) applies the given augmenter in 50% of all cases,
-# e.g. Sometimes(0.5, GaussianBlur(0.3)) would blur roughly every second image.
-def imageAugmentationWithIAA():
-    sometimes = lambda aug, prob=0.5: iaa.Sometimes(prob, aug)
-    seq = iaa.Sequential([
-        # Basic aug without changing any values
-        iaa.Fliplr(0.5),  # horizontally flip 50% of all images
-        iaa.Flipud(0.5),  # vertically flip 20% of all images
-        sometimes(iaa.Crop(percent=(0, 0.1))),  # random crops
-        #
-        # # Gaussian blur and gamma contrast
-        sometimes(iaa.GaussianBlur(sigma=(0, 0.3)), 0.3),
-        # sometimes(iaa.GammaContrast(gamma=0.5, per_channel=True), 0.3),
+# ------------------------------
+# Augmentation (Albumentations)
+# ------------------------------
+def alb_augmentation(
+    patch_size: Tuple[int, int],
+    strength: float = 1.0,
+) -> A.Compose:
+    """
+    All shape-changing augs keep output size equal to the input `patch_size`.
+    `strength` scales probabilities/amounts in [0..1].
+    """
+    s = float(np.clip(strength, 0.0, 1.0))
+    h, w = int(patch_size[0]), int(patch_size[1])
 
-        # iaa.CoarseDropout((0.03, 0.25), size_percent=(0.02, 0.05), per_channel=True)
-        # sometimes(iaa.Multiply((0.75, 1.25), per_channel=True), 0.3),
-        sometimes(iaa.LinearContrast((0.3, 1.2)), 0.3),
-        # iaa.Add(value=(-0.5,0.5),per_channel=True),
-        sometimes(iaa.PiecewiseAffine(0.05), 0.3),
-        sometimes(iaa.PerspectiveTransform(0.01), 0.1)
-    ],
-        random_order=True)
-    return seq
+    # Photometric + geometric
+    aug = A.Compose(
+        [
+            A.HorizontalFlip(p=0.5 * s),
+            A.VerticalFlip(p=0.5 * s),
+            # Crop but resize back to original size
+            A.RandomResizedCrop(
+                height=h,
+                width=w,
+                scale=(max(0.0, 1.0 - 0.10 * s), 1.0),
+                ratio=(0.9, 1.1),
+                p=0.5 * s,
+            ),
+            # Photometric 
+            A.GaussianBlur(blur_limit=(3, 7), p=0.30 * s),
+            A.RandomBrightnessContrast(
+                brightness_limit=0.0,
+                contrast_limit=0.7 * s,
+                p=0.30 * s,
+            ),
+            # Geometric warps
+            # A.PiecewiseAffine(scale=0.05 * s, p=0.30 * s),
+            A.ElasticTransform(
+                alpha=1.0 * s,
+                sigma=50.0 * s,
+                alpha_affine=50.0 * s,
+                p=0.30 * s,
+            ),
+            A.Perspective(scale=(0.0, 0.01 * s), keep_size=True, p=0.10 * s),
+        ]
+    )
+    return aug
 
 
+# ------------------------------
+# Data generator
+# ------------------------------
 class DataGenerator:
-    """The datagenerator class. Defines methods for generating patches randomly and sequentially from given frames.
+    """Generate random or sequential patches from frames.
+
+    Notes
+    -----
+    * frame sampling is weighted by image area.
+    * Returns numpy arrays; training wraps them into PyTorch tensors.
+    * If `augmenter` is 'alb'/'albumentations', apply Albumentations;
+      else no aug.
+    * `min_pos_frac`, `pos_ratio`, `stride`, `weighting` are accepted for
+      compatibility with newer callers but are ignored here to keep TF behavior.
+
+      --> should change!!!
     """
 
-    def __init__(self, input_image_channel, patch_size, frame_list, frames, annotation_channel, augmenter=None):
-        """Datagenerator constructor
-
-        Args:
-            input_image_channel (list(int)): Describes which channels is the image are input channels.
-            patch_size (tuple(int,int)): Size of the generated patch.
-            frame_list (list(int)): List containing the indexes of frames to be assigned to this generator.
-            frames (list(FrameInfo)): List containing all the frames i.e. instances of the frame class.
-            augmenter  (string, optional): augmenter to use. None for no augmentation and iaa for augmentations defined
-            in imageAugmentationWithIAA function.
-        """
-        self.input_image_channel = input_image_channel
-        self.patch_size = patch_size
-        self.frame_list = frame_list
+    def __init__(
+        self,
+        input_image_channel: Sequence[int],
+        patch_size: Tuple[int, int],
+        frame_list: Sequence[int],
+        frames: Sequence[Any] | Dict[int, Any],
+        annotation_channel: int,
+        augmenter: Optional[str] = "alb",  # 'alb'/'albumentations' or None
+        augmenter_strength: float = 1.0,
+        min_pos_frac: float = 0.0,
+        pos_ratio: Optional[float] = None,  
+        stride: Optional[Tuple[int, int]] = None,  
+        weighting: str = "area",  # accepted; only 'area' supported
+        **_: Any,
+    ) -> None:
+        self.input_image_channel = list(input_image_channel)
+        self.patch_size = (int(patch_size[0]), int(patch_size[1]))
+        self.frame_list = list(frame_list)
         self.frames = frames
-        self.annotation_channel = annotation_channel
+        self.annotation_channel = int(annotation_channel)
         self.augmenter = augmenter
+        self.augmenter_strength = float(augmenter_strength)
+        self.min_pos_frac = float(min_pos_frac)
+        self.pos_ratio = None if pos_ratio is None else float(pos_ratio)
 
-        # Calculate area-based frame weights (to sample big frames more often, for even overall sampling coverage)
-        total_area = sum([frames[i].img.shape[0] * frames[i].img.shape[1] for i in frame_list])
-        self.frame_list_weights = [(frames[i].img.shape[0] * frames[i].img.shape[1])/total_area for i in frame_list]
+        # Prebuild Albumentations pipeline (uses fixed patch_size)
+        self._alb = alb_augmentation(self.patch_size, self.augmenter_strength)
 
-    # Return all training and label images and weights, generated sequentially with the given step size
-    def all_sequential_patches(self, step_size):
-        """Generate all patches from all assigned frames sequentially.
+        # Compute area-weighted sampling probabilities (TF parity)
+        total_area = 0.0
+        areas: List[float] = []
+        for i in self.frame_list:
+            fr = self._frame(i)
+            h, w = fr.img.shape[:2]
+            a = float(h * w)
+            areas.append(a)
+            total_area += a
+        total_area = max(total_area, 1e-6)
+        self.frame_list_weights = [a / total_area for a in areas]
 
-            step_size (tuple(int,int)): Size of the step when generating frames.
-            normalize (float): Probability with which a frame is normalized.
-        """
+    # -------- public --------
+    def all_sequential_patches(self, step_size: Tuple[int, int]):
+        """Return all sequential patches and labels given a step size."""
         patches = []
         for fn in self.frame_list:
-            frame = self.frames[fn]
+            frame = self._frame(fn)
             ps = frame.sequential_patches(self.patch_size, step_size)
             patches.extend(ps)
-        data = np.array(patches)
+        data = np.asarray(patches)
         img = data[..., self.input_image_channel]
         ann = data[..., self.annotation_channel]
-        return (img, ann)
+        return img, ann
 
-    # Return a batch of training and label images, generated randomly
-    def random_patch(self, BATCH_SIZE):
-        """Generate patches from random location in randomly chosen frames.
-
-        Args:
-            BATCH_SIZE (int): Number of patches to generate (sampled independently).
-        """
-        patches = []
-        for i in range(BATCH_SIZE):
-            fn = np.random.choice(self.frame_list, p=self.frame_list_weights)
-            frame = self.frames[fn]
-            patch = frame.random_patch(self.patch_size)
-            patches.append(patch)
-        data = np.array(patches)
-
+    def random_patch(self, batch_size: int):
+        """Return a single random batch (X, y)."""
+        patches = [self._sample_one_patch() for _ in range(int(batch_size))]
+        data = np.asarray(patches)
         img = data[..., self.input_image_channel]
-        ann = data[..., self.annotation_channel]
-        return (img, ann)
-#     print("Wrote {} random patches to {} with patch size {}".format(count,write_dir,patch_size))
+        ann = data[..., -1]
+        return img, ann
 
-    # Normalization takes a probability between 0 and 1 that an image will be locally normalized.
-    def random_generator(self, BATCH_SIZE):
-        """Generator for random patches, yields random patches from random location in randomly chosen frames.
-
-        Args:
-            BATCH_SIZE (int): Number of patches to generate in each yield (sampled independently).
-        """
-        seq = imageAugmentationWithIAA()
-
+    def random_generator(self, batch_size: int):
+        """Yield endless batches (X, y) as (B,H,W,C_in) and (B,H,W,1)."""
+        use_alb = str(self.augmenter).lower() in {"alb", "albumentations"}
         while True:
-            X, y = self.random_patch(BATCH_SIZE)
-            
-            if self.augmenter == 'iaa':
-                seq_det = seq.to_deterministic()
-                X = seq_det.augment_images(X)
-                # annotation chanel is the last channel neds to be augmented too, in case we are cropping or so
-                y = seq_det.augment_images(y)
-                # reassign value just to be sure
-                ann =  y[...,[0]]
-                ann[ann<0.5] = 0
-                ann[ann>=0.5] = 1
-                yield X, ann
+            X, y = self.random_patch(batch_size)  # X: (B,H,W,C_in), y: (B,H,W)
+
+            # Normalize masks to (B,H,W,1), binary 0/1
+            m = y
+            if m.ndim == 4:
+                # Could be (B, H, W, C) or (B, C, H, W)
+                if m.shape[-1] == 1:
+                    pass  # already (B, H, W, 1)
+                elif m.shape[1] == 1 and m.shape[-1] != 1:
+                    # (B, 1, H, W) -> (B, H, W, 1)
+                    m = np.transpose(m, (0, 2, 3, 1))
+                else:
+                    m = m[..., :1]  # take first class channel
+            elif m.ndim == 3:
+                m = m[..., np.newaxis]
             else:
-                ann =  y[...,[0]]
-                yield X, ann
+                raise ValueError(
+                    f"Unexpected mask shape {m.shape}; expected 3D or 4D."
+                )
+
+            m = (m > 0).astype(np.uint8)
+
+            if use_alb:
+                X_aug = np.empty_like(X, dtype=np.float32)
+                y_aug = np.empty(m.shape[:3] + (1,), dtype=np.float32)
+                for i in range(X.shape[0]):
+                    res = self._alb(
+                        image=X[i].astype(np.float32), mask=m[i, ..., 0]
+                    )
+                    X_aug[i] = res["image"].astype(np.float32)
+                    y_aug[i, ..., 0] = (res["mask"] > 0).astype(np.float32)
+                X, ann = X_aug, y_aug
+            else:
+                ann = m.astype(np.float32)
+                X = X.astype(np.float32)
+
+            yield X, ann
+
+    # -------- internal --------
+    def _frame(self, idx: int):
+        """Return frame by index for list/dict-backed storage."""
+        if not isinstance(self.frames, dict):
+            return self.frames[idx]
+        return self.frames[int(idx)]
+
+    def _sample_one_patch(self):
+        """Sample a single random patch from a frame (area-weighted)."""
+        fn = int(np.random.choice(self.frame_list, p=self.frame_list_weights))
+        frame = self._frame(fn)
+        # Frame supplies a full (H,W,C) composite. random_patch returns an H×W crop
+        # with all bands.
+        return frame.random_patch(self.patch_size)
+
+
+# Backwards-compatible alias used by newer training code
+Generator = DataGenerator
