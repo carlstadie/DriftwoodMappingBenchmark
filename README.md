@@ -66,30 +66,35 @@ Each main script typically runs:
 ├─ mainUnet.py             # UNet pipeline entry point
 ├─ mainSwinUnet.py         # Swin-UNet pipeline entry point
 ├─ mainTerraMind.py        # TerraMind pipeline entry point
+|
 ├─ preprocessing.py        # builds frame dataset (GeoTIFFs with [bands | label | boundary])
 ├─ tuning.py               # hyperparameter tuning (model-specific entrypoints)
 ├─ training.py             # shared PyTorch training loop (BF16/FP16 AMP, channels_last, EMA)
 ├─ evaluation.py           # batch evaluation: predicts masks + writes metrics CSV
+|
 ├─ config/
 │  ├─ configUnet.py        # UNet config (model+modality-aware paths)
 │  ├─ configSwinUnet.py    # Swin config (model+modality-aware paths)
 │  └─ configTerraMind.py   # TerraMind config (model+modality-aware paths)
+|
 ├─ core/
 │  ├─ UNet.py              # UNet model
 │  ├─ Swin_UNetPP.py       # Swin-UNet model
 │  ├─ TerraMind.py         # TerraMind wrapper
+|  |
 │  ├─ common/
 │  │  ├─ console.py        # colored banners, pretty printing
 │  │  ├─ model_utils.py    # AMP helpers, EMA, logits→probs, autopad forward
 │  │  ├─ data.py           # frame discovery, dataset creation
 │  │  └─ vis.py            # TensorBoard image logging
+|  |
 │  ├─ losses.py            # dice/tversky + helpers
 │  ├─ optimizers.py        # get_optimizer()
 │  ├─ split_frames.py      # split_dataset(), stats
 │  ├─ dataset_generator.py # iterable patch generator
 │  └─ frame_info.py        # FrameInfo container, normalization utils
 └─ tools/
-   └─ temp.py              # helper task used by pixi "start"
+   └─ temp.py              # random tools used for other unrelated stuff
 ```
 
 ---
