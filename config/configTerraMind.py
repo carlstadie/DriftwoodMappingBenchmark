@@ -14,18 +14,20 @@ class Configuration:
 
     def __init__(self):
         # --------- RUN NAME ---------
+        # Modality to be run can be AE, PS or S2
+        self.modality = "AE"
+
         self.run_name = f"TERRAMINDx{self.modality}"
 
         # ---------- PATHS -----------
-        # Modality to be run can be AE, PS or S2
-        self.modality = "PS"
+
 
         # Training data and imagery
         self.training_data_dir = (
             f"/isipd/projects/p_planetdw/data/methods_test/training/{self.modality}"
         )
-        self.training_area_fn = "aoi_utm_8a.gpkg"
-        self.training_polygon_fn = "dw_utm_8p.gpkg"
+        self.training_area_fn = "training_areas.gpkg"
+        self.training_polygon_fn = "test.gpkg"
         self.training_image_dir = (
             f"/isipd/projects/p_planetdw/data/methods_test/training_images/{self.modality}"
         )
@@ -35,7 +37,7 @@ class Configuration:
             f"/isipd/projects/p_planetdw/data/methods_test/training_data/{self.modality}"
         )
         self.preprocessed_dir = (
-            "/isipd/projects/p_planetdw/data/methods_test/training_data/MACS/"
+            "/isipd/projects/p_planetdw/data/methods_test/training_data/AE/"
             "20250429-1208_MACS_test_utm8"
         )
 
@@ -139,7 +141,7 @@ class Configuration:
         self.output_dtype = "bool"
 
         # ------ GPU / ENV ------
-        self.selected_gpu = 6  # CUDA device index, -1 for CPU
+        self.selected_gpu = 7  # CUDA device index, -1 for CPU
         gdal.UseExceptions()
         gdal.SetCacheMax(32000000000)
         gdal.SetConfigOption("CPL_LOG", "/dev/null")

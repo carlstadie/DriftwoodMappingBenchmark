@@ -13,6 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import CosineAnnealingLR, OneCycleLR
+from tqdm import tqdm
 
 try:
     import optuna
@@ -32,6 +33,7 @@ from core.common.model_utils import (
     _ensure_nchw,
     _forward_with_autopad,
 )
+from core.common.console import print_search_space
 from core.optimizers import get_optimizer  # project-level optimizer factory
 
 
@@ -165,7 +167,7 @@ def _trial_banner(trial_num: int, model_key: str, hp: Dict[str, Any], data_hp: D
             if k in hp:
                 arch_bits.append(f"{k}={hp[k]}")
     elif model_key == "swin":
-        for k in ("C", "attn_drop", "proj_drop", "mlp_drop", "drop_path", "ss_size"):
+        for k in ("C", "drop_path"):
             if k in hp:
                 arch_bits.append(f"{k}={hp[k]}")
     else:
@@ -292,14 +294,19 @@ def _unet_space_hb(trial: "optuna.Trial") -> Tuple[int, int, float, float]:
     return int(dilation), int(layer_cnt), float(l2w), float(drp)
 
 
-def _swin_space_hb(trial: "optuna.Trial") -> Tuple[int, int, float, float, float, float]:
-    C = trial.suggest_categorical("C", [48, 64, 96])
-    ss_half = trial.suggest_categorical("use_shift", [0, 1])
-    attn_drop = trial.suggest_categorical("attn_drop", [0.0, 0.1])
-    proj_drop = trial.suggest_categorical("proj_drop", [0.0, 0.1])
-    mlp_drop = trial.suggest_categorical("mlp_drop", [0.0, 0.1, 0.2])
-    drop_path = trial.suggest_categorical("drop_path", [0.0, 0.1, 0.2])
-    return int(C), int(ss_half), float(attn_drop), float(proj_drop), float(mlp_drop), float(drop_path)
+def _swin_space_hb(trial: "optuna.Trial") -> Tuple[int, float]:
+    # Respect architecture limits:
+    # - If use_imagenet_weights=True --Y Swin-T only--> C=96 is required.
+    # - Otherwise allow {64, 96}.
+    use_imnet = False
+    try:
+        use_imnet = bool(getattr(config, "use_imagenet_weights", False))
+    except Exception:
+        use_imnet = False
+    C_choices = [96] if use_imnet else [64, 96]
+    C = trial.suggest_categorical("C", C_choices)
+    drop_path = trial.suggest_categorical("drop_path", [0.0, 0.1, 0.2, 0.3])
+    return int(C), float(drop_path)
 
 
 def _data_space_hb(trial: "optuna.Trial") -> Tuple[int, int, float, float]:
@@ -393,8 +400,8 @@ def _set_backbone_requires_grad(model: nn.Module, requires_grad: bool):
     if hasattr(inner, "model") and isinstance(inner.model, nn.Module):
         inner = inner.model
     if hasattr(inner, "backbone") and isinstance(inner.backbone, nn.Module):
-        for p in inner.backbone.parameters():
-            p.requires_grad = requires_grad
+            for p in inner.backbone.parameters():
+                p.requires_grad = requires_grad
 
 
 def _tm_raw_to_probs(
@@ -619,7 +626,8 @@ def _run_phase(
 
             model.train()
             train_it = iter(train_iterable)
-            for _ in range(steps):
+            train_range = tqdm(range(steps), desc=f"Epoch {epoch}/{max_epochs} [Train]", leave=False)
+            for _ in train_range:
                 batch = next(train_it, None)
                 if batch is None:
                     train_it = iter(train_iterable)
@@ -676,7 +684,8 @@ def _run_phase(
             val_it = iter(val_iterable)
             val_dice_accum = 0.0
             with torch.no_grad():
-                for _ in range(val_steps):
+                val_range = tqdm(range(val_steps), desc=f"Epoch {epoch}/{max_epochs} [Val]", leave=False)
+                for _ in val_range:
                     vb = next(val_it, None)
                     if vb is None:
                         break
@@ -732,7 +741,7 @@ def _run_phase(
             opt, lr, wd = _optimizer_space_hb(trial) if phase == "HB" else _optimizer_space_bo(trial, fixed.get("optimizer", "adam"))
             sched = _schedule_space_hb(trial) if phase == "HB" else trial.suggest_categorical("scheduler", ["none", "cosine", "onecycle"])
         elif model_key == "swin":
-            C, use_shift, attn_drop, proj_drop, mlp_drop, drop_path = _swin_space_hb(trial) if phase == "HB" else (None, None, None, None, None, None)
+            C, drop_path = _swin_space_hb(trial) if phase == "HB" else (None, None)
             opt, lr, wd = _optimizer_space_hb(trial) if phase == "HB" else _optimizer_space_bo(trial, fixed.get("optimizer", "adam"))
             sched = _schedule_space_hb(trial) if phase == "HB" else trial.suggest_categorical("scheduler", ["none", "cosine", "onecycle"])
         else:  # tm
@@ -751,20 +760,47 @@ def _run_phase(
 
         # Build model
         if model_key == "unet":
-            model = UNet([conf.train_batch_size, patch_h, patch_w, len(getattr(conf, "channel_list", []))],
-                         [len(getattr(conf, "channel_list", []))],
-                         getattr(conf, "dilation_rate", 1))
+            model = UNet(
+                [conf.train_batch_size, patch_h, patch_w, len(getattr(conf, "channel_list", []))],
+                [len(getattr(conf, "channel_list", []))],
+                getattr(conf, "dilation_rate", 1),
+            )
+
         elif model_key == "swin":
-            model = SwinUNet(h=patch_h, w=patch_w, ch=len(getattr(conf, "channel_list", [])),
-                             c=getattr(conf, "swin_base_channels", 64),
-                             patch_size=hb_data_hp["fixed"]["patch_size"])
-        else:
-            model = TerraMind(in_channels=len(getattr(conf, "channel_list", [])),
-                              num_classes=int(getattr(conf, "num_classes", 1)),
-                              modality=getattr(conf, "modality", "S2"),
-                              tm_size=getattr(conf, "terramind_size", "base"),
-                              merge_method=getattr(conf, "terramind_merge_method", "mean"),
-                              pretrained=True)
+            # Match training: channels_used has priority over channel_list
+            in_ch = len(
+                getattr(conf, "channels_used", getattr(conf, "channel_list", []))
+            )
+
+            if phase == "HB":
+                c_val = int(C)
+                dp_val = float(drop_path)
+            else:
+                c_val = int(hb_data_hp["fixed"]["C"])
+                dp_val = float(hb_data_hp["fixed"]["drop_path"])
+
+            ws_val = int(hb_data_hp["fixed"]["window_size"])
+            ps_val = int(hb_data_hp["fixed"]["patch_size"])
+
+            model = SwinUNet(
+                h=patch_h,
+                w=patch_w,
+                ch=in_ch,
+                c=c_val,
+                patch_size=ps_val,
+                window_size=ws_val,
+                drop_path=dp_val,
+            )
+
+        else:  # tm
+            model = TerraMind(
+                in_channels=len(getattr(conf, "channel_list", [])),
+                num_classes=int(getattr(conf, "num_classes", 1)),
+                modality=getattr(conf, "modality", "S2"),
+                tm_size=getattr(conf, "terramind_size", "base"),
+                merge_method=getattr(conf, "terramind_merge_method", "mean"),
+                pretrained=True,
+            )
 
         # Compile
         model, optimizer, criterion, scheduler, step_per_batch = _compile_with_optimizer(
@@ -858,10 +894,20 @@ def _tune_chained(
     hb_minpos = _default(getattr(config, "min_pos_frac", None), 0.0)
 
     if key == "swin":
-        fixed_ps = _default(getattr(config, "swin_patch_size", None), 8)
-        fixed_ws = _default(getattr(config, "swin_window", None), 4)
+        # Match training defaults: swin_patch_size=16, swin_window=7
+        fixed_ps = _default(getattr(config, "swin_patch_size", None), 16)
+        fixed_ws = _default(getattr(config, "swin_window", None), 7)
+
+        # Respect Swin-T limits when using ImageNet weights
+        use_imnet = bool(getattr(config, "use_imagenet_weights", False))
+        if use_imnet:
+            fixed_ps = 4
+            fixed_ws = 7
+
         base_H, base_W = 384, 384
-        hb_patch_h, hb_patch_w = _snap_hw_for_swin(base_H, base_W, fixed_ps, fixed_ws, down_levels=3)
+        hb_patch_h, hb_patch_w = _snap_hw_for_swin(
+            base_H, base_W, fixed_ps, fixed_ws, down_levels=3
+        )
         hb_data_hp = dict(
             patch_h=hb_patch_h,
             patch_w=hb_patch_w,
@@ -869,6 +915,8 @@ def _tune_chained(
             min_pos_frac=hb_minpos,
             fixed=dict(patch_size=fixed_ps, window_size=fixed_ws),
         )
+
+    
     elif key == "tm":
         hb_patch_h, hb_patch_w = 384, 384
         hb_data_hp = dict(
@@ -889,6 +937,8 @@ def _tune_chained(
         )
 
     # Phase 1: HB
+    print_search_space(key, "HB", config, hb_data_hp)
+
     hb_best, study_hb = _run_phase(
         config,
         key,
@@ -915,20 +965,16 @@ def _tune_chained(
         )
         bo_patch_h, bo_patch_w = int(hb_data_hp["patch_h"]), int(hb_data_hp["patch_w"])
     elif key == "swin":
+        use_imnet = bool(getattr(config, "use_imagenet_weights", False))
+        fixed_C = 96 if use_imnet else int(hb_best.get("C", getattr(config, "swin_base_channels", 96)))
         fixed = {
             "optimizer": hb_best.get(
                 "optimizer", _default(getattr(config, "optimizer_fn", "adam"), "adam")
             ),
             "scheduler": hb_best.get("scheduler", "none"),
-            "C": int(hb_best.get("C", getattr(config, "swin_base_C", 64))),
+            "C": fixed_C,
             "patch_size": hb_data_hp["fixed"]["patch_size"],
             "window_size": hb_data_hp["fixed"]["window_size"],
-            "ss_size": (hb_data_hp["fixed"]["window_size"] // 2)
-            if int(hb_best.get("use_shift", 1)) == 1
-            else 0,
-            "attn_drop": float(hb_best.get("attn_drop", 0.0)),
-            "proj_drop": float(hb_best.get("proj_drop", 0.0)),
-            "mlp_drop": float(hb_best.get("mlp_drop", 0.0)),
             "drop_path": float(hb_best.get("drop_path", 0.1)),
         }
         bo_patch_h, bo_patch_w = int(hb_data_hp["patch_h"]), int(hb_data_hp["patch_w"])
@@ -953,6 +999,9 @@ def _tune_chained(
         min_pos_frac=hb_minpos,
         fixed=fixed,
     )
+
+    print_search_space(key, "BO", config, bo_data_hp, hb_best=hb_best, fixed=fixed)
+
     bo_best, _ = _run_phase(
         config,
         key,
@@ -1002,4 +1051,3 @@ def tune_SwinUNetPP(conf) -> Dict[str, Any]:
 
 def tune_TerraMind(conf) -> Dict[str, Any]:
     return _tune_chained(conf, model_type="tm")
-

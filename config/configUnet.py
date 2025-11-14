@@ -14,29 +14,30 @@ class Configuration:
 
     def __init__(self):
         # --------- RUN NAME ---------
+        # Modality to be run can be AE, PS or S2
+        self.modality = "AE"
+        
         self.run_name = f"UNETx{self.modality}"
 
         # ---------- PATHS -----------
-        # Modality to be run can be AE, PS or S2
-        self.modality = "AE"
 
         # Training data and imagery
         self.training_data_dir = (
-            f"/isipd/projects/p_planetdw/data/dw_detection/aerial/training/{self.modality}"
+            f"/isipd/projects/p_planetdw/data/methods_test/training/{self.modality}"
         )
-        self.training_area_fn = "aoi_UNK.gpkg"
-        self.training_polygon_fn = "dw_UNK.gpkg"
+        self.training_area_fn = "training_areas.gpkg"
+        self.training_polygon_fn = "test.gpkg"
         self.training_image_dir = (
-            f"/isipd/projects/p_planetdw/data/dw_detection/aerial/training_images/{self.modality}"
+            f"/isipd/projects/p_planetdw/data/methods_test/training_images/{self.modality}"
         )
 
         # Preprocessed data roots
         self.preprocessed_base_dir = (
-            f"/isipd/projects/p_planetdw/data/dw_detection/aerial/preprocessed"
+            f"/isipd/projects/p_planetdw/data/methods_test/preprocessed"
         )
         # Keep explicit override exactly as provided
         self.preprocessed_dir = (
-            "/isipd/projects/p_planetdw/data/methods_test/training_data/MACS/"
+            "/isipd/projects/p_planetdw/data/methods_test/training_data/AE/"
             "20250429-1208_MACS_test_utm8"
         )
 

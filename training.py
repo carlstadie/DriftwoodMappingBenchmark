@@ -37,7 +37,7 @@ _AMP_DTYPE = (
 from core.Swin_UNetPP import SwinUNet
 from core.TerraMind import TerraMind
 from core.UNet import UNet
-from core.common.console import _C, _col, _fmt_seconds, _format_logs_for_print
+from core.common.console import _C, _col, _fmt_seconds
 from core.common.data import create_train_val_datasets, get_all_frames
 from core.common.model_utils import (
     ModelEMA,
@@ -89,12 +89,14 @@ def _build_model_unet() -> nn.Module:
 def _build_model_swin() -> nn.Module:
     base_c = getattr(config, "swin_base_channels", 64)
     swin_patch_size = getattr(config, "swin_patch_size", 16)
+    swin_window = getattr(config, "swin_window", 7)
     model = SwinUNet(
         h=config.patch_size[0],
         w=config.patch_size[1],
         ch=len(getattr(config, "channels_used", config.channel_list)),
         c=base_c,
         patch_size=swin_patch_size,
+        window_size=swin_window,
     )
     return model
 
@@ -284,18 +286,29 @@ class HeavyMetricsEvaluator:
                 ).contiguous(memory_format=torch.channels_last)
                 y_true = y_true.to(self.device, non_blocking=True)
 
-                # TerraMind-aware probabilities
-                y_pred_raw = _forward_with_autopad(model, x)
-                num_classes = int(getattr(config, "num_classes", 1))
+                # TerraMind-aware / Swin-aware probabilities
                 if _is_terramind_model(model):
+                    y_pred_raw = _forward_with_autopad(model, x)
+                else:
+                    # Swin / UNet: direct forward
+                    y_pred_raw = model(x)
+
+                num_classes = int(getattr(config, "num_classes", 1))
+
+                if getattr(model, "_returns_probabilities", False):
+                    # e.g. SwinUNet already returns probs in [0,1]
+                    y_prob_full = _ensure_nchw(y_pred_raw).float()
+                elif _is_terramind_model(model):
                     y_prob_full = _as_probs_from_terratorch_logits_first(
                         y_pred_raw, num_classes=num_classes
                     )
+                    y_prob_full = _ensure_nchw(y_prob_full).float()
                 else:
                     y_prob_full = _as_probs_from_terratorch(
                         y_pred_raw, num_classes=num_classes
                     )
-                y_prob_full = _ensure_nchw(y_prob_full).float()
+                    y_prob_full = _ensure_nchw(y_prob_full).float()
+
                 if y_prob_full.shape[1] > 1:
                     cls_idx = int(getattr(config, "metrics_class", 1))
                     cls_idx = max(0, min(cls_idx, y_prob_full.shape[1] - 1))
@@ -409,7 +422,7 @@ def _fit_model(
     )
     csv_logger = MetricsCSVLogger(csv_path)
 
-    # Heavy metrics evaluator
+    # Heavy metrics evaluator (start with original val_iterable)
     val_eval_steps = int(getattr(config, "heavy_eval_steps", 50))
     heavy_eval = HeavyMetricsEvaluator(
         val_iterable,
@@ -424,24 +437,32 @@ def _fit_model(
 
     # ===>>> Overfit-one-batch mode: For debugging only!!!
     if getattr(config, "overfit_one_batch", False):
-        print("==== Overfitting on one Batch ====")
-        # get one CP batch 
+        print(_col("==== WARNING: Overfitting on one Batch ====", _C.YELLOW))
+        print(
+            _col(
+                "If you are running a real training, exit and set config.overfit_one_batch to False!",
+                _C.YELLOW,
+            )
+        )
+        # get one CP batch
         first_it = iter(train_iterable)
         first_x, first_y = next(first_it)
 
         # use exact same tensors every step
         def _infinite_one_batch():
             while True:
-                # clone to avoid any accidental  operationss piling up
+                # clone to avoid any accidental operations piling up
                 yield first_x.clone(), first_y.clone()
 
-        # validation also on the same batch 
+        # validation also on the same batch
         def _repeat_val(n):
             for _ in range(int(n)):
                 yield first_x.clone(), first_y.clone()
 
         train_iterable = _infinite_one_batch()
         val_iterable = _repeat_val(getattr(config, "num_validation_images", 10))
+        # make heavy evaluator use the same overfit val
+        heavy_eval.val_iterable = val_iterable
 
     # EMA makes better generalisation (at least literature says so)
     use_ema = bool(getattr(config, "use_ema", False))
@@ -468,6 +489,9 @@ def _fit_model(
     model_save_interval = getattr(config, "model_save_interval", None)
     log_visuals_every = int(getattr(config, "log_visuals_every", 5))
     vis_rgb_idx = tuple(getattr(config, "vis_rgb_idx", (0, 1, 2)))
+
+    # log static val patches once per run
+    logged_val_patches = False
 
     # Verbosity knobs
     verbose = bool(getattr(config, "train_verbose", True))
@@ -514,18 +538,28 @@ def _fit_model(
             with torch.cuda.amp.autocast(
                 enabled=torch.cuda.is_available(), dtype=_AMP_DTYPE
             ):
-                y_pred_raw = _forward_with_autopad(model, x)
-                # TerraMind-only: decode logits->probs, else use default extractor
-                num_classes = int(getattr(config, "num_classes", 1))
+                # TerraMind: needs autopad; Swin/UNet: direct call
                 if _is_terramind_model(model):
+                    y_pred_raw = _forward_with_autopad(model, x)
+                else:
+                    y_pred_raw = model(x)
+
+                num_classes = int(getattr(config, "num_classes", 1))
+
+                if getattr(model, "_returns_probabilities", False):
+                    # e.g. SwinUNet already returns probabilities in [0,1]
+                    y_prob_full = _ensure_nchw(y_pred_raw).float()
+                elif _is_terramind_model(model):
                     y_prob_full = _as_probs_from_terratorch_logits_first(
                         y_pred_raw, num_classes=num_classes
                     )
+                    y_prob_full = _ensure_nchw(y_prob_full).float()
                 else:
                     y_prob_full = _as_probs_from_terratorch(
                         y_pred_raw, num_classes=num_classes
                     )
-                y_prob_full = _ensure_nchw(y_prob_full).float()
+                    y_prob_full = _ensure_nchw(y_prob_full).float()
+
                 # For binary-style losses/metrics, pick a single class if needed
                 if y_prob_full.shape[1] > 1:
                     cls_idx = int(getattr(config, "metrics_class", 1))
@@ -533,10 +567,14 @@ def _fit_model(
                     y_prob = y_prob_full[:, cls_idx : cls_idx + 1]
                 else:
                     y_prob = y_prob_full
-                # warn if gradients were severed (e.g. from argmax) 
+
+                # warn if gradients were severed (e.g. from argmax)
                 if _is_terramind_model(model) and not y_prob.requires_grad:
                     print(
-                        "WARNING: TerraMind y_prob has no grad - check decode path."
+                        _col(
+                            "WARNING: TerraMind y_prob has no grad - check decode path.",
+                            _C.YELLOW,
+                        )
                     )
 
                 loss = criterion(y, y_prob)
@@ -646,18 +684,27 @@ def _fit_model(
                         device, non_blocking=True
                     ).contiguous(memory_format=torch.channels_last)
                     y = y.to(device, non_blocking=True)
-                    y_pred_raw = _forward_with_autopad(model, x)
-                    # TerraMind-only decode in validation, else default
-                    num_classes = int(getattr(config, "num_classes", 1))
+
                     if _is_terramind_model(model):
+                        y_pred_raw = _forward_with_autopad(model, x)
+                    else:
+                        y_pred_raw = model(x)
+
+                    num_classes = int(getattr(config, "num_classes", 1))
+
+                    if getattr(model, "_returns_probabilities", False):
+                        y_prob_full = _ensure_nchw(y_pred_raw).float()
+                    elif _is_terramind_model(model):
                         y_prob_full = _as_probs_from_terratorch_logits_first(
                             y_pred_raw, num_classes=num_classes
                         )
+                        y_prob_full = _ensure_nchw(y_prob_full).float()
                     else:
                         y_prob_full = _as_probs_from_terratorch(
                             y_pred_raw, num_classes=num_classes
                         )
-                    y_prob_full = _ensure_nchw(y_prob_full).float()
+                        y_prob_full = _ensure_nchw(y_prob_full).float()
+
                     if y_prob_full.shape[1] > 1:
                         cls_idx = int(getattr(config, "metrics_class", 1))
                         cls_idx = max(0, min(cls_idx, y_prob_full.shape[1] - 1))
@@ -677,6 +724,7 @@ def _fit_model(
                             if isinstance(v, torch.Tensor)
                             else float(v)
                         )
+
                     # keep first batch for visualization
                     if x_vis is None:
                         x_vis, y_vis, y_hat_vis = (
@@ -684,6 +732,34 @@ def _fit_model(
                             y[:8].clone(),
                             y_prob[:8].clone(),
                         )
+
+                        # Log raw val patches (input + mask) once per run
+                        if not logged_val_patches:
+                            try:
+                                n_show = min(8, x_vis.size(0))
+
+                                # Inputs as-is (NCHW)
+                                tb.add_images(
+                                    "data/val_input",
+                                    x_vis[:n_show].detach().cpu(),
+                                    epoch,
+                                )
+
+                                # Masks -> single channel float
+                                y_for_vis = y_vis[:n_show].detach().float().cpu()
+                                if y_for_vis.dim() == 3:
+                                    y_for_vis = y_for_vis.unsqueeze(1)
+                                elif y_for_vis.dim() == 4 and y_for_vis.size(1) > 1:
+                                    y_for_vis = y_for_vis[:, :1]
+
+                                tb.add_images(
+                                    "data/val_mask",
+                                    y_for_vis,
+                                    epoch,
+                                )
+                                logged_val_patches = True
+                            except Exception:
+                                pass
 
                 denom = max(1, val_count if val_count > 0 else val_steps)
                 avg_val_loss = val_loss_accum / denom
@@ -733,7 +809,7 @@ def _fit_model(
             except Exception:
                 pass
 
-        # TensorBoard scalars - group train/val into one chart per metric
+        # ===== TensorBoard scalars – same logic as old training.py =====
         if "loss" in logs or "val_loss" in logs:
             pair = {}
             if "loss" in logs:
@@ -849,22 +925,30 @@ def _fit_model(
             if lr_val is not None:
                 head += f"  lr={lr_val:.2e}"
             print(head)
-            print("  " + _format_logs_for_print(logs))
-            if print_heavy:
-                heavy_keys = [
-                    k
-                    for k in logs.keys()
-                    if k.startswith("val_")
-                    and k
-                    not in ("val_loss", "val_accuracy", "val_dice_coef")
-                ]
-                if len(heavy_keys) > 0:
-                    print(
-                        "  heavy: "
-                        + " | ".join(
-                            [f"{k}={logs[k]:.4f}" for k in sorted(heavy_keys)]
-                        )
-                    )
+
+            # Split logs into train / val for organized printing
+            train_logs = {
+                k: v for k, v in logs.items()
+                if not k.startswith("val_") and k != "best_val_loss"
+            }
+            val_logs = {
+                k: v for k, v in logs.items()
+                if k.startswith("val_") or k == "best_val_loss"
+            }
+
+            def _format_all(d: Dict[str, Any]) -> str:
+                parts = []
+                for k, v in d.items():
+                    if isinstance(v, (float, int)):
+                        parts.append(f"{k}={v:.4f}")
+                    else:
+                        parts.append(f"{k}={v}")
+                return " | ".join(parts)
+
+            if train_logs:
+                print("  train: " + _format_all(train_logs))
+            if val_logs:
+                print("   val: " + _format_all(val_logs))
 
     # End of training: export full model once
     final_export_path = f"{model_path}.pt"
@@ -922,7 +1006,7 @@ def _prepare_model_and_logging(model_path: str) -> Tuple[Optional[str], int]:
 
 
 # -----------------------------
-# Public training functions 
+# Public training functions
 # -----------------------------
 def train_UNet(conf):
     """Create and train a new UNet model with fast execution and extensive logging."""
@@ -948,7 +1032,7 @@ def train_UNet(conf):
     # Build model
     model = _build_model_unet()
 
-    # Optional compile (PyTorch 2.0+)
+    # Optional compile (PyTorch 2.0+
     if getattr(config, "use_torch_compile", False) and hasattr(torch, "compile"):
         try:
             model = torch.compile(model)  # type: ignore[attr-defined]

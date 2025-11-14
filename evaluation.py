@@ -1,19 +1,25 @@
+# evaluation.py (PyTorch) - Full-image sliding-window evaluation with BF16 + channels-last
+# Evaluates all checkpoints in saved_models_dir and computes dataset-level metrics
+# matching the training implementation (core.losses). Outputs georeferenced prediction
+# masks and a CSV summary table.
+
 from __future__ import annotations
 
+import csv as csv_module
 import glob
 import os
 import time
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import rasterio
 import torch
 from tqdm import tqdm
 
-from core.UNet import UNet
+# ===== Project imports =====
 from core.Swin_UNetPP import SwinUNet
 from core.TerraMind import TerraMind
-
+from core.UNet import UNet
 from core.common.console import _C, _col, _fmt_seconds
 from core.common.data import get_all_frames
 from core.common.model_utils import (
@@ -24,19 +30,68 @@ from core.common.model_utils import (
     _is_terramind_model,
 )
 from core.frame_info import image_normalize
+from core.losses import (
+    Hausdorff_distance,
+    IoU,
+    accuracy,
+    boundary_intersection_over_union,
+    dice_coef,
+    dice_loss,
+    f1_score,
+    f_beta,
+    nominal_surface_distance,
+    sensitivity,
+    specificity,
+)
 from core.split_frames import split_dataset
 
+# ===== Fast execution defaults / mixed precision =====
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+torch.backends.cudnn.benchmark = True  # auto-tune kernels
+
+# Prefer BF16 if supported (more stable than FP16); fallback to FP16 otherwise
+_AMP_DTYPE = (
+    torch.bfloat16
+    if (torch.cuda.is_available() and torch.cuda.is_bf16_supported())
+    else torch.float16
+)
+
 
 # -----------------------------
-# Simple metric accumulator
+# Metric accumulator (dataset-level, training-style)
 # -----------------------------
 class MetricAccumulator:
-    """Accumulate metrics over multiple predictions to compute epoch-level stats."""
+    """
+    Accumulate metrics over multiple predictions using the same metric
+    implementations as in training (core.losses), then average over the whole
+    test dataset.
 
-    def __init__(self) -> None:
+    All metrics are computed on [B=1, C=1, H, W] tensors to match training API.
+    """
+
+    def __init__(self, device: torch.device, threshold: float = 0.5) -> None:
+        self.device = device
+        self.threshold = float(threshold)
         self.reset()
 
+        # Same metric set as training (light + heavy)
+        self.metric_fns = {
+            "dice_coef": dice_coef,
+            "dice_loss": dice_loss,
+            "IoU": IoU,
+            "accuracy": accuracy,
+            "sensitivity": sensitivity,
+            "specificity": specificity,
+            "f1_score": f1_score,
+            "f_beta": f_beta,
+            "nominal_surface_distance": nominal_surface_distance,
+            "Hausdorff_distance": Hausdorff_distance,
+            "boundary_intersection_over_union": boundary_intersection_over_union,
+        }
+
     def reset(self) -> None:
+        """Reset accumulation counters for a new evaluation run."""
         self.n = 0
         self.sums: Dict[str, float] = {
             "dice_coef": 0.0,
@@ -52,55 +107,64 @@ class MetricAccumulator:
             "boundary_intersection_over_union": 0.0,
         }
 
-    @staticmethod
-    def _dice_coef(y_true: np.ndarray, y_pred: np.ndarray, eps: float = 1e-6) -> float:
-        y_true = y_true.astype(np.float32)
-        y_pred = y_pred.astype(np.float32)
-        inter = np.sum(y_true * y_pred)
-        den = np.sum(y_true) + np.sum(y_pred)
-        return float((2.0 * inter + eps) / (den + eps))
+    def _to_tensors(
+        self, y_true_np: np.ndarray, y_prob_np: np.ndarray
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Convert [H,W] numpy arrays in [0,1] to [1,1,H,W] torch tensors
+        on the target device for metric computation.
+        """
+        y_true = torch.from_numpy(y_true_np.astype(np.float32))
+        y_prob = torch.from_numpy(y_prob_np.astype(np.float32))
+
+        if y_true.ndim == 2:
+            # [H,W] -> [1,1,H,W]
+            y_true = y_true.unsqueeze(0).unsqueeze(0)
+            y_prob = y_prob.unsqueeze(0).unsqueeze(0)
+        elif y_true.ndim == 3 and y_true.shape[0] == 1:
+            # Allow [1,H,W] -> [1,1,H,W]
+            y_true = y_true.unsqueeze(0)
+            y_prob = y_prob.unsqueeze(0)
+        else:
+            raise ValueError(f"Unexpected GT shape for metrics: {y_true.shape}")
+
+        y_true = y_true.to(self.device, non_blocking=True)
+        y_prob = y_prob.to(self.device, non_blocking=True)
+        return y_true, y_prob
 
     @staticmethod
-    def _iou(y_true: np.ndarray, y_pred: np.ndarray, eps: float = 1e-6) -> float:
-        y_true = y_true.astype(np.float32)
-        y_pred = y_pred.astype(np.float32)
-        inter = np.sum(y_true * y_pred)
-        union = np.sum(y_true + y_pred) - inter
-        return float((inter + eps) / (union + eps))
+    def _as_float(value: Any) -> float:
+        """Extract scalar float from tensor or primitive."""
+        if isinstance(value, torch.Tensor):
+            return float(value.detach().mean().cpu().item())
+        return float(value)
 
-    @staticmethod
-    def _acc(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-        total = y_true.size
-        correct = np.sum((y_true > 0.5) == (y_pred > 0.5))
-        return float(correct) / float(max(1, total))
+    def add(self, y_true_np: np.ndarray, y_prob_np: np.ndarray) -> None:
+        """
+        Accumulate metrics for one prediction/ground-truth pair, using the same
+        metric functions as training. y_true_np, y_prob_np are [H,W] in [0,1].
+        """
+        y_true_np = np.clip(y_true_np, 0.0, 1.0)
+        y_prob_np = np.clip(y_prob_np, 0.0, 1.0)
 
-    def add(self, y_true: np.ndarray, y_prob: np.ndarray) -> None:
-        """Accumulate metrics for one prediction/ground-truth pair."""
-        y_true = np.clip(y_true, 0.0, 1.0)
-        y_prob = np.clip(y_prob, 0.0, 1.0)
-        y_bin = (y_prob >= 0.5).astype(np.float32)
+        y_true, y_prob = self._to_tensors(y_true_np, y_prob_np)
+        y_bin = (y_prob >= self.threshold).float()
 
-        dice = self._dice_coef(y_true, y_bin)
-        iou = self._iou(y_true, y_bin)
-        acc = self._acc(y_true, y_bin)
+        for name, fn in self.metric_fns.items():
+            # Match training behavior: prefer soft probabilities, fall back to binarized
+            try:
+                val = fn(y_true, y_prob)
+            except Exception:
+                val = fn(y_true, y_bin)
+            self.sums[name] += self._as_float(val)
 
-        # Simple placeholders for additional metrics to preserve compatibility.
-        self.sums["dice_coef"] += dice
-        self.sums["dice_loss"] += (1.0 - dice)
-        self.sums["IoU"] += iou
-        self.sums["accuracy"] += acc
-        self.sums["sensitivity"] += dice
-        self.sums["specificity"] += acc
-        self.sums["f1_score"] += dice
-        self.sums["f_beta"] += dice
-        self.sums["nominal_surface_distance"] += 0.0
-        self.sums["Hausdorff_distance"] += 0.0
-        self.sums["boundary_intersection_over_union"] += iou
         self.n += 1
 
     def finalize(self) -> Dict[str, float]:
-        """Compute the average metrics over all added samples."""
-        out = {}
+        """
+        Compute the average metrics over all added samples (dataset-level).
+        """
+        out: Dict[str, float] = {}
         div = float(max(1, self.n))
         for k, v in self.sums.items():
             out[k] = float(v) / div
@@ -111,6 +175,7 @@ class MetricAccumulator:
 # Data helpers (reuse training ordering)
 # -----------------------------
 def _list_preprocessed_paths(preprocessed_dir: str) -> List[str]:
+    """Discover and sort preprocessed .tif frames by integer stem."""
     image_paths = sorted(
         glob.glob(os.path.join(preprocessed_dir, "*.tif")),
         key=lambda f: int(os.path.basename(f)[:-4]),
@@ -119,8 +184,8 @@ def _list_preprocessed_paths(preprocessed_dir: str) -> List[str]:
 
 
 def _gather_frames_and_test_indices(config) -> Tuple[list, list, list]:
-    """Load frames once and read train/val/test split indices."""
-    frames = get_all_frames(config)  # uses config + last-band label convention
+    """Load frames once and read train/val/test split indices from JSON."""
+    frames = get_all_frames(config)  # Uses config + last-band label convention
     image_paths = _list_preprocessed_paths(config.preprocessed_dir)
 
     print("Reading train-test split from file")
@@ -137,10 +202,10 @@ def _gather_frames_and_test_indices(config) -> Tuple[list, list, list]:
 
 
 # -----------------------------
-# Model builders
+# Model builders (match training constructors)
 # -----------------------------
 def _build_unet(config) -> torch.nn.Module:
-    """Construct UNet for evaluation."""
+    """Construct UNet for evaluation matching training architecture."""
     in_ch = len(getattr(config, "channel_list", []))
     model = UNet(
         [config.train_batch_size, *config.patch_size, in_ch],
@@ -151,18 +216,24 @@ def _build_unet(config) -> torch.nn.Module:
 
 
 def _build_swin(config) -> torch.nn.Module:
-    """Construct SwinUNet for evaluation with config defaults."""
+    """Construct SwinUNet for evaluation with config defaults (match training)."""
     base_c = getattr(config, "swin_base_channels", 64)
     swin_patch = getattr(config, "swin_patch_size", 16)
+    swin_window = getattr(config, "swin_window", 7)
+
+    in_ch = len(
+        getattr(config, "channels_used", getattr(config, "channel_list", []))
+    )
+
     model = SwinUNet(
         h=config.patch_size[0],
         w=config.patch_size[1],
-        ch=len(getattr(config, "channel_list", [])),
+        ch=in_ch,
         c=base_c,
         patch_size=swin_patch,
+        window_size=swin_window,
     )
     return model
-
 
 def _build_terramind(config) -> torch.nn.Module:
     """Construct TerraMind for evaluation using the same knobs as training."""
@@ -179,7 +250,10 @@ def _build_terramind(config) -> torch.nn.Module:
     tm_merge = getattr(config, "terramind_merge_method", "mean")
     tm_size_fallback = getattr(config, "terramind_size", "base")
 
-    def _parse_size_from_backbone(s: Optional[str], default_size: str = "base"):
+    def _parse_size_from_backbone(
+        s: Optional[str], default_size: str = "base"
+    ) -> Tuple[Optional[str], str]:
+        """Parse TerraMind size token from backbone string."""
         if not s:
             return None, default_size
         lower = s.lower()
@@ -187,14 +261,24 @@ def _build_terramind(config) -> torch.nn.Module:
             size = (
                 "large"
                 if "large" in lower
-                else ("base" if "base" in lower else ("small" if "small" in lower else ("tiny" if "tiny" in lower else default_size)))
+                else (
+                    "base"
+                    if "base" in lower
+                    else (
+                        "small"
+                        if "small" in lower
+                        else ("tiny" if "tiny" in lower else default_size)
+                    )
+                )
             )
             return s, size
         if lower in {"tiny", "small", "base", "large"}:
             return None, lower
         return None, default_size
 
-    backbone_override, tm_size = _parse_size_from_backbone(tm_backbone, tm_size_fallback)
+    backbone_override, tm_size = _parse_size_from_backbone(
+        tm_backbone, tm_size_fallback
+    )
 
     model = TerraMind(
         in_channels=in_ch,
@@ -239,10 +323,15 @@ def _load_model_from_checkpoint(
 
 
 # -----------------------------
-# Inference helpers
+# Inference helpers (sliding-window)
 # -----------------------------
 def _select_eval_channel(prob_nchw: torch.Tensor, config) -> torch.Tensor:
-    """Select class/channel for evaluation (binary default or chosen idx)."""
+    """
+    Select class/channel for evaluation (binary default or chosen idx).
+
+    Expects [B,C,H,W] (or convertible via _ensure_nchw).
+    Returns [B,1,H,W].
+    """
     prob_nchw = _ensure_nchw(prob_nchw).float()
     if prob_nchw.shape[1] > 1:
         cls_idx = int(getattr(config, "metrics_class", 1))
@@ -251,54 +340,156 @@ def _select_eval_channel(prob_nchw: torch.Tensor, config) -> torch.Tensor:
     return prob_nchw
 
 
-@torch.no_grad()
-def _infer_full_image(model: torch.nn.Module, frame, device: torch.device, config) -> np.ndarray:
+def _infer_full_image(
+    model: torch.nn.Module, frame, device: torch.device, config
+) -> np.ndarray:
     """
-    frame.img: H,W,C_in  (already preprocessed feature bands)
-    frame.annotations: H,W
-    Use only the first K = len(config.channel_list) channels for inputs.
+    Sliding-window full-image inference that mirrors the training forward path:
+      - same channel selection (channels_used / channel_list)
+      - same _forward_with_autopad
+      - same TerraMind / non-TerraMind logits -> probabilities decode
+      - same channels_last + AMP dtype
+
+    Returns a [H,W] numpy array of probabilities in [0,1].
     """
-    x = frame.img
-    k = len(getattr(config, "channel_list", []))
-    if x.shape[2] < k:
+    x_full = frame.img  # [H,W,C]
+    img_h, img_w = x_full.shape[:2]
+
+    # Match how models are built: TerraMind/Swin can use channels_used; UNet uses channel_list.
+    channels_used = getattr(
+        config, "channels_used", getattr(config, "channel_list", [])
+    )
+    k = len(channels_used)
+
+    if x_full.shape[2] < k:
         raise RuntimeError(
-            f"Frame has {x.shape[2]} channels but config.channel_list requires {k}."
+            f"Frame has {x_full.shape[2]} channels but config.channels_used/channel_list "
+            f"requires {k}."
         )
-    x = x[:, :, :k]
 
-    # normalize like training patches (per-channel over H,W)
-    x = image_normalize(x, axis=(0, 1))
-    x_t = (
-        torch.from_numpy(np.transpose(x.astype(np.float32), (2, 0, 1)))
-        .unsqueeze(0)
-        .to(device)
-    )  # 1,C,H,W
+    x_full = x_full[:, :, :k]
 
-    # forward + robust logits->probs for all supported models
-    y_raw = _forward_with_autopad(model, x_t)
-    if _is_terramind_model(model):
-        prob_full = _as_probs_from_terratorch_logits_first(
-            y_raw, num_classes=int(getattr(config, "num_classes", 1))
-        )
+    # Sliding-window patch and stride
+    patch_h, patch_w = int(config.patch_size[0]), int(config.patch_size[1])
+
+    eval_stride = getattr(config, "eval_patch_stride", None)
+    if eval_stride is None:
+        stride_h, stride_w = patch_h, patch_w
     else:
-        prob_full = _as_probs_from_terratorch(
-            y_raw, num_classes=int(getattr(config, "num_classes", 1))
-        )
-    prob = _select_eval_channel(prob_full, config)  # 1,1,H,W
-    prob = prob.squeeze(0).squeeze(0).clamp(0, 1).detach().cpu().numpy()  # H,W
-    return prob
+        if isinstance(eval_stride, int):
+            stride_h = stride_w = int(eval_stride)
+        else:
+            stride_h, stride_w = int(eval_stride[0]), int(eval_stride[1])
+
+    # Pad full image so that it fits an integer number of patches
+    pad_h = (patch_h - (img_h % patch_h)) if (img_h % patch_h) != 0 else 0
+    pad_w = (patch_w - (img_w % patch_w)) if (img_w % patch_w) != 0 else 0
+
+    x_padded = np.pad(
+        x_full,
+        ((0, pad_h), (0, pad_w), (0, 0)),
+        mode="reflect",
+    )
+    pad_h_total, pad_w_total = img_h + pad_h, img_w + pad_w
+
+    # Normalise channels like in training
+    x_padded = image_normalize(x_padded, axis=(0, 1))
+
+    # Accumulators for blending overlapping patches
+    prob_accum = np.zeros((pad_h_total, pad_w_total), dtype=np.float32)
+    weight_accum = np.zeros((pad_h_total, pad_w_total), dtype=np.float32)
+
+    # Use training batch size to avoid TerraTorch batch_size=1 quirks
+    batch_size = int(getattr(config, "train_batch_size", 1))
+    batch_size = max(1, batch_size)
+
+    num_classes = int(getattr(config, "num_classes", 1))
+
+    model.eval()
+    with torch.no_grad():
+        for y0 in range(0, pad_h_total - patch_h + 1, stride_h):
+            y1 = y0 + patch_h
+            for x0 in range(0, pad_w_total - patch_w + 1, stride_w):
+                x1 = x0 + patch_w
+
+                patch_np = x_padded[y0:y1, x0:x1, :]  # [patch_h, patch_w, C]
+
+                # [H,W,C] -> [1,C,H,W]
+                patch_t = torch.from_numpy(
+                    np.transpose(patch_np.astype(np.float32), (2, 0, 1))
+                ).unsqueeze(0)
+
+                patch_t = patch_t.to(device, non_blocking=True).contiguous(
+                    memory_format=torch.channels_last
+                )
+
+                if batch_size > 1:
+                    x_t = (
+                        patch_t.repeat(batch_size, 1, 1, 1)
+                        .contiguous(memory_format=torch.channels_last)
+                    )
+                else:
+                    x_t = patch_t
+
+                with torch.cuda.amp.autocast(
+                    enabled=torch.cuda.is_available(), dtype=_AMP_DTYPE
+                ):
+
+                    if _is_terramind_model(model):
+                        y_raw = _forward_with_autopad(model, x_t)
+                    else:
+                        y_raw = model(x_t)
+
+                    if getattr(model, "_returns_probabilities", False):
+                        # e.g. SwinUNet already returns probabilities in [0,1]
+                        prob_full = _ensure_nchw(y_raw).float()
+                    elif _is_terramind_model(model):
+                        prob_full = _as_probs_from_terratorch_logits_first(
+                            y_raw, num_classes=num_classes
+                        )
+                    else:
+                        prob_full = _as_probs_from_terratorch(
+                            y_raw, num_classes=num_classes
+                        )
+
+                    prob_sel = _select_eval_channel(prob_full, config)
+
+
+                # Take the first batch entry (all are copies of the same patch)
+                prob_patch = (
+                    prob_sel[0:1]
+                    .squeeze(0)
+                    .squeeze(0)
+                    .clamp(0.0, 1.0)
+                    .detach()
+                    .cpu()
+                    .numpy()
+                )  # [patch_h, patch_w]
+
+                prob_accum[y0:y1, x0:x1] += prob_patch
+                weight_accum[y0:y1, x0:x1] += 1.0
+
+    # Avoid division by zero
+    weight_accum = np.maximum(weight_accum, 1e-6)
+    prob_full_padded = prob_accum / weight_accum
+    prob_full_padded = np.clip(prob_full_padded, 0.0, 1.0)
+
+    # Crop back to original image size
+    prob_full = prob_full_padded[:img_h, :img_w]
+    return prob_full
 
 
 # -----------------------------
 # Checkpoint discovery
 # -----------------------------
 def _find_all_checkpoints(folder: str) -> List[str]:
+    """Discover all .pt checkpoint files sorted by modification time."""
     pats = [
         os.path.join(folder, "*.pt"),
         os.path.join(folder, "*.weights.pt"),
         os.path.join(folder, "*.raw.weights.pt"),
     ]
-    fps = []
+    fps: List[str] = []
     for p in pats:
         fps.extend(glob.glob(p))
     fps = sorted(list(set(fps)), key=lambda f: os.stat(f).st_mtime)
@@ -309,6 +500,7 @@ def _find_all_checkpoints(folder: str) -> List[str]:
 # CSV writing (append for all models)
 # -----------------------------
 def _append_results_row(csv_path: str, header: List[str], row: List[str]) -> None:
+    """Append a result row to CSV, creating file and header if needed."""
     write_header = not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0
     os.makedirs(os.path.dirname(csv_path), exist_ok=True)
     with open(csv_path, "a") as f:
@@ -318,29 +510,39 @@ def _append_results_row(csv_path: str, header: List[str], row: List[str]) -> Non
 
 
 # -----------------------------
-# Core evaluation
+# Core evaluation loop
 # -----------------------------
 def _evaluate_arch(config, arch: str = "unet") -> None:
     """
     Evaluate all checkpoints under config.saved_models_dir for the given arch.
-    Arch keys:
-      - "unet"  : UNet
-      - "swin"  : SwinUNet
-      - "tm"    : TerraMind
+    
+    For each checkpoint:
+      - Loads model weights
+      - Runs sliding-window inference on all test frames
+      - Computes dataset-level metrics (same as training)
+      - Saves georeferenced prediction masks as GeoTIFFs
+      - Appends summary row to CSV
+    
+    Args:
+        config: Configuration object with paths, hyperparams, etc.
+        arch: Model architecture ("unet", "swin", or "tm")
     """
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-    torch.backends.cudnn.benchmark = True
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Use GPU index from config
+    selected_gpu = getattr(config, "selected_gpu", 0)
+    if selected_gpu == -1 or not torch.cuda.is_available():
+        device = torch.device("cpu")
+    else:
+        device = torch.device(f"cuda:{selected_gpu}")
+        torch.cuda.set_device(device)
 
-    # ---- load data once ----
+    # ---- Load data once (shared across all checkpoints) ----
     frames, image_paths, test_idx = _gather_frames_and_test_indices(config)
     print(f"Testing frames: {len(test_idx)}")
 
-    # ---- discover checkpoints in the folder (evaluate all) ----
+    # ---- Discover checkpoints in the folder (evaluate all) ----
     ckpts = _find_all_checkpoints(config.saved_models_dir)
-    print(f"Found {len(ckpts)} checkpoints.\n")
+    print(f"Found {len(ckpts)} checkpoint(s).\n")
 
     # ---- CSV path (one summary for all evaluated models) ----
     csv_path = os.path.join(config.results_dir, f"evaluation_{arch}.csv")
@@ -362,16 +564,19 @@ def _evaluate_arch(config, arch: str = "unet") -> None:
     ]
 
     results_written = 0
+    thr = float(getattr(config, "eval_threshold", 0.5))
 
+    # ---- Evaluate each checkpoint ----
     for ckpt_path in ckpts:
         try:
+            print(f"\n{'='*80}")
             print(f"{_C.GREEN}[EVAL]{_C.RESET} model={arch}  ckpt={ckpt_path}")
             base = os.path.basename(ckpt_path)
             out_dir = os.path.join(config.results_dir, base.replace(".pt", ""))
             print(f"{_C.YELLOW}[EVAL]{_C.RESET} saving masks -> {out_dir}")
             os.makedirs(out_dir, exist_ok=True)
 
-            # ---- build/load model ----
+            # ---- Build and load model ----
             if arch == "unet":
                 model = _build_unet(config)
             elif arch == "swin":
@@ -380,40 +585,50 @@ def _evaluate_arch(config, arch: str = "unet") -> None:
                 model = _build_terramind(config)
             else:
                 raise NotImplementedError(f"Unknown arch: {arch}")
+
             model = _load_model_from_checkpoint(model, ckpt_path, device).eval()
 
-            # ---- eval loop ----
-            accum = MetricAccumulator()
+            # ---- Prediction loop (per-frame inference + metric accumulation) ----
+            accum = MetricAccumulator(device=device, threshold=thr)
             t0 = time.time()
-            thr = float(getattr(config, "eval_threshold", 0.5))
 
             for i in tqdm(range(len(test_idx)), desc=f"Predicting ({arch})"):
                 idx = test_idx[i]
                 frame = frames[idx]
                 im_fp = image_paths[idx]
 
-                # predict prob map [H,W] in [0,1]
+                # Predict probability map [H,W] in [0,1] via sliding-window inference
                 prob = _infer_full_image(model, frame, device, config)
 
-                # load GT and scale to [0,1] if needed
+                # Load GT and scale to [0,1] if needed
                 gt = frame.annotations.astype(np.float32)
                 if gt.max() > 1.5:
                     gt = gt / 255.0
                 gt = np.clip(gt, 0.0, 1.0)
 
-                # accumulate metrics
+                # Accumulate metrics (dataset-level)
                 accum.add(gt, prob)
 
-                # save hard mask as GeoTIFF
+                # Save hard mask as GeoTIFF with preserved spatial properties
                 pred_bin = (prob >= thr).astype(np.uint8)
                 with rasterio.open(im_fp) as src:
-                    profile = src.profile
-                    profile.update(count=1, dtype="uint8", compress="LZW")
+                    profile = src.profile.copy()
+                    # Update only what's necessary, keep CRS, transform, etc.
+                    profile.update(
+                        count=1,
+                        dtype="uint8",
+                        compress="LZW",
+                        # Explicitly preserve spatial properties
+                        crs=src.crs,
+                        transform=src.transform,
+                        width=src.width,
+                        height=src.height,
+                    )
                     out_fp = os.path.join(out_dir, os.path.basename(im_fp))
                     with rasterio.open(out_fp, "w", **profile) as dst:
                         dst.write(pred_bin, 1)
 
-            # ---- finalize metrics ----
+            # ---- Finalize metrics and save results ----
             metrics = accum.finalize()
             elapsed = _fmt_seconds(time.time() - t0)
 
@@ -439,10 +654,49 @@ def _evaluate_arch(config, arch: str = "unet") -> None:
         except Exception as exc:
             print(_col(f"Evaluation failed for {ckpt_path}: {exc}", _C.RED))
 
+    # ---- Print summary table at the end ----
     if results_written == 0:
         print(_col("No results to write.", _C.YELLOW))
     else:
-        print(_col(f"Wrote {results_written} result rows to {csv_path}", _C.GREEN))
+        print(_col(f"\nWrote {results_written} result rows to {csv_path}", _C.GREEN))
+
+        # Print summary table
+        print(f"\n{'='*80}")
+        print(_col(f"EVALUATION SUMMARY ({arch.upper()})", _C.GREEN))
+        print(f"{'='*80}\n")
+
+        # Read and display the CSV as a formatted table
+        if os.path.exists(csv_path):
+            with open(csv_path, "r") as f:
+                reader = csv_module.DictReader(f)
+                rows = list(reader)
+
+                if rows:
+                    # Print header
+                    key_metrics = ["dice_coef", "IoU", "accuracy", "f1_score", "elapsed"]
+                    print(
+                        f"{'Checkpoint':<50} {'Dice':<10} {'IoU':<10} "
+                        f"{'Acc':<10} {'F1':<10} {'Time':<10}"
+                    )
+                    print("-" * 100)
+
+                    # Print each row
+                    for row in rows:
+                        ckpt_name = os.path.basename(row.get("checkpoint_path", ""))[:45]
+                        dice = row.get("dice_coef", "N/A")
+                        iou = row.get("IoU", "N/A")
+                        acc = row.get("accuracy", "N/A")
+                        hausdorff_distance = row.get("Hausdorff_distance", "N/A")
+                        f1 = row.get("f1_score", "N/A")
+                        elapsed = row.get("elapsed", "N/A")
+
+                        print(
+                            f"{ckpt_name:<50} {dice:<10} {iou:<10} "
+                            f"{acc:<10} {hausdorff_distance:<10} {f1:<10} {elapsed:<10}"
+                        )
+
+                    print(f"\nFull results saved to: {csv_path}")
+        print(f"{'='*80}\n")
 
 
 # -----------------------------

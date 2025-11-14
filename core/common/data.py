@@ -49,11 +49,18 @@ def get_all_frames(conf: Optional[Any] = None):
             sorted(os.listdir(config.preprocessed_base_dir))[-1],
         )
 
+    #check that preprocessed_dir exists
+    if not os.path.exists(config.preprocessed_dir):
+        raise FileNotFoundError(
+            f"Preprocessed directory {config.preprocessed_dir} does not exist."
+        )
+
     # Files are numbered and sorted by integer stem, e.g., 69.tif
     image_paths = sorted(
-        glob.glob(f"{config.preprocessed_dir}/*.tif"),
-        key=lambda f: int(os.path.basename(f)[:-4]),
+        glob.glob(f"{config.preprocessed_dir}/*.tif"), 
+        key=lambda f: int(f.split("/")[-1][:-4])
     )
+    
     print(
         f"[DATA][LOAD] Found {len(image_paths)} input frames in "
         f"{config.preprocessed_dir}"

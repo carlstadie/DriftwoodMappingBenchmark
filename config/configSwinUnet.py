@@ -14,18 +14,19 @@ class Configuration:
 
     def __init__(self):
         # --------- RUN NAME ---------
+        # Modality to be run can be AE, PS or S2
+        self.modality = "AE"
+
         self.run_name = f"SWINx{self.modality}"
 
         # ---------- PATHS -----------
-        # Modality to be run can be AE, PS or S2
-        self.modality = "PS"
 
         # Training data and imagery
         self.training_data_dir = (
             f"/isipd/projects/p_planetdw/data/methods_test/training/{self.modality}"
         )
-        self.training_area_fn = "aoi_utm_8a.gpkg"
-        self.training_polygon_fn = "dw_utm_8p.gpkg"
+        self.training_area_fn = "training_areas.gpkg"
+        self.training_polygon_fn = "test.gpkg"
         self.training_image_dir = (
             f"/isipd/projects/p_planetdw/data/methods_test/training_images/{self.modality}"
         )
@@ -35,7 +36,7 @@ class Configuration:
             f"/isipd/projects/p_planetdw/data/methods_test/training_data/{self.modality}"
         )
         self.preprocessed_dir = (
-            "/isipd/projects/p_planetdw/data/methods_test/training_data/MACS/"
+            "/isipd/projects/p_planetdw/data/methods_test/training_data/AE/"
             "20250429-1208_MACS_test_utm8"
         )
 
@@ -68,21 +69,21 @@ class Configuration:
         self.tune_patch_h = None
         self.tune_patch_w = None
         self.tversky_alphabeta = (0.5, 0.5)
-        self.dilation_rate = 1  # kept for parity; Swin ignores it
         self.model_name = self.run_name
+
 
         # ------ OPTIM / SCHED / EPOCHS ------
         self.loss_fn = "tversky"
         self.optimizer_fn = "adam"
-        self.train_batch_size = 64
-        self.num_epochs = 150
+        self.train_batch_size = 8
+        self.num_epochs = 100
         self.num_training_steps = 500
         self.num_validation_images = 50
 
         # ------ EMA ------
         self.use_ema = False
         self.ema_decay = 0.999
-        self.eval_with_ema = True
+        self.eval_with_ema = False
 
         # ------ CHECKPOINTING / LOGGING ------
         self.model_save_interval = None
@@ -113,10 +114,11 @@ class Configuration:
         self.clip_norm = 0.0
 
         # ------ SWIN-UNET (PP) ------
-        self.swin_patch_size = 16
-        self.swin_window = 4
+        self.swin_patch_size = 4
+        self.swin_window = 7
         self.swin_levels = 3
-        self.swin_base_channels = 64
+        self.swin_base_channels = 96
+        self.use_imagenet_weights = True
 
         # --- POSTPROCESSING (kept for downstream scripts) ---
         self.create_polygons = True
@@ -134,7 +136,7 @@ class Configuration:
         self.output_dtype = "bool"
 
         # ------ GPU / ENV ------
-        self.selected_GPU = 2
+        self.selected_GPU = 5
         gdal.UseExceptions()
         gdal.SetCacheMax(32000000000)
         gdal.SetConfigOption("CPL_LOG", "/dev/null")

@@ -3,672 +3,558 @@
 
 from __future__ import annotations
 
-from typing import Optional, Sequence, Tuple, List
+from typing import Optional, Sequence, Tuple, List, Dict
+
+import os
+import sys
+import warnings
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+
+try:
+    # torchvision >= 0.13
+    from torchvision.models.swin_transformer import (
+        SwinTransformer,
+        SwinTransformerBlock,
+    )
+    from torchvision.models.feature_extraction import create_feature_extractor
+    try:
+        # Optional ImageNet-1k weights for Swin-T
+        from torchvision.models import Swin_T_Weights
+    except Exception:  # pragma: no cover
+        Swin_T_Weights = None  # type: ignore
+except Exception as exc:  # pragma: no cover
+    raise ImportError(
+        "This module requires torchvision with SwinTransformer and "
+        "feature_extraction support (torchvision>=0.13)."
+    ) from exc
 
 
 # ----------------------------
-# Window operations (N, C, H, W)
+# NHWC / NCHW helpers
 # ----------------------------
-def window_partition(x: torch.Tensor, window_size: Tuple[int, int]) -> torch.Tensor:
+def _to_nhwc(x: torch.Tensor) -> torch.Tensor:
     """
-    Split an image into non-overlapping windows.
+    Convert a NCHW tensor to NHWC if needed.
 
     Args:
-        x: Tensor of shape (B, C, H, W).
-        window_size: Tuple (Wh, Ww).
+        x: Tensor of shape (N, C, H, W) or (N, H, W, C).
 
     Returns:
-        Tensor of shape (B * nWh * nWw, Wh * Ww, C).
+        Tensor in NHWC layout.
     """
-    b, c, h, w = x.shape
-    wh, ww = window_size
-    assert h % wh == 0 and w % ww == 0, "H and W must be divisible by window size."
-    x = x.view(b, c, h // wh, wh, w // ww, ww)  # B, C, nWh, Wh, nWw, Ww
-    x = x.permute(0, 2, 4, 3, 5, 1).contiguous()  # B, nWh, nWw, Wh, Ww, C
-    windows = x.view(-1, wh * ww, c)  # B*nW, N, C
-    return windows
+    if x.ndim == 4 and x.shape[1] != x.shape[-1]:
+        return x.permute(0, 2, 3, 1).contiguous()
+    return x
 
 
-def window_reverse(
-    windows: torch.Tensor,
-    window_size: Tuple[int, int],
-    h: int,
-    w: int,
-    c: int,
-) -> torch.Tensor:
+def _to_nchw(x: torch.Tensor) -> torch.Tensor:
     """
-    Reverse the partition and rebuild the image grid.
+    Convert a NHWC tensor to NCHW if needed.
 
     Args:
-        windows: Tensor (B * nW, Wh * Ww, C).
-        window_size: Tuple (Wh, Ww).
-        h: Output height.
-        w: Output width.
-        c: Channels.
+        x: Tensor of shape (N, H, W, C) or (N, C, H, W).
 
     Returns:
-        Tensor of shape (B, C, H, W).
+        Tensor in NCHW layout.
     """
-    wh, ww = window_size
-    n_wh = h // wh
-    n_ww = w // ww
-    b = windows.shape[0] // (n_wh * n_ww)
-    x = windows.view(b, n_wh, n_ww, wh, ww, c)  # B, nWh, nWw, Wh, Ww, C
-    x = x.permute(0, 5, 1, 3, 2, 4).contiguous()  # B, C, nWh, Wh, nWw, Ww
-    x = x.view(b, c, h, w)
+    if x.ndim == 4 and x.shape[-1] != x.shape[1]:
+        return x.permute(0, 3, 1, 2).contiguous()
     return x
 
 
 # ----------------------------
-# Normalisation helper: LayerNorm over channels for 2D maps
+# Band adaptation: inflate first patch-embed conv (3 -> N)
 # ----------------------------
-class LayerNorm2d(nn.Module):
+def _inflate_patch_embed_conv(backbone: nn.Module, in_chans: int) -> None:
     """
-    LayerNorm over channels for tensors shaped (N, C, H, W).
+    Replace the first patch-embedding Conv2d to accept `in_chans` inputs.
 
-    This applies per-pixel LayerNorm across the channel axis,
-    matching LayerNormalization(eps=1e-5) used in the TF version.
+    If increasing channels (>3), copy RGB kernels and initialize extra bands
+    with the mean of RGB kernels. If reducing (<3), average RGB kernels and
+    replicate to requested channels.
+
+    Args:
+        backbone: TorchVision SwinTransformer module.
+        in_chans: Number of desired input channels (bands).
     """
+    if in_chans == 3:
+        return
 
-    def __init__(self, num_channels: int, eps: float = 1e-5) -> None:
-        super().__init__()
-        self.ln = nn.LayerNorm(num_channels, eps=eps)
+    conv = None
+    setter = None
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        n, c, h, w = x.shape
-        x = x.permute(0, 2, 3, 1)  # N, H, W, C
-        x = self.ln(x)
-        x = x.permute(0, 3, 1, 2).contiguous()  # N, C, H, W
-        return x
+    # TorchVision Swin: features[0] is Sequential(Conv2d, Permute, LayerNorm)
+    if hasattr(backbone, "features"):
+        feat0 = backbone.features[0]
+        if isinstance(feat0, nn.Sequential) and isinstance(feat0[0], nn.Conv2d):
+            conv = feat0[0]
 
+            def _set(new_conv: nn.Conv2d) -> None:
+                backbone.features[0][0] = new_conv
 
-# ----------------------------
-# Stochastic depth (DropPath)
-# ----------------------------
-class DropPath(nn.Module):
-    """Stochastic depth layer used inside residual paths."""
+            setter = _set
 
-    def __init__(self, drop_prob: float = 0.0) -> None:
-        super().__init__()
-        self.drop_prob = float(drop_prob)
+    if conv is None or setter is None:
+        raise RuntimeError("Could not locate patch-embedding Conv2d to inflate.")
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.drop_prob == 0.0 or not self.training:
-            return x
-        keep_prob = 1.0 - self.drop_prob
-        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
-        random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
-        binary_tensor = torch.floor(random_tensor)
-        return x / keep_prob * binary_tensor
+    new_conv = nn.Conv2d(
+        in_channels=in_chans,
+        out_channels=conv.out_channels,
+        kernel_size=conv.kernel_size,
+        stride=conv.stride,
+        padding=conv.padding,
+        bias=(conv.bias is not None),
+    )
 
-
-# ----------------------------
-# Windowed self-attention
-# ----------------------------
-class WindowAttention(nn.Module):
-    """Multi-head self-attention applied within local windows."""
-
-    def __init__(
-        self,
-        dim: int,
-        window_size: Tuple[int, int],
-        num_heads: int = 4,
-        attn_drop_rate: float = 0.0,
-        proj_drop_rate: float = 0.0,
-    ) -> None:
-        super().__init__()
-        self.dim = dim
-        self.window_size = window_size
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.scale = self.head_dim ** -0.5
-
-        self.qkv = nn.Linear(dim, 3 * dim, bias=True)
-        self.proj = nn.Linear(dim, dim, bias=True)
-        self.attn_dropout = nn.Dropout(attn_drop_rate)
-        self.proj_dropout = nn.Dropout(proj_drop_rate)
-
-        wh, ww = window_size
-        num_rel_positions = (2 * wh - 1) * (2 * ww - 1)
-        self.relative_position_bias_table = nn.Parameter(
-            torch.zeros(num_rel_positions, num_heads)
-        )
-        # Precompute relative position index (N, N)
-        coords_h = torch.arange(wh)
-        coords_w = torch.arange(ww)
-        coords = torch.stack(torch.meshgrid(coords_h, coords_w, indexing="ij"))
-        coords = coords.reshape(2, -1)
-        rel_coords = coords[:, :, None] - coords[:, None, :]  # 2, N, N
-        rel_coords = rel_coords.permute(1, 2, 0).contiguous()  # N, N, 2
-        rel_coords[..., 0] += wh - 1
-        rel_coords[..., 1] += ww - 1
-        rel_index = rel_coords[..., 0] * (2 * ww - 1) + rel_coords[..., 1]
-        self.register_buffer(
-            "relative_position_index", rel_index.long(), persistent=False
-        )
-
-    def forward(
-        self,
-        x: torch.Tensor,  # (B_, N, C)
-        mask: Optional[torch.Tensor] = None,  # (nW, N, N) with {0, -1e9}
-    ) -> torch.Tensor:
-        b_, n, c = x.shape
-        qkv = self.qkv(x).view(b_, n, 3, self.num_heads, c // self.num_heads)
-        qkv = qkv.permute(2, 0, 3, 1, 4)  # 3, B_, heads, N, dim
-        q, k, v = qkv[0], qkv[1], qkv[2]
-        q = q * self.scale
-
-        attn = q @ k.transpose(-2, -1)  # B_, heads, N, N
-
-        if mask is not None:
-            n_w = mask.shape[0]
-            attn = attn.view(b_ // n_w, n_w, self.num_heads, n, n)
-            attn = attn + mask[:, None, :, :].to(attn.dtype)
-            attn = attn.view(-1, self.num_heads, n, n)
-
-        # relative bias (heads, N, N)
-        bias = self.relative_position_bias_table[
-            self.relative_position_index.reshape(-1)
-        ]
-        bias = bias.reshape(n, n, self.num_heads).permute(2, 0, 1)
-        bias = torch.clamp(bias, -5.0, 5.0)
-        attn = attn + bias.unsqueeze(0)
-
-        attn = torch.clamp(attn, -10.0, 10.0)
-        attn = F.softmax(attn, dim=-1)
-        attn = self.attn_dropout(attn)
-        out = attn @ v  # B_, heads, N, dim
-        out = out.permute(0, 2, 1, 3).contiguous().view(b_, n, c)
-        out = self.proj(out)
-        out = self.proj_dropout(out)
-        return out
-
-
-# ----------------------------
-# Swin Transformer Block
-# ----------------------------
-class SwinTransformerBlock(nn.Module):
-    """Two-window attention block with optional shift and MLP."""
-
-    def __init__(
-        self,
-        dim: int,
-        input_resolution: Tuple[int, int],
-        num_heads: int = 4,
-        window_size: int = 4,
-        shift_size: int = 0,
-        attn_drop_rate: float = 0.0,
-        proj_drop_rate: float = 0.0,
-        mlp_drop_rate: float = 0.0,
-        drop_path_rate: float = 0.1,
-    ) -> None:
-        super().__init__()
-        self.dim = dim
-        self.input_resolution = input_resolution
-        h, w = input_resolution
-        ws = min(window_size, h, w)
-        self.window_size = ws
-        self.shift_size = min(shift_size, ws // 2)
-
-        self.norm1 = LayerNorm2d(dim, eps=1e-5)
-        self.attn = WindowAttention(
-            dim=dim,
-            window_size=(ws, ws),
-            num_heads=num_heads,
-            attn_drop_rate=attn_drop_rate,
-            proj_drop_rate=proj_drop_rate,
-        )
-        self.attn_dropout = nn.Dropout(attn_drop_rate)
-        self.proj_dropout = nn.Dropout(proj_drop_rate)
-
-        self.norm2 = LayerNorm2d(dim, eps=1e-5)
-        self.mlp = nn.Sequential(
-            nn.Conv2d(dim, 4 * dim, kernel_size=1, bias=True),
-            nn.GELU(),
-            nn.Dropout(mlp_drop_rate),
-            nn.Conv2d(4 * dim, dim, kernel_size=1, bias=True),
-            nn.Dropout(mlp_drop_rate),
-        )
-        self.drop_path = DropPath(drop_prob=drop_path_rate)
-
-        # Attention mask for shifted windows
-        if self.shift_size > 0:
-            img_mask = torch.zeros(1, 1, h, w)  # (1, 1, H, W)
-            h_slices = (
-                slice(0, -ws),
-                slice(-ws, -self.shift_size),
-                slice(-self.shift_size, None),
-            )
-            w_slices = (
-                slice(0, -ws),
-                slice(-ws, -self.shift_size),
-                slice(-self.shift_size, None),
-            )
-            cnt = 0
-            for hs in h_slices:
-                for ws_ in w_slices:
-                    img_mask[:, :, hs, ws_] = cnt
-                    cnt += 1
-            mask_windows = window_partition(img_mask, (ws, ws)).squeeze(-1)  # (nW, N)
-            attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
-            attn_mask = torch.where(
-                attn_mask != 0, torch.tensor(-1e9), torch.tensor(0.0)
-            )
-            self.register_buffer(
-                "attn_mask", attn_mask.to(torch.float32), persistent=False
-            )
+    with torch.no_grad():
+        if in_chans > 3:
+            new_conv.weight[:, :3] = conv.weight
+            mean = conv.weight.mean(dim=1, keepdim=True)
+            new_conv.weight[:, 3:] = mean.repeat(1, in_chans - 3, 1, 1)
         else:
-            self.register_buffer("attn_mask", None, persistent=False)
+            mean = conv.weight.mean(dim=1, keepdim=True)
+            new_conv.weight[:, :in_chans] = mean.repeat(1, in_chans, 1, 1)
+
+        if conv.bias is not None:
+            new_conv.bias.copy_(conv.bias)
+
+    setter(new_conv)
+
+
+# ----------------------------
+# Patch expansion (NHWC)
+# ----------------------------
+class PatchExpandNHWC(nn.Module):
+    """
+    Upsample H,W by 2 using a linear expand + reshape.
+
+    Input:
+        Tensor of shape (B, H, W, C).
+
+    Returns:
+        Tensor of shape (B, 2H, 2W, C // 2).
+    """
+
+    def __init__(self, dim: int, norm_layer: nn.Module = nn.LayerNorm) -> None:
+        super().__init__()
+        self.dim = int(dim)
+        self.expand = nn.Linear(self.dim, 2 * self.dim, bias=False)
+        self.norm = norm_layer(self.dim // 2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (N, C, H, W)
-        n, c, h, w = x.shape
-        shortcut = x
+        b, h, w, c = x.shape
+        x = self.expand(x)  # (B, H, W, 2C)  -> rearrange to (B, 2H, 2W, C//2)
+        x = x.view(b, h, w, 2, 2, c // 2)
+        x = x.permute(0, 1, 3, 2, 4, 5).reshape(b, h * 2, w * 2, c // 2)
+        x = self.norm(x)
+        return x
 
-        x = self.norm1(x)
-        if self.shift_size > 0:
-            x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(-2, -1))
 
-        # window attention
-        x_w = window_partition(x, (self.window_size, self.window_size))  # (B*, N, C)
-        attn_w = self.attn(x_w, mask=self.attn_mask)
-        attn_w = self.attn_dropout(attn_w)
-        x = window_reverse(attn_w, (self.window_size, self.window_size), h, w, c)
+class FinalPatchExpandNHWC(nn.Module):
+    """
+    Final upsampling by 'up_factor' using linear expand + reshape.
 
-        if self.shift_size > 0:
-            x = torch.roll(x, shifts=(self.shift_size, self.shift_size), dims=(-2, -1))
+    Input:
+        Tensor of shape (B, H, W, C).
 
-        x = self.proj_dropout(x)
-        x = shortcut + self.drop_path(x)
+    Returns:
+        Tensor of shape (B, up*H, up*W, C).
+    """
 
-        shortcut2 = x
-        x = self.norm2(x)
-        x = self.mlp(x)
-        x = shortcut2 + self.drop_path(x)
+    def __init__(self, dim: int, up_factor: int, norm_layer: nn.Module = nn.LayerNorm) -> None:
+        super().__init__()
+        self.up = int(up_factor)
+        self.dim = int(dim)
+        self.expand = nn.Linear(self.dim, (self.up ** 2) * self.dim, bias=False)
+        self.norm = norm_layer(self.dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, h, w, c = x.shape
+        x = self.expand(x)  # (B, H, W, up^2*C) -> (B, up*H, up*W, C)
+        x = x.view(b, h, w, self.up, self.up, c)
+        x = x.permute(0, 1, 3, 2, 4, 5).reshape(b, h * self.up, w * self.up, c)
+        x = self.norm(x)
         return x
 
 
 # ----------------------------
-# Patch ops
+# Decoder Swin stage (NHWC)
 # ----------------------------
-class PatchEmbedding(nn.Module):
-    """Patchify input and project to the embedding dimension."""
+def _make_swin_stage(
+    dim: int,
+    depth: int,
+    num_heads: int,
+    window_size: int,
+    dpr_slice: Sequence[float],
+) -> nn.Sequential:
+    """
+    Build a Swin stage (sequence of SwinTransformerBlock) with alternating
+    non-shifted / shifted windows.
 
-    def __init__(self, in_ch: int, embed_dim: int, patch_size: int) -> None:
-        super().__init__()
-        self.proj = nn.Conv2d(
-            in_ch, embed_dim, kernel_size=patch_size, stride=patch_size, padding=0, bias=True
+    Args:
+        dim: Channel dimension of the stage.
+        depth: Number of blocks in the stage.
+        num_heads: Number of attention heads.
+        window_size: Local attention window size.
+        dpr_slice: Progressive drop-path slice for this stage.
+
+    Returns:
+        nn.Sequential of SwinTransformerBlock in NHWC mode.
+    """
+    blocks: List[nn.Module] = []
+    w = int(window_size)
+    for i in range(int(depth)):
+        shift = [0, 0] if (i % 2 == 0) else [w // 2, w // 2]
+        blocks.append(
+            SwinTransformerBlock(
+                dim=int(dim),
+                num_heads=int(num_heads),
+                window_size=[w, w],
+                shift_size=shift,
+                mlp_ratio=4.0,
+                dropout=0.0,
+                attention_dropout=0.0,
+                stochastic_depth_prob=float(dpr_slice[i]) if i < len(dpr_slice) else 0.0,
+            )
         )
-        self.norm = LayerNorm2d(embed_dim, eps=1e-5)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.proj(x)
-        x = self.norm(x)
-        return x
-
-
-class PatchMerging(nn.Module):
-    """
-    Downsample H,W by 2; channels: C -> 2C (after LN and 1x1 conv).
-
-    Mirrors TF: reshape to 4*C channels, LayerNorm, then Dense(2C) with no bias.
-    """
-
-    def __init__(self, dim: int) -> None:
-        super().__init__()
-        self.norm = LayerNorm2d(4 * dim, eps=1e-5)
-        self.reduction = nn.Conv2d(4 * dim, 2 * dim, kernel_size=1, bias=False)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        b, c, h, w = x.shape
-        assert h % 2 == 0 and w % 2 == 0, "H and W must be even for PatchMerging."
-        x = x.view(b, c, h // 2, 2, w // 2, 2)  # B, C, H/2, 2, W/2, 2
-        x = x.permute(0, 3, 5, 1, 2, 4).contiguous()  # B, 2, 2, C, H/2, W/2
-        x = x.view(b, 4 * c, h // 2, w // 2)  # B, 4C, H/2, W/2
-        x = self.norm(x)
-        x = self.reduction(x)  # B, 2C, H/2, W/2
-        # Ich will nicht mehr, ich kann nicht mehr, ich halte das nicht mehr aus
-        return x
-
-
-class PatchExpansion(nn.Module):
-    """
-    Upsample H,W by 2 via pixel-shuffle; channels: dim -> dim//2 after shuffle.
-
-    Matches TF: Dense(2*dim) + inverse space-to-depth.
-    """
-
-    def __init__(self, dim: int) -> None:
-        super().__init__()
-        self.expand = nn.Conv2d(dim, 2 * dim, kernel_size=1, bias=False)
-        self.shuffle = nn.PixelShuffle(upscale_factor=2)
-        self.norm = LayerNorm2d(dim // 2, eps=1e-5)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.expand(x)
-        x = self.shuffle(x)
-        x = self.norm(x)
-        return x
-
-
-class FinalPatchExpansion(nn.Module):
-    """
-    Final upsampling by 'up_factor' using pixel-shuffle after 1x1 expansion.
-
-    Dense((up^2)*dim) -> reshape -> transpose -> reshape.
-    """
-
-    def __init__(self, dim: int, up_factor: int) -> None:
-        super().__init__()
-        self.up = up_factor
-        self.expand = nn.Conv2d(dim, (up_factor ** 2) * dim, kernel_size=1, bias=False)
-        self.shuffle = nn.PixelShuffle(upscale_factor=up_factor)
-        self.norm = LayerNorm2d(dim, eps=1e-5)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.expand(x)
-        x = self.shuffle(x)
-        x = self.norm(x)
-        return x
+    return nn.Sequential(*blocks)
 
 
 # ----------------------------
-# Two-block Swin stage
+# TorchVision Swin encoder (returns 4 NHWC features)
 # ----------------------------
-class SwinBlock(nn.Module):
-    """A pair of shifted-window transformer blocks."""
+class _Encoder(nn.Module):
+    """
+    Wrap TorchVision SwinTransformer and expose (s0, s1, s2, s3) features.
 
-    def __init__(
-        self,
-        dims: int,
-        ip_res: Tuple[int, int],
-        window_size: int = 4,
-        ss_size: Optional[int] = None,
-        num_heads: int = 4,
-        attn_drop: float = 0.0,
-        proj_drop: float = 0.0,
-        mlp_drop: float = 0.0,
-        drop_path: float = 0.1,
-    ) -> None:
-        super().__init__()
-        if ss_size is None:
-            ss_size = window_size // 2
-        self.swtb1 = SwinTransformerBlock(
-            dim=dims,
-            input_resolution=ip_res,
-            num_heads=num_heads,
-            window_size=window_size,
-            shift_size=0,
-            attn_drop_rate=attn_drop,
-            proj_drop_rate=proj_drop,
-            mlp_drop_rate=mlp_drop,
-            drop_path_rate=drop_path,
-        )
-        self.swtb2 = SwinTransformerBlock(
-            dim=dims,
-            input_resolution=ip_res,
-            num_heads=num_heads,
-            window_size=window_size,
-            shift_size=ss_size,
-            attn_drop_rate=attn_drop,
-            proj_drop_rate=proj_drop,
-            mlp_drop_rate=mlp_drop,
-            drop_path_rate=drop_path,
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.swtb1(x)
-        x = self.swtb2(x)
-        return x
-
-
-# ----------------------------
-# Encoder / Decoder
-# ----------------------------
-class Encoder(nn.Module):
-    """Three-stage encoder with Swin blocks and patch merging."""
+    We instantiate the backbone with 3 input channels for ImageNet compatibility,
+    optionally load pretrained Swin-T weights, then (if needed) inflate the
+    patch-embedding conv to accept multi-band inputs.
+    """
 
     def __init__(
         self,
         c: int,
-        input_resolution: Tuple[int, int],
-        window_size: int = 4,
-        ss_size: Optional[int] = None,
-        attn_drop: float = 0.0,
-        proj_drop: float = 0.0,
-        mlp_drop: float = 0.0,
-        drop_path: float = 0.1,
+        *,
+        patch_size: int,
+        in_chans: int,
+        window_size: int,
+        depths: Tuple[int, int, int, int],
+        use_imagenet_weights: bool = False,
     ) -> None:
         super().__init__()
-        h, w = input_resolution
-        ws = window_size
-        ss = ss_size if ss_size is not None else ws // 2
-
-        self.enc_swin_blocks = nn.ModuleList(
-            [
-                nn.Sequential(
-                    SwinBlock(
-                        c,
-                        (h, w),
-                        window_size=ws,
-                        ss_size=ss,
-                        num_heads=max(1, c // 32),
-                        attn_drop=attn_drop,
-                        proj_drop=proj_drop,
-                        mlp_drop=mlp_drop,
-                        drop_path=drop_path,
-                    ),
-                    SwinBlock(
-                        c,
-                        (h, w),
-                        window_size=ws,
-                        ss_size=ss,
-                        num_heads=max(1, c // 32),
-                        attn_drop=attn_drop,
-                        proj_drop=proj_drop,
-                        mlp_drop=mlp_drop,
-                        drop_path=drop_path,
-                    ),
-                ),
-                nn.Sequential(
-                    SwinBlock(
-                        2 * c,
-                        (h // 2, w // 2),
-                        window_size=ws,
-                        ss_size=ss,
-                        num_heads=max(1, (2 * c) // 32),
-                        attn_drop=attn_drop,
-                        proj_drop=proj_drop,
-                        mlp_drop=mlp_drop,
-                        drop_path=drop_path,
-                    ),
-                    SwinBlock(
-                        2 * c,
-                        (h // 2, w // 2),
-                        window_size=ws,
-                        ss_size=ss,
-                        num_heads=max(1, (2 * c) // 32),
-                        attn_drop=attn_drop,
-                        proj_drop=proj_drop,
-                        mlp_drop=mlp_drop,
-                        drop_path=drop_path,
-                    ),
-                ),
-                nn.Sequential(
-                    SwinBlock(
-                        4 * c,
-                        (h // 4, w // 4),
-                        window_size=ws,
-                        ss_size=ss,
-                        num_heads=max(1, (4 * c) // 32),
-                        attn_drop=attn_drop,
-                        proj_drop=proj_drop,
-                        mlp_drop=mlp_drop,
-                        drop_path=drop_path,
-                    ),
-                    SwinBlock(
-                        4 * c,
-                        (h // 4, w // 4),
-                        window_size=ws,
-                        ss_size=ss,
-                        num_heads=max(1, (4 * c) // 32),
-                        attn_drop=attn_drop,
-                        proj_drop=proj_drop,
-                        mlp_drop=mlp_drop,
-                        drop_path=drop_path,
-                    ),
-                ),
-            ]
+        heads = (
+            max(1, c // 32),
+            max(1, (2 * c) // 32),
+            max(1, (4 * c) // 32),
+            max(1, (8 * c) // 32),
         )
 
-        self.enc_patch_merge_blocks = nn.ModuleList(
-            [PatchMerging(c), PatchMerging(2 * c), PatchMerging(4 * c)]
+        # Build canonical Swin backbone (3-channel) so weights match exactly.
+        self.backbone = SwinTransformer(
+            patch_size=[patch_size, patch_size],
+            embed_dim=c,
+            depths=list(depths),
+            num_heads=list(heads),
+            window_size=[window_size, window_size],
+            mlp_ratio=4.0,
+            dropout=0.0,
+            attention_dropout=0.0,
+            stochastic_depth_prob=0.1,
+            num_classes=0,  # we don't use the classification head
         )
+
+        # Optionally load ImageNet weights (Swin-T only).
+        if use_imagenet_weights:
+            self._maybe_load_imagenet_weights(c, patch_size, window_size, depths)
+
+        # Inflate for multi-band inputs (after weights are loaded).
+        if in_chans != 3:
+            _inflate_patch_embed_conv(self.backbone, in_chans)
+
+        # Build feature extractor for the 4 hierarchical stages.
+        self.extractor = create_feature_extractor(
+            self.backbone,
+            return_nodes={
+                "features.1": "s0",  # H/patch,     C=c
+                "features.3": "s1",  # H/2patch,    C=2c
+                "features.5": "s2",  # H/4patch,    C=4c
+                "features.7": "s3",  # H/8patch,    C=8c
+            },
+        )
+
+    def _maybe_load_imagenet_weights(
+        self,
+        c: int,
+        patch_size: int,
+        window_size: int,
+        depths: Tuple[int, int, int, int],
+    ) -> None:
+        """
+        Load official Swin-T ImageNet-1k weights if architecture matches:
+        c=96, patch_size=4, window_size=7, depths=(2,2,6,2).
+        """
+        ok = (
+            Swin_T_Weights is not None
+            and int(c) == 96
+            and int(patch_size) == 4
+            and int(window_size) == 7
+            and tuple(map(int, depths)) == (2, 2, 6, 2)
+        )
+        if not ok:
+            warnings.warn(
+                "config/use_imagenet_weights=True but the Swin config is not "
+                "Swin-T (c=96, patch=4, window=7, depths=(2,2,6,2)). Skipping.",
+                stacklevel=2,
+            )
+            return
+
+        try:
+            # Get the state dict and drop classification head params.
+            state = Swin_T_Weights.DEFAULT.get_state_dict(progress=True)  # type: ignore[attr-defined]
+            # Remove the classification head keys (not present in our backbone)
+            unexpected_keys = [k for k in list(state.keys()) if k.startswith("head.")]
+            for k in unexpected_keys:
+                state.pop(k, None)
+
+            load_ret = self.backbone.load_state_dict(state, strict=False)
+            # Count what we loaded vs skipped
+            loaded_from_ckpt = len(state)
+            skipped = len(load_ret.unexpected_keys) + len(load_ret.missing_keys)
+            print(f"[Swin-T] Loaded {loaded_from_ckpt - skipped} keys, skipped {skipped} (head/mismatch).")
+        except Exception as e:  # pragma: no cover
+            warnings.warn(
+                f"Could not load Swin-T weights ({e}). Proceeding without.",
+                stacklevel=2,
+            )
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, List[torch.Tensor]]:
-        skip_conn_ftrs: List[torch.Tensor] = []
-        for swin_blocks, patch_merger in zip(
-            self.enc_swin_blocks, self.enc_patch_merge_blocks
-        ):
-            x = swin_blocks(x)
-            skip_conn_ftrs.append(x)
-            x = patch_merger(x)
-        return x, skip_conn_ftrs
+        feats = self.extractor(x)  # NHWC tensors
+        s0 = feats["s0"]
+        s1 = feats["s1"]
+        s2 = feats["s2"]
+        s3 = feats["s3"]
+        return s3, [s0, s1, s2]
 
 
-class Decoder(nn.Module):
-    """Three-stage decoder with patch expansion and skip connections."""
+# ----------------------------
+# Decoder (symmetric Swin in NHWC)
+# ----------------------------
+class _Decoder(nn.Module):
+    """
+    Symmetric Swin decoder with PatchExpand upsampling and progressive
+    drop-path schedule across bottleneck + decoder blocks.
+    """
 
     def __init__(
         self,
         c: int,
-        input_resolution: Tuple[int, int],
-        window_size: int = 4,
-        ss_size: Optional[int] = None,
-        attn_drop: float = 0.0,
-        proj_drop: float = 0.0,
-        mlp_drop: float = 0.0,
-        drop_path: float = 0.1,
+        window_size: int,
+        depths: Tuple[int, int, int, int],
+        dpr_decoder: Sequence[float],
     ) -> None:
         super().__init__()
-        h, w = input_resolution
-        ws = window_size
-        ss = ss_size if ss_size is not None else ws // 2
 
-        self.dec_swin_blocks = nn.ModuleList(
-            [
-                nn.Sequential(
-                    SwinBlock(
-                        4 * c,
-                        (h // 4, w // 4),
-                        window_size=ws,
-                        ss_size=ss,
-                        num_heads=max(1, (4 * c) // 32),
-                        attn_drop=attn_drop,
-                        proj_drop=proj_drop,
-                        mlp_drop=mlp_drop,
-                        drop_path=drop_path,
-                    ),
-                    SwinBlock(
-                        4 * c,
-                        (h // 4, w // 4),
-                        window_size=ws,
-                        ss_size=ss,
-                        num_heads=max(1, (4 * c) // 32),
-                        attn_drop=attn_drop,
-                        proj_drop=proj_drop,
-                        mlp_drop=mlp_drop,
-                        drop_path=drop_path,
-                    ),
-                ),
-                nn.Sequential(
-                    SwinBlock(
-                        2 * c,
-                        (h // 2, w // 2),
-                        window_size=ws,
-                        ss_size=ss,
-                        num_heads=max(1, (2 * c) // 32),
-                        attn_drop=attn_drop,
-                        proj_drop=proj_drop,
-                        mlp_drop=mlp_drop,
-                        drop_path=drop_path,
-                    ),
-                    SwinBlock(
-                        2 * c,
-                        (h // 2, w // 2),
-                        window_size=ws,
-                        ss_size=ss,
-                        num_heads=max(1, (2 * c) // 32),
-                        attn_drop=attn_drop,
-                        proj_drop=proj_drop,
-                        mlp_drop=mlp_drop,
-                        drop_path=drop_path,
-                    ),
-                ),
-                nn.Sequential(
-                    SwinBlock(
-                        c,
-                        (h, w),
-                        window_size=ws,
-                        ss_size=ss,
-                        num_heads=max(1, c // 32),
-                        attn_drop=attn_drop,
-                        proj_drop=proj_drop,
-                        mlp_drop=mlp_drop,
-                        drop_path=drop_path,
-                    ),
-                    SwinBlock(
-                        c,
-                        (h, w),
-                        window_size=ws,
-                        ss_size=ss,
-                        num_heads=max(1, c // 32),
-                        attn_drop=attn_drop,
-                        proj_drop=proj_drop,
-                        mlp_drop=mlp_drop,
-                        drop_path=drop_path,
-                    ),
-                ),
-            ]
+        # Bottleneck (mirror encoder stage 3): 8c channels
+        self.bottleneck = _make_swin_stage(
+            dim=8 * c,
+            depth=depths[3],
+            num_heads=max(1, (8 * c) // 32),
+            window_size=window_size,
+            dpr_slice=dpr_decoder[: depths[3]],
         )
 
-        # After concat with encoder features, reduce back to stage dimensions
-        self.dec_patch_expand_blocks = nn.ModuleList(
-            [PatchExpansion(8 * c), PatchExpansion(4 * c), PatchExpansion(2 * c)]
-        )
-        self.skip_conv_layers = nn.ModuleList(
-            [
-                nn.Conv2d(8 * c, 4 * c, kernel_size=1, bias=False),
-                nn.Conv2d(4 * c, 2 * c, kernel_size=1, bias=False),
-                nn.Conv2d(2 * c, c, kernel_size=1, bias=False),
-            ]
+        ofs = depths[3]
+        # Up: H/8 -> H/4 (8c -> 4c), then fuse with s2 (4c)
+        self.up3 = PatchExpandNHWC(8 * c)
+        self.red3 = nn.Linear(8 * c, 4 * c, bias=False)
+        self.stage3 = _make_swin_stage(
+            dim=4 * c,
+            depth=depths[2],
+            num_heads=max(1, (4 * c) // 32),
+            window_size=window_size,
+            dpr_slice=dpr_decoder[ofs : ofs + depths[2]],
         )
 
-    def forward(
-        self, x: torch.Tensor, encoder_features: Sequence[torch.Tensor]
-    ) -> torch.Tensor:
-        for patch_expand, swin_blocks, enc_ftr, skip_conv in zip(
-            self.dec_patch_expand_blocks,
-            self.dec_swin_blocks,
-            reversed(encoder_features),
-            self.skip_conv_layers,
-        ):
-            x = patch_expand(x)  # upsample 2x
-            x = torch.cat([x, enc_ftr], dim=1)  # concat skip
-            x = skip_conv(x)  # 1x1 to match stage dim
-            x = swin_blocks(x)
+        ofs += depths[2]
+        # Up: H/4 -> H/2 (4c -> 2c), then fuse with s1 (2c)
+        self.up2 = PatchExpandNHWC(4 * c)
+        self.red2 = nn.Linear(4 * c, 2 * c, bias=False)
+        self.stage2 = _make_swin_stage(
+            dim=2 * c,
+            depth=depths[1],
+            num_heads=max(1, (2 * c) // 32),
+            window_size=window_size,
+            dpr_slice=dpr_decoder[ofs : ofs + depths[1]],
+        )
+
+        ofs += depths[1]
+        # Up: H/2 -> H (2c -> c), then fuse with s0 (c)
+        self.up1 = PatchExpandNHWC(2 * c)
+        self.red1 = nn.Linear(2 * c, c, bias=False)
+        self.stage1 = _make_swin_stage(
+            dim=c,
+            depth=depths[0],
+            num_heads=max(1, c // 32),
+            window_size=window_size,
+            dpr_slice=dpr_decoder[ofs : ofs + depths[0]],
+        )
+
+        # Final expansion to input stride (set by SwinUNet)
+        self.final_up: Optional[FinalPatchExpandNHWC] = None
+
+    @staticmethod
+    def _concat_reduce(x: torch.Tensor, skip: torch.Tensor, proj: nn.Linear) -> torch.Tensor:
+        """
+        Concatenate decoder tensor with skip (NHWC) and reduce channels.
+
+        Args:
+            x: Current decoder tensor (B, H, W, Cx).
+            skip: Encoder skip tensor (B, H, W, Cs).
+            proj: Linear projection to reduce channels.
+
+        Returns:
+            Tensor (B, H, W, Cout).
+        """
+        x = torch.cat([x, skip], dim=-1)
+        return proj(x)
+
+    def forward(self, x: torch.Tensor, skips_nhwc: Sequence[torch.Tensor]) -> torch.Tensor:
+        # x: deepest stage (s3); skips: [s0, s1, s2] (all NHWC)
+        s0, s1, s2 = skips_nhwc
+
+        x = self.bottleneck(x)
+
+        x = self.up3(x)
+        x = self._concat_reduce(x, s2, self.red3)
+        x = self.stage3(x)
+
+        x = self.up2(x)
+        x = self._concat_reduce(x, s1, self.red2)
+        x = self.stage2(x)
+
+        x = self.up1(x)
+        x = self._concat_reduce(x, s0, self.red1)
+        x = self.stage1(x)
+
+        if self.final_up is not None:
+            x = self.final_up(x)
         return x
+
+
+# ----------------------------
+# Weight copy: initialize decoder from encoder
+# ----------------------------
+def _copy_block_params(dst: SwinTransformerBlock, src: SwinTransformerBlock) -> None:
+    """
+    Copy parameters from an encoder Swin block to a decoder Swin block.
+
+    Args:
+        dst: Destination block (decoder).
+        src: Source block (encoder).
+    """
+    with torch.no_grad():
+        # Norms
+        dst.norm1.weight.copy_(src.norm1.weight)
+        dst.norm1.bias.copy_(src.norm1.bias)
+        dst.norm2.weight.copy_(src.norm2.weight)
+        dst.norm2.bias.copy_(src.norm2.bias)
+        # Attention layers
+        dst.attn.qkv.weight.copy_(src.attn.qkv.weight)
+        if dst.attn.qkv.bias is not None and src.attn.qkv.bias is not None:
+            dst.attn.qkv.bias.copy_(src.attn.qkv.bias)
+        dst.attn.proj.weight.copy_(src.attn.proj.weight)
+        if dst.attn.proj.bias is not None and src.attn.proj.bias is not None:
+            dst.attn.proj.bias.copy_(src.attn.proj.bias)
+        # Relative position bias (if present)
+        if hasattr(dst.attn, "relative_position_bias_table") and hasattr(
+            src.attn, "relative_position_bias_table"
+        ):
+            dst.attn.relative_position_bias_table.data.copy_(
+                src.attn.relative_position_bias_table.data
+            )
+        # MLP (two Linear layers)
+        dst_linears = [m for m in dst.mlp.modules() if isinstance(m, nn.Linear)]
+        src_linears = [m for m in src.mlp.modules() if isinstance(m, nn.Linear)]
+        for dlin, slin in zip(dst_linears, src_linears):
+            dlin.weight.copy_(slin.weight)
+            if dlin.bias is not None and slin.bias is not None:
+                dlin.bias.copy_(slin.bias)
+
+
+def _init_decoder_from_encoder(decoder: _Decoder, backbone: SwinTransformer) -> None:
+    """
+    Mirror encoder stage weights into decoder stages at matching scales.
+
+    Works with torchvision's SwinTransformer (stages in backbone.features)
+    and, as a fallback, with timm-style Swin that exposes a `.blocks` attr.
+    """
+    try:
+        s0_blocks = s1_blocks = s2_blocks = s3_blocks = None
+
+        # ---- 1) TorchVision Swin: stages are nn.Sequential of SwinTransformerBlock in backbone.features ----
+        if hasattr(backbone, "features") and isinstance(backbone.features, nn.Sequential):
+            encoder_stages = []
+            for m in backbone.features:
+                # We treat any nn.Sequential that contains SwinTransformerBlock(s) as a stage
+                if isinstance(m, nn.Sequential) and any(
+                    isinstance(b, SwinTransformerBlock) for b in m
+                ):
+                    encoder_stages.append(m)
+
+            if len(encoder_stages) >= 4:
+                s0_blocks, s1_blocks, s2_blocks, s3_blocks = encoder_stages[:4]
+
+        # ---- 2) Fallback: timm-style / other Swin with `.blocks` attribute ----
+        if s0_blocks is None:
+            stage_modules = [m for m in backbone.modules() if hasattr(m, "blocks")]
+            if len(stage_modules) < 4:
+                raise RuntimeError(
+                    f"Expected at least 4 Swin stages, found {len(stage_modules)}."
+                )
+            s0_blocks = stage_modules[0].blocks
+            s1_blocks = stage_modules[1].blocks
+            s2_blocks = stage_modules[2].blocks
+            s3_blocks = stage_modules[3].blocks
+
+        # Now copy encoder → decoder (deepest → bottleneck)
+        # decoder.bottleneck  ~ encoder stage3
+        for d_blk, s_blk in zip(decoder.bottleneck, s3_blocks):
+            _copy_block_params(d_blk, s_blk)
+
+        # decoder.stage3 ~ encoder stage2
+        for d_blk, s_blk in zip(decoder.stage3, s2_blocks):
+            _copy_block_params(d_blk, s_blk)
+
+        # decoder.stage2 ~ encoder stage1
+        for d_blk, s_blk in zip(decoder.stage2, s1_blocks):
+            _copy_block_params(d_blk, s_blk)
+
+        # decoder.stage1 ~ encoder stage0
+        for d_blk, s_blk in zip(decoder.stage1, s0_blocks):
+            _copy_block_params(d_blk, s_blk)
+
+    except Exception as e:  # pragma: no cover
+        warnings.warn(
+            f"Could not initialize decoder from encoder weights (layout changed?): {e}. "
+            f"Proceeding without explicit mirroring.",
+            stacklevel=2,
+        )
+
 
 
 # ----------------------------
 # SwinUNet
 # ----------------------------
 class SwinUNet(nn.Module):
-    """UNet-like architecture built from Swin Transformer stages."""
+    """
+    UNet-like architecture built from a TorchVision Swin encoder and a symmetric
+    Swin decoder (true to the official Swin-UNet design).
+
+    Entry-point signature preserved for compatibility with project scripts.
+    """
 
     def __init__(
         self,
@@ -678,69 +564,112 @@ class SwinUNet(nn.Module):
         c: int,
         num_class: int = 1,
         num_blocks: int = 3,
-        patch_size: int = 16,
-        window_size: int = 4,
-        ss_size: Optional[int] = None,
-        attn_drop: float = 0.0,
-        proj_drop: float = 0.0,
-        mlp_drop: float = 0.0,
+        patch_size: int = 4,
+        window_size: int = 7,
+
+        # included for compatibility; not used as handled inside blocks
+        ss_size: Optional[int] = None,  # shift-size (implicit via alternation)
+        attn_drop: float = 0.0,         # kept for API compat
+        proj_drop: float = 0.0,         # kept for API compat
+        mlp_drop: float = 0.0,          # kept for API compat
         drop_path: float = 0.1,
     ) -> None:
         super().__init__()
-        # Patch embedding (Conv2d stride=patch_size) + LN
-        self.patch_embed = PatchEmbedding(ch, c, patch_size)
+        assert int(num_blocks) == 3, "This SwinUNet assumes three downsampling stages."
+        self.h = int(h)
+        self.w = int(w)
+        self.patch_size = int(patch_size)
+        depths = (2, 2, 6, 2)  # official Swin-T depths
 
-        enc_ip = (h // patch_size, w // patch_size)
+        # Optional pretrained loading controlled by config.use_imagenet_weights
+        use_imagenet_weights = self._resolve_use_imagenet_weights_flag()
 
-        # Encoder
-        self.encoder = Encoder(
-            c,
-            enc_ip,
-            window_size=window_size,
-            ss_size=ss_size,
-            attn_drop=attn_drop,
-            proj_drop=proj_drop,
-            mlp_drop=mlp_drop,
-            drop_path=drop_path,
+        # Encoder (TorchVision Swin)
+        self.encoder = _Encoder(
+            c=int(c),
+            patch_size=int(patch_size),
+            in_chans=int(ch),
+            window_size=int(window_size),
+            depths=depths,
+            use_imagenet_weights=use_imagenet_weights,
         )
 
-        # Bottleneck dims / resolution
-        bot_dim = c * (2 ** num_blocks)
-        bot_ip = (h // (patch_size * (2 ** num_blocks)), w // (patch_size * (2 ** num_blocks)))
-        self.bottleneck = SwinBlock(
-            bot_dim,
-            bot_ip,
-            window_size=window_size,
-            ss_size=ss_size,
-            num_heads=max(1, bot_dim // 32),
-            attn_drop=attn_drop,
-            proj_drop=proj_drop,
-            mlp_drop=mlp_drop,
-            drop_path=drop_path,
+        # Progressive drop-path schedule across bottleneck + decoder
+        total_dec_blocks = sum(depths)
+        dpr = torch.linspace(0.0, float(drop_path), steps=total_dec_blocks).tolist()
+
+        # Decoder (symmetric)
+        self.decoder = _Decoder(
+            c=int(c),
+            window_size=int(window_size),
+            depths=depths,
+            dpr_decoder=dpr,
         )
+        self.decoder.final_up = FinalPatchExpandNHWC(int(c), up_factor=int(patch_size))
 
-        # Decoder
-        self.decoder = Decoder(
-            c,
-            enc_ip,
-            window_size=window_size,
-            ss_size=ss_size,
-            attn_drop=attn_drop,
-            proj_drop=proj_drop,
-            mlp_drop=mlp_drop,
-            drop_path=drop_path,
-        )
+        # Per-pixel head (NHWC -> logits) + sigmoid in forward
+        self.head = nn.Linear(int(c), int(num_class), bias=True)
 
-        # Final expansion back to input stride then 1x1 head + sigmoid
-        self.final_expansion = FinalPatchExpansion(c, up_factor=patch_size)
-        self.head = nn.Conv2d(c, num_class, kernel_size=1, bias=True)
+        # Tell the training loop we already return probabilities (NCHW, in [0,1])
+        setattr(self, "_returns_probabilities", True)
 
+        # Initialize decoder from encoder if pretrained were loaded
+        if use_imagenet_weights:
+            _init_decoder_from_encoder(self.decoder, self.encoder.backbone)
+
+    # ----------------------------
+    # Resolve config flag for pretrained
+    # ----------------------------
+    @staticmethod
+    def _resolve_use_imagenet_weights_flag() -> bool:
+        """
+        Read a runtime flag controlling pretrained loading:
+            - Prefer a global 'config.use_imagenet_weights' if present in
+              training/tuning/evaluation modules.
+            - Else, read env var USE_IMAGENET_WEIGHTS.
+            - Default: False.
+        """
+        for mod_name in ("training", "tuning", "evaluation"):
+            mod = sys.modules.get(mod_name, None)
+            if mod is not None and hasattr(mod, "config"):
+                cfg = getattr(mod, "config")
+                if cfg is not None and hasattr(cfg, "use_imagenet_weights"):
+                    try:
+                        return bool(getattr(cfg, "use_imagenet_weights"))
+                    except Exception:
+                        pass
+        env = os.getenv("USE_IMAGENET_WEIGHTS", "").strip().lower()
+        if env in {"1", "true", "yes", "on"}:
+            return True
+        if env in {"0", "false", "no", "off"}:
+            return False
+        return False
+
+    # ----------------------------
+    # Forward
+    # ----------------------------
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (N, ch, H, W)
-        x = self.patch_embed(x)
-        x, skip_ftrs = self.encoder(x)
-        x = self.bottleneck(x)
-        x = self.decoder(x, skip_ftrs)
-        x = self.final_expansion(x)
-        x = torch.sigmoid(self.head(x))
-        return x
+        """
+        Forward pass.
+
+        Args:
+            x: Tensor of shape (N, ch, H, W).
+
+        Returns:
+            Tensor of shape (N, num_class, H, W) with probabilities in [0, 1].
+        """
+        # Encoder (TorchVision Swin provides NHWC features)
+        s3, skips = self.encoder(x)  # s3 deepest, skips=[s0, s1, s2]
+
+        # Decoder (NHWC)
+        y = self.decoder(s3, skips)
+
+        # Head (NHWC -> NCHW) + sigmoid
+        logits = self.head(y)
+        logits = _to_nchw(logits)
+        out = torch.sigmoid(logits)
+
+        # If internal padding occurred, crop back to (H, W)
+        if out.shape[-2] != self.h or out.shape[-1] != self.w:
+            out = out[..., : self.h, : self.w]
+        return out

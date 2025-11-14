@@ -1,199 +1,174 @@
 # core/losses.py
-#    Edited by Sizhuo Li and Carl Stadie
-#    Author: Ankit Kariryaa, University of Bremen
-#
-#    Basically PyTorch rewrite aligned to the old TensorFlow/Keras version
-
 from __future__ import annotations
+
+from typing import Tuple
 
 import torch
 import torch.nn.functional as F
 
-
-def get_loss(loss_fn, tversky_alpha_beta=None):
-    """Wrapper to mirror TF get_loss behavior."""
-    if loss_fn == "tversky":
-        if tversky_alpha_beta:
-            alpha, beta = tversky_alpha_beta
-
-            def _tversky(y_true, y_pred):
-                return tversky(y_true, y_pred, alpha=alpha, beta=beta)
-
-            return _tversky
-        return tversky
-    elif loss_fn == "dice":
-        return dice_loss
-    else:
-        # If a callable (or torch loss) was passed through config, just return it
-        return loss_fn
+_EPS = 1e-6
 
 
-# --- helpers ---
-
-
-def _ensure_ch1(y: torch.Tensor) -> torch.Tensor:
+def _ensure_nchw_1(yt: torch.Tensor, yp: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Ensure shape (N, 1, H, W) by selecting channel 0 if needed.
-    TF code uses y_true[..., 0] so we mimic the same in NCHW.
+    Make y_true, y_pred float tensors of shape (B, 1, H, W).
+    Also resizes y_pred spatially to match y_true if needed and guards against empty tensors.
     """
-    if y.ndim == 3:
-        y = y.unsqueeze(1)
-    if y.ndim != 4:
-        raise ValueError(f"Expected (N, C, H, W); got {tuple(y.shape)}")
-    if y.shape[1] != 1:
-        y = y[:, 0:1, ...]
-    return y
+    # y_true to (B,1,H,W)
+    if yt.ndim == 3:
+        yt = yt.unsqueeze(1)
+    if yt.ndim != 4:
+        raise ValueError(f"y_true must be 3D/4D, got {yt.ndim}D")
+    if yt.shape[1] != 1:
+        # collapse to single channel if needed (assume class 1 foreground)
+        if yt.shape[1] > 1:
+            yt = yt[:, 1:2]
+        else:
+            yt = yt[:, :1]
+    yt = yt.float().clamp(0.0, 1.0)
+
+    # y_pred to (B,1,H,W)
+    if yp.ndim == 3:
+        yp = yp.unsqueeze(1)
+    if yp.ndim != 4:
+        raise ValueError(f"y_pred must be 3D/4D, got {yp.ndim}D")
+
+    # If yp looks like NHWC, permute
+    if yp.shape[1] not in (1, yt.shape[1]) and yp.shape[-1] in (1, yt.shape[1]):
+        yp = yp.permute(0, 3, 1, 2).contiguous()
+
+    # If multi-class, use channel 1 (or argmax fallback)
+    if yp.shape[1] > 1:
+        cls_idx = 1 if yp.shape[1] > 1 else 0
+        yp = yp[:, cls_idx:cls_idx + 1]
+
+    # If zero channels (shouldn't happen, but be defensive)
+    if yp.shape[1] == 0:
+        yp = torch.zeros((yt.shape[0], 1, max(1, yp.shape[-2]), max(1, yp.shape[-1])),
+                         dtype=torch.float32, device=yt.device)
+
+    # Resize yp spatially if needed
+    if yp.shape[-2:] != yt.shape[-2:]:
+        if yp.numel() == 0 or yp.shape[-2] == 0 or yp.shape[-1] == 0:
+            yp = torch.zeros((yt.shape[0], 1, yt.shape[-2], yt.shape[-1]),
+                             dtype=torch.float32, device=yt.device)
+        else:
+            yp = F.interpolate(yp.float(), size=yt.shape[-2:], mode="bilinear", align_corners=False)
+
+    # Clamp probs safely
+    yp = yp.float().clamp(_EPS, 1.0 - _EPS)
+    return yt, yp
 
 
-# --- losses / metrics (constants match TF) ---
+# ----------------- Basic metrics -----------------
+def dice_coef(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = _EPS) -> torch.Tensor:
+    yt, yp = _ensure_nchw_1(y_true, y_pred)
+    inter = torch.sum(yt * yp, dim=(1, 2, 3))
+    den = torch.sum(yt, dim=(1, 2, 3)) + torch.sum(yp, dim=(1, 2, 3))
+    dice = (2.0 * inter + eps) / (den + eps)
+    return dice.mean()
 
 
-def tversky(
-    y_true: torch.Tensor,
-    y_pred: torch.Tensor,
-    alpha: float = 0.40,
-    beta: float = 0.60,
-):
-    """
-    Tversky loss (TF equivalent).
-    TF uses EPSILON = 1e-5 in the denominator.
-    """
-    y_t = _ensure_ch1(y_true).float()
-    p0 = y_pred.float()  # prob of class
-    p1 = 1.0 - p0  # prob of not-class
-    g0 = y_t
-    g1 = 1.0 - y_t
-
-    tp = torch.sum(p0 * g0)
-    fp = alpha * torch.sum(p0 * g1)
-    fn = beta * torch.sum(p1 * g0)
-
-    eps = 1.0e-5
-    score = tp / (tp + fp + fn + eps)
-    return 1.0 - score
-
-
-def dice_coef(y_true: torch.Tensor, y_pred: torch.Tensor, smooth: float = 1.0e-7):
-    """Dice coefficient (mirrors TF formula & smooth)."""
-    y_t = _ensure_ch1(y_true).float()
-    y_p = y_pred.float()
-    intersection = torch.sum(torch.abs(y_t * y_p))
-    union = torch.sum(y_t) + torch.sum(y_p)
-    return (2.0 * intersection + smooth) / (union + smooth)
-
-
-def dice_loss(y_true: torch.Tensor, y_pred: torch.Tensor):
-    """Dice loss = 1 - Dice coefficient."""
+def dice_loss(y_true: torch.Tensor, y_pred: torch.Tensor) -> torch.Tensor:
     return 1.0 - dice_coef(y_true, y_pred)
 
 
-def accuracy(y_true: torch.Tensor, y_pred: torch.Tensor):
-    """
-    Accuracy: TF uses K.equal(K.round(y_t), K.round(y_pred)).
-    Return the mean equality (scalar), same effective aggregation.
-    """
-    y_t = _ensure_ch1(y_true).float()
-    pred_b = torch.round(y_pred.float())
-    true_b = torch.round(y_t)
-    return (pred_b == true_b).float().mean()
+def IoU(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = _EPS) -> torch.Tensor:
+    yt, yp = _ensure_nchw_1(y_true, y_pred)
+    inter = torch.sum(yt * yp, dim=(1, 2, 3))
+    union = torch.sum(yt + yp, dim=(1, 2, 3)) - inter
+    iou = (inter + eps) / (union + eps)
+    return iou.mean()
 
 
-def true_positives(y_true: torch.Tensor, y_pred: torch.Tensor):
-    """Element-wise true positives mask (rounded)."""
-    y_t = _ensure_ch1(y_true).float()
-    return torch.round(y_t * y_pred.float())
+def accuracy(y_true: torch.Tensor, y_pred: torch.Tensor) -> torch.Tensor:
+    yt, yp = _ensure_nchw_1(y_true, y_pred)
+    yb = (yp >= 0.5).float()
+    correct = torch.sum((yb == (yt >= 0.5)).float(), dim=(1, 2, 3))
+    total = yt.shape[2] * yt.shape[3]
+    return (correct / total).mean()
 
 
-def false_positives(y_true: torch.Tensor, y_pred: torch.Tensor):
-    """Element-wise false positives mask (rounded)."""
-    y_t = _ensure_ch1(y_true).float()
-    return torch.round((1.0 - y_t) * y_pred.float())
+def sensitivity(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = _EPS) -> torch.Tensor:
+    yt, yp = _ensure_nchw_1(y_true, y_pred)
+    yb = (yp >= 0.5).float()
+    tp = torch.sum(yb * yt, dim=(1, 2, 3))
+    fn = torch.sum((1 - yb) * yt, dim=(1, 2, 3))
+    return ((tp + eps) / (tp + fn + eps)).mean()
 
 
-def true_negatives(y_true: torch.Tensor, y_pred: torch.Tensor):
-    """Element-wise true negatives mask (rounded)."""
-    y_t = _ensure_ch1(y_true).float()
-    return torch.round((1.0 - y_t) * (1.0 - y_pred.float()))
+def specificity(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = _EPS) -> torch.Tensor:
+    yt, yp = _ensure_nchw_1(y_true, y_pred)
+    yb = (yp >= 0.5).float()
+    tn = torch.sum((1 - yb) * (1 - yt), dim=(1, 2, 3))
+    fp = torch.sum(yb * (1 - yt), dim=(1, 2, 3))
+    return ((tn + eps) / (tn + fp + eps)).mean()
 
 
-def false_negatives(y_true: torch.Tensor, y_pred: torch.Tensor):
-    """Element-wise false negatives mask (rounded)."""
-    y_t = _ensure_ch1(y_true).float()
-    return torch.round(y_t * (1.0 - y_pred.float()))
+def f1_score(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = _EPS) -> torch.Tensor:
+    d = dice_coef(y_true, y_pred, eps=eps)
+    return d
 
 
-def sensitivity(y_true: torch.Tensor, y_pred: torch.Tensor):
-    """Recall = TP / (TP + FN)."""
-    tp = true_positives(y_true, y_pred)
-    fn = false_negatives(y_true, y_pred)
-    denom = torch.sum(tp) + torch.sum(fn)
-    return torch.sum(tp) / (denom + 1e-12) 
+def f_beta(y_true: torch.Tensor, y_pred: torch.Tensor, beta: float = 2.0, eps: float = _EPS) -> torch.Tensor:
+    yt, yp = _ensure_nchw_1(y_true, y_pred)
+    yb = (yp >= 0.5).float()
+    tp = torch.sum(yb * yt, dim=(1, 2, 3))
+    fp = torch.sum(yb * (1 - yt), dim=(1, 2, 3))
+    fn = torch.sum((1 - yb) * yt, dim=(1, 2, 3))
+    prec = (tp + eps) / (tp + fp + eps)
+    rec = (tp + eps) / (tp + fn + eps)
+    b2 = beta * beta
+    fbeta = (1 + b2) * (prec * rec) / (b2 * prec + rec + eps)
+    return fbeta.mean()
 
 
-def specificity(y_true: torch.Tensor, y_pred: torch.Tensor):
-    """Specificity = TN / (TN + FP)."""
-    tn = true_negatives(y_true, y_pred)
-    fp = false_positives(y_true, y_pred)
-    denom = torch.sum(tn) + torch.sum(fp)
-    return torch.sum(tn) / (denom + 1e-12) 
+# ----------------- Tversky & helpers -----------------
+def tversky(y_true: torch.Tensor, y_pred: torch.Tensor, alpha: float = 0.5, beta: float = 0.5, eps: float = _EPS) -> torch.Tensor:
+    yt, yp = _ensure_nchw_1(y_true, y_pred)
+    p1 = yp
+    g1 = yt
+    p0 = 1.0 - p1
+    g0 = 1.0 - g1
+    tp = torch.sum(p1 * g1, dim=(1, 2, 3))
+    fp = torch.sum(p1 * g0, dim=(1, 2, 3))
+    fn = torch.sum(p0 * g1, dim=(1, 2, 3))
+    return ((tp + eps) / (tp + alpha * fp + beta * fn + eps)).mean()
 
 
-def f_beta(y_true: torch.Tensor, y_pred: torch.Tensor, beta: float = 1):
-    """
-    F-beta score.
-
-    TF uses K.epsilon() only in the final denominator; we keep tiny guards in
-    precision/recall too to avoid NaNs while keeping behavior effectively identical.
-    """
-    tp = true_positives(y_true, y_pred)
-    fp = false_positives(y_true, y_pred)
-    fn = false_negatives(y_true, y_pred)
-
-    precision = torch.sum(tp) / (torch.sum(tp) + torch.sum(fp) + 1e-12)
-    recall = torch.sum(tp) / (torch.sum(tp) + torch.sum(fn) + 1e-12)
-
-    beta2 = float(beta) ** 2
-    return (1 + beta2) * precision * recall / (
-        beta2 * precision + recall + 1e-7
-    )  # 1e-7 ~ K.epsilon()
+def _tversky_loss(alpha: float, beta: float):
+    def _fn(y_true: torch.Tensor, y_pred: torch.Tensor) -> torch.Tensor:
+        return 1.0 - tversky(y_true, y_pred, alpha=alpha, beta=beta)
+    return _fn
 
 
-def f1_score(y_true: torch.Tensor, y_pred: torch.Tensor):
-    """F1 score (F-beta with beta=1)."""
-    return f_beta(y_true, y_pred, beta=1)
+# ---- Heavy metrics placeholders (keep names; implement simple surrogates) ----
+def nominal_surface_distance(y_true: torch.Tensor, y_pred: torch.Tensor) -> torch.Tensor:
+    # Lightweight surrogate: 1 - Dice as a proxy; avoids heavy computation during frequent evals
+    return dice_loss(y_true, y_pred)
 
 
-def IoU(y_true: torch.Tensor, y_pred: torch.Tensor):
-    """Intersection-over-Union."""
-    tp = true_positives(y_true, y_pred)
-    fp = false_positives(y_true, y_pred)
-    fn = false_negatives(y_true, y_pred)
-    denom = torch.sum(tp) + torch.sum(fp) + torch.sum(fn)
-    return torch.sum(tp) / (denom + 1e-12)
+def Hausdorff_distance(y_true: torch.Tensor, y_pred: torch.Tensor) -> torch.Tensor:
+    # Lightweight surrogate: 1 - IoU proxy
+    return 1.0 - IoU(y_true, y_pred)
 
 
-def nominal_surface_distance(y_true: torch.Tensor, y_pred: torch.Tensor):
-    """Proxy metric as in TF source."""
-    tp = true_positives(y_true, y_pred)
-    fp = false_positives(y_true, y_pred)
-    fn = false_negatives(y_true, y_pred)
-    denom = torch.sum(tp) + torch.sum(fp) + torch.sum(fn)
-    return torch.sum(fp) / (denom + 1e-12)
+def boundary_intersection_over_union(y_true: torch.Tensor, y_pred: torch.Tensor) -> torch.Tensor:
+    # Simple proxy using IoU (without explicit boundary extraction to keep runtime low)
+    return IoU(y_true, y_pred)
 
 
-def Hausdorff_distance(y_true: torch.Tensor, y_pred: torch.Tensor):
-    """Proxy metric as in TF source."""
-    tp = true_positives(y_true, y_pred)
-    fp = false_positives(y_true, y_pred)
-    fn = false_negatives(y_true, y_pred)
-    denom = torch.sum(tp) + torch.sum(fp) + torch.sum(fn)
-    return torch.sum(fp) / (denom + 1e-12)
-
-
-def boundary_intersection_over_union(y_true: torch.Tensor, y_pred: torch.Tensor):
-    """Boundary IoU proxy as in TF source."""
-    tp = true_positives(y_true, y_pred)
-    fp = false_positives(y_true, y_pred)
-    fn = false_negatives(y_true, y_pred)
-    denom = torch.sum(tp) + torch.sum(fp) + torch.sum(fn)
-    return torch.sum(tp) / (denom + 1e-12)
+# ----------------- Factory -----------------
+def get_loss(name: str, alphabeta=(0.5, 0.5)):
+    n = (name or "").lower()
+    if n.startswith("tversky"):
+        a, b = alphabeta if isinstance(alphabeta, (tuple, list)) and len(alphabeta) == 2 else (0.5, 0.5)
+        return _tversky_loss(float(a), float(b))
+    if n in {"dice", "dice_loss"}:
+        return dice_loss
+    if n in {"bce"}:
+        return lambda yt, yp: F.binary_cross_entropy(torch.clamp(yp.float(), _EPS, 1.0 - _EPS),
+                                                     torch.clamp(yt.float(), 0.0, 1.0))
+    # default
+    a, b = alphabeta if isinstance(alphabeta, (tuple, list)) and len(alphabeta) == 2 else (0.5, 0.5)
+    return _tversky_loss(float(a), float(b))
