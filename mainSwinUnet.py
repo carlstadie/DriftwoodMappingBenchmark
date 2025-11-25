@@ -18,14 +18,14 @@ import evaluation
 
 if __name__ == "__main__":
     # PREPROCESSING
-    preprocessing.preprocess_all(config)
+    #preprocessing.preprocess_all(config)
 
     # TUNING
     best = tuning.tune_SwinUNetPP(config)
 
     # TRAINING
-    for i in range(10):
-        training.train_SwinUNetPP(config)
+    #for i in range(10):
+        #training.train_SwinUNetPP(config)
 
     # EVALUATION
-    evaluation.evaluate_SwinUNetPP(config)
+    #evaluation.evaluate_SwinUNetPP(config)

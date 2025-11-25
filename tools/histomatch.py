@@ -6,6 +6,7 @@ import re
 import rasterio
 import traceback
 import numpy as np
+from rasterio.shutil import copy as rio_copy
 
 # --------------------------
 # Paths (edit as needed)
@@ -26,7 +27,7 @@ def histogram_match(input_img, ref_img, nodata_val=0):
 
     Parameters
     ----------
-    input_img : np.ndarray  (bands, rows, cols)  [n_bands can differ from ref_img, but we require equal band counts]
+    input_img : np.ndarray  (bands, rows, cols)
     ref_img   : np.ndarray  (bands, rows, cols)
     nodata_val : numeric
 
@@ -158,7 +159,7 @@ def select_s2_bgrnir(ref_arr, descriptions=None):
 
 
 # --------------------------
-# Pairing logic (same as before, with minor safety)
+# Pairing logic
 # --------------------------
 def list_tifs(folder):
     return [os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(('.tif', '.tiff'))]
@@ -231,50 +232,83 @@ def normalise_ref_nodata(ref_img, ref_nodata, target_nodata):
 
 def write_raster(path, arr, profile, nodata):
     """
-    Write array to raster with the same datatype and compression settings as input.
+    Write array to Cloud Optimized GeoTIFF with the same spatial size/transform
+    as the input. The output array size is defined by arr.shape.
     """
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    
-    def scale_array(arr, nodata, dtype):
+
+    dtype_str = profile['dtype']
+    dtype = np.dtype(dtype_str)
+
+    def scale_array(arr_in, nodata_in, dtype_str_in):
         """
-        Scales the array and ensures that the values match the appropriate dtype.
+        Scale / cast array to match requested dtype.
+        Supports uint16 and float32 outputs.
         """
-        if dtype == np.uint16:
-            # Scaling for uint16
-            arr_scaled = np.full_like(arr, 0, dtype=np.uint16)
-            nodata_uint16 = 0
-            valid_mask = arr != nodata
+        if dtype_str_in == 'uint16':
+            arr_scaled = np.full_like(arr_in, 0, dtype=np.uint16)
+            nodata_uint16 = np.uint16(0)
+            valid_mask = arr_in != nodata_in
             if np.any(valid_mask):
-                arr_valid = arr[valid_mask]
+                arr_valid = arr_in[valid_mask].astype(np.float64)
                 arr_min = np.min(arr_valid)
                 arr_max = np.max(arr_valid)
                 if arr_max != arr_min:
                     scale = 65535.0 / (arr_max - arr_min)
                     arr_scaled[valid_mask] = ((arr_valid - arr_min) * scale).astype(np.uint16)
             return arr_scaled, nodata_uint16
-        elif dtype == np.float32:
-            # For floating point, no scaling needed, just return
-            return arr, nodata
+
+        elif dtype_str_in in ('float32', 'float64'):
+            arr_scaled = arr_in.astype(np.float32, copy=False)
+            nodata_scaled = np.float32(nodata_in) if nodata_in is not None else None
+            return arr_scaled, nodata_scaled
+
         else:
-            raise ValueError(f"Unsupported dtype {dtype} for scaling.")
+            raise ValueError(f"Unsupported dtype {dtype_str_in} for scaling.")
 
-    # Scale the array based on the required output type (in this case, uint16 or float32)
-    arr_scaled, nodata_scaled = scale_array(arr, nodata, profile['dtype'])
+    # Make sure we preserve the input array size (bands, rows, cols)
+    bands, rows, cols = arr.shape
 
-    # Copy the original profile and adjust the parameters
+    # Scale the array based on the required output type
+    arr_scaled, nodata_scaled = scale_array(arr, nodata, dtype_str)
+
+    # Temporary GTiff path (will be converted to COG)
+    tmp_path = path + ".tmp.tif"
+
+    # Base GTiff profile (same spatial metadata as input; explicit size)
     prof = profile.copy()
     prof.update(
-        dtype=profile['dtype'],
+        driver="GTiff",
+        dtype=dtype_str,
         nodata=nodata_scaled,
-        count=arr_scaled.shape[0],
-        compress='lzw',  # LZW compression
-        predictor=2,     # Horizontal differencing for better compression with continuous data
-        tiled=True,      # Use tiled storage for better compression
+        count=bands,
+        height=rows,
+        width=cols,
+        tiled=True,         # tiled storage required for COG
         blockxsize=256,
-        blockysize=256
+        blockysize=256,
+        compress="LZW",
+        predictor=2 if np.issubdtype(dtype, np.number) else 1,
     )
-    with rasterio.open(path, 'w', **prof) as dst:
+
+    # Write the temporary tiled GeoTIFF
+    with rasterio.open(tmp_path, "w", **prof) as dst:
         dst.write(arr_scaled)
+
+    # Convert to Cloud Optimized GeoTIFF
+    cog_opts = {
+        "driver": "COG",
+        "compress": "LZW",
+        "blocksize": 256,
+        "overview_resampling": "average",
+    }
+    rio_copy(tmp_path, path, **cog_opts)
+
+    # Clean up temporary file
+    try:
+        os.remove(tmp_path)
+    except OSError:
+        pass
 
 
 # --------------------------
@@ -311,12 +345,16 @@ def process_pairs(pairs_dict, label):
             # Histogram-match (spatial sizes may differ; that's fine)
             matched = histogram_match(input_img, ref_img_s4, nodata_val=in_nodata)
 
-            # Output path with the same datatype and file size
+            # Enforce same shape as input
+            assert matched.shape == input_img.shape, \
+                f"Histogram-matched array shape {matched.shape} != input shape {input_img.shape}"
+
+            # Output path as COG
             out_name = f'histmatch_{label.lower()}_{os.path.basename(input_img_path)}'
             out_path = os.path.join(OUTPUT_DIR, out_name)
             write_raster(out_path, matched, in_profile, in_nodata)
 
-            print(f'YAY!!! Saved: {out_path}')
+            print(f'YAY!!! Saved COG: {out_path}')
 
         except Exception as e:
             print(f'Error processing {input_img_path} and {ref_img_path}: {e}')

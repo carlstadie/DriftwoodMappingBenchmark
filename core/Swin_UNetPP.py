@@ -646,6 +646,59 @@ class SwinUNet(nn.Module):
         return False
 
     # ----------------------------
+    # MC Dropout utilities
+    # ----------------------------
+    def enable_mc_dropout(self) -> None:
+        """
+        Enable MC dropout by setting all dropout layers to training mode
+        while keeping batch norm in eval mode.
+        """
+        for m in self.modules():
+            if isinstance(m, nn.Dropout):
+                m.train()
+    
+    def predict_with_mc_dropout(
+        self, 
+        x: torch.Tensor, 
+        n_samples: int = 10,
+        return_uncertainty: bool = True
+    ) -> tuple[torch.Tensor, torch.Tensor] | torch.Tensor:
+        """
+        Perform MC dropout prediction by running multiple forward passes.
+        
+        Args:
+            x: Input tensor of shape (N, ch, H, W).
+            n_samples: Number of MC dropout samples to collect.
+            return_uncertainty: If True, return (mean, std); else just mean.
+            
+        Returns:
+            If return_uncertainty=True: (mean, std) both of shape (N, num_class, H, W)
+            If return_uncertainty=False: mean of shape (N, num_class, H, W)
+        """
+        was_training = self.training
+        self.eval()
+        self.enable_mc_dropout()
+        
+        predictions = []
+        with torch.no_grad():
+            for _ in range(n_samples):
+                pred = self.forward(x)
+                predictions.append(pred)
+        
+        predictions = torch.stack(predictions, dim=0)  # (n_samples, N, num_class, H, W)
+        mean = predictions.mean(dim=0)
+        
+        if return_uncertainty:
+            std = predictions.std(dim=0)
+            if was_training:
+                self.train()
+            return mean, std
+        else:
+            if was_training:
+                self.train()
+            return mean
+
+    # ----------------------------
     # Forward
     # ----------------------------
     def forward(self, x: torch.Tensor) -> torch.Tensor:

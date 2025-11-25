@@ -18,15 +18,16 @@ import evaluation
 # USE PYTORCH ENV FOR THIS PROJECT
 
 if __name__ == "__main__":
+    
     # PREPROCESSING
-    preprocessing.preprocess_all(config)
+    #preprocessing.preprocess_all(config)
 
     # HYPERPARAMETER TUNING
     best = tuning.tune_UNet(config)
 
     # TRAINING
-    for i in range(10):
-        training.train_UNet(config)
+    #for i in range(10):
+    #    training.train_UNet(config)
 
     # EVLAUATION
-    evaluation.evaluate_unet(config)
+    #evaluation.evaluate_unet(config)

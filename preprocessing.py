@@ -259,7 +259,7 @@ def preprocess_all(conf):
     # Create output folder
     output_dir = os.path.join(
         config.preprocessed_base_dir,
-        time.strftime("%Y%m%d-%H%M") + "_" + config.preprocessed_name,
+        time.strftime("%Y%m%d-%H%M") + "_" + config.run_name,
     )
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)

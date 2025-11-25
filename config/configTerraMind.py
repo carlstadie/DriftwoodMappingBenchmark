@@ -56,7 +56,12 @@ class Configuration:
         # -------- IMAGE / CHANNELS --------
         self.image_file_type = ".jp2"
         self.resample_factor = 3
-        self.channels_used = [True, True, True, True]
+
+        if self.modality != "S2":
+            self.channels_used = [True, True, True, True]
+        else:
+            self.channels_used = [True, True, True, True, True, True, True, True, True, True, True, True]
+            
         self.preprocessing_bands = np.where(self.channels_used)[0]
         self.channel_list = self.preprocessing_bands
         self.num_classes = 1  # TerraMind head classes (1 for binary)
@@ -98,7 +103,7 @@ class Configuration:
         # ------ AUG / SAMPLING / DATALOADER ------
         self.augmenter_strength = 1.0
         self.min_pos_frac = 0.0
-        self.pos_ratio = None
+        self.pos_ratio = 0.3
         self.patch_stride = None
         self.fit_workers = 8
         self.steps_per_execution = 1
@@ -130,6 +135,8 @@ class Configuration:
         self.postproc_workers = 12
 
         # Prediction outputs (for completeness with your tools)
+        self.train_image_file_type = self.image_file_type
+        self.train_images_prefix = ""
         self.predict_images_file_type = self.image_file_type
         self.predict_images_prefix = ""
         self.overwrite_analysed_files = False

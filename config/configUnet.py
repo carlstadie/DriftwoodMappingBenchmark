@@ -15,7 +15,7 @@ class Configuration:
     def __init__(self):
         # --------- RUN NAME ---------
         # Modality to be run can be AE, PS or S2
-        self.modality = "AE"
+        self.modality = "S2"
         
         self.run_name = f"UNETx{self.modality}"
 
@@ -26,7 +26,7 @@ class Configuration:
             f"/isipd/projects/p_planetdw/data/methods_test/training/{self.modality}"
         )
         self.training_area_fn = "training_areas.gpkg"
-        self.training_polygon_fn = "test.gpkg"
+        self.training_polygon_fn = "labels_S2.gpkg"
         self.training_image_dir = (
             f"/isipd/projects/p_planetdw/data/methods_test/training_images/{self.modality}"
         )
@@ -37,8 +37,8 @@ class Configuration:
         )
         # Keep explicit override exactly as provided
         self.preprocessed_dir = (
-            "/isipd/projects/p_planetdw/data/methods_test/training_data/AE/"
-            "20250429-1208_MACS_test_utm8"
+            "/isipd/projects/p_planetdw/data/methods_test/preprocessed/"
+            "20251124-1334_UNETxS2"
         )
 
         # Checkpointing / logs / results
@@ -50,9 +50,16 @@ class Configuration:
         # -------- IMAGE / CHANNELS --------
         self.image_file_type = ".tif"
         self.resample_factor = 1
-        self.channels_used = [True, True, True]
+        
+        if self.modality != "S2":
+            self.channels_used = [True, True, True, True]
+        else:
+            self.channels_used = [True, True, True, True, True, True, True, True, True, True, True, True]
+
         self.preprocessing_bands = np.where(self.channels_used)[0]
         self.channel_list = self.preprocessing_bands
+        self.rasterize_borders = True
+        self.get_json = False
 
         # -------- DATA SPLIT --------
         self.test_ratio = 0.2
@@ -60,9 +67,9 @@ class Configuration:
         # train is 1 - test_ratio - val_ratio
 
         # -------- TRAINING (CORE) --------
-        self.patch_size = (256, 256)
-        self.tune_patch_h = None
-        self.tune_patch_w = None
+        self.patch_size = (32, 32)
+        self.tune_patch_h = 32
+        self.tune_patch_w = 32
         self.tversky_alphabeta = (0.6, 0.4)
         self.dilation_rate = 1
         self.model_name = self.run_name
@@ -70,13 +77,13 @@ class Configuration:
         # ------ OPTIM / SCHED / EPOCHS ------
         self.loss_fn = "tversky"
         self.optimizer_fn = "adam"
-        self.train_batch_size = 8
+        self.train_batch_size = 32
         self.num_epochs = 10
         self.num_training_steps = 100
         self.num_validation_images = 50
 
         # ------ EMA ------
-        self.use_ema = False
+        self.use_ema = True
         self.ema_decay = 0.999
         self.eval_with_ema = True
 
@@ -92,8 +99,8 @@ class Configuration:
 
         # ------ AUG / SAMPLING / DATALOADER ------
         self.augmenter_strength = 0.7
-        self.min_pos_frac = 0.02
-        self.pos_ratio = 0.5
+        self.min_pos_frac = 0.3
+        self.pos_ratio = 0.3
         self.patch_stride = None
         self.fit_workers = 8
         self.steps_per_execution = 1
@@ -112,6 +119,8 @@ class Configuration:
         self.postproc_workers = 12
 
         # Prediction outputs (for completeness with your tools)
+        self.train_image_type = self.image_file_type
+        self.train_image_prefix = ""
         self.predict_images_file_type = self.image_file_type
         self.predict_images_prefix = ""
         self.overwrite_analysed_files = False
@@ -123,7 +132,7 @@ class Configuration:
         self.output_dtype = "bool"
 
         # ------ GPU / ENV ------
-        self.selected_GPU = 6
+        self.selected_GPU = 0
         gdal.UseExceptions()
         gdal.SetCacheMax(32000000000)
         gdal.SetConfigOption("CPL_LOG", "/dev/null")

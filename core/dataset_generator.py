@@ -1,5 +1,3 @@
-# core/dataset_generator.py
-
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -68,10 +66,11 @@ class DataGenerator:
     * Returns numpy arrays; training wraps them into PyTorch tensors.
     * If `augmenter` is 'alb'/'albumentations', apply Albumentations;
       else no aug.
-    * `min_pos_frac`, `pos_ratio`, `stride`, `weighting` are accepted for
-      compatibility with newer callers but are ignored here to keep TF behavior.
-
-      --> should change!!!
+    * `min_pos_frac` and `pos_ratio` control positive/negative patch sampling:
+        - `min_pos_frac`: minimum positive fraction of a patch to treat it
+          as "positive" (0.0 -> any positive pixel).
+        - `pos_ratio`: target fraction of positive patches in random batches.
+    * `stride`, `weighting` are accepted for compatibility with newer callers.
     """
 
     def __init__(
@@ -84,8 +83,8 @@ class DataGenerator:
         augmenter: Optional[str] = "alb",  # 'alb'/'albumentations' or None
         augmenter_strength: float = 1.0,
         min_pos_frac: float = 0.0,
-        pos_ratio: Optional[float] = None,  
-        stride: Optional[Tuple[int, int]] = None,  
+        pos_ratio: Optional[float] = None,
+        stride: Optional[Tuple[int, int]] = None,
         weighting: str = "area",  # accepted; only 'area' supported
         **_: Any,
     ) -> None:
@@ -184,13 +183,46 @@ class DataGenerator:
             return self.frames[idx]
         return self.frames[int(idx)]
 
-    def _sample_one_patch(self):
-        """Sample a single random patch from a frame (area-weighted)."""
+    def _random_frame_patch(self):
+        """Sample a random patch from a randomly chosen frame (area-weighted)."""
         fn = int(np.random.choice(self.frame_list, p=self.frame_list_weights))
         frame = self._frame(fn)
         # Frame supplies a full (H,W,C) composite. random_patch returns an H×W crop
         # with all bands.
         return frame.random_patch(self.patch_size)
+
+    def _is_positive_patch(self, ann: np.ndarray) -> bool:
+        """Return True if patch is considered 'positive' given the annotation mask."""
+        mask = ann > 0
+        if self.min_pos_frac <= 0.0:
+            # Any labeled pixel makes this a positive patch
+            return np.any(mask)
+        # Otherwise require at least `min_pos_frac` of the pixels to be labeled
+        return mask.mean() >= self.min_pos_frac
+
+    def _sample_one_patch(self):
+        """Sample a single random patch, optionally enforcing a pos/neg ratio."""
+        # If no pos_ratio is set, keep original TF-style area-weighted behavior.
+        if self.pos_ratio is None or not (0.0 < self.pos_ratio < 1.0):
+            return self._random_frame_patch()
+
+        want_pos = np.random.rand() < float(self.pos_ratio)
+        max_tries = 50  # avoid infinite loops with very sparse labels
+        last_patch = None
+
+        for _ in range(max_tries):
+            patch = self._random_frame_patch()
+            last_patch = patch
+            ann = patch[..., self.annotation_channel]
+            is_pos = self._is_positive_patch(ann)
+
+            if want_pos and is_pos:
+                return patch
+            if (not want_pos) and (not is_pos):
+                return patch
+
+        # Fallback: if we could not satisfy the constraint, return last sampled patch
+        return last_patch if last_patch is not None else self._random_frame_patch()
 
 
 # Backwards-compatible alias used by newer training code

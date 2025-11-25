@@ -8,6 +8,7 @@ import time
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
+import inspect  # NEW: to safely pass TerraMind kwargs
 import numpy as np
 import torch
 import torch.nn as nn
@@ -35,6 +36,7 @@ from core.common.model_utils import (
 )
 from core.common.console import print_search_space
 from core.optimizers import get_optimizer  # project-level optimizer factory
+from core.losses import tversky as _tversky  # Tversky loss (alpha+beta=1, alpha tuned)
 
 
 # -----------------------
@@ -46,7 +48,7 @@ def _seed(seed: int = 42) -> None:
     random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.use_deterministic_algorithms(False)  
+    torch.use_deterministic_algorithms(False)
 
 
 def _ensure_dir(path: str) -> None:
@@ -121,7 +123,7 @@ def _safe_iou(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = 1e-6) -> 
 
 def _stop_dataloader_workers(dl: Optional[Iterable]) -> None:
     """
-    hutdown of DataLoader worker processes/threads.
+    Shutdown of DataLoader worker processes/threads.
     Safe to call on loaders with 0 workers or non-standard iterables.
     """
     if dl is None:
@@ -400,8 +402,8 @@ def _set_backbone_requires_grad(model: nn.Module, requires_grad: bool):
     if hasattr(inner, "model") and isinstance(inner.model, nn.Module):
         inner = inner.model
     if hasattr(inner, "backbone") and isinstance(inner.backbone, nn.Module):
-            for p in inner.backbone.parameters():
-                p.requires_grad = requires_grad
+        for p in inner.backbone.parameters():
+            p.requires_grad = requires_grad
 
 
 def _tm_raw_to_probs(
@@ -437,8 +439,35 @@ def _tm_raw_to_probs(
         probs = torch.softmax(logits, dim=1)
 
     probs = probs.float()
-    probs = torch.clamp(probs, 0.0, 1.0)  
+    probs = torch.clamp(probs, 0.0, 1.0)
     return probs
+
+
+# -----------------------
+# TerraMind builder that is robust to different __init__ signatures
+# -----------------------
+def _build_terramind(
+    conf,
+    dec: Optional[str],
+    dec_ch: Optional[int],
+    head_do: Optional[float],
+) -> TerraMind:
+    kwargs: Dict[str, Any] = dict(
+        in_channels=len(getattr(conf, "channel_list", [])),
+        num_classes=int(getattr(conf, "num_classes", 1)),
+        modality=getattr(conf, "modality", "S2"),
+        tm_size=getattr(conf, "terramind_size", "base"),
+        merge_method=getattr(conf, "terramind_merge_method", "mean"),
+        pretrained=True,
+    )
+    sig = inspect.signature(TerraMind)
+    if "decoder" in sig.parameters and dec is not None:
+        kwargs["decoder"] = dec
+    if "decoder_channels" in sig.parameters and dec_ch is not None:
+        kwargs["decoder_channels"] = int(dec_ch)
+    if "head_dropout" in sig.parameters and head_do is not None:
+        kwargs["head_dropout"] = float(head_do)
+    return TerraMind(**kwargs)
 
 
 # -----------------------
@@ -453,6 +482,7 @@ def _compile_with_optimizer(
     steps_per_epoch: int,
     max_epochs: int,
     conf,
+    tversky_alpha: Optional[float] = None,
 ) -> Tuple[nn.Module, torch.optim.Optimizer, Any, Optional[Any], bool]:
     """
     Returns: model, optimizer, criterion, scheduler, scheduler_steps_per_batch
@@ -460,47 +490,55 @@ def _compile_with_optimizer(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
 
-    # Try project optimizer factory
     opt_obj: Optional[torch.optim.Optimizer] = None
-    try:
-        opt_obj = get_optimizer(
-            _default(opt_name, getattr(conf, "optimizer_fn", "adam")),
-            _default(getattr(conf, "num_epochs", max_epochs), max_epochs),
-            _default(getattr(conf, "num_training_steps", steps_per_epoch), steps_per_epoch),
+
+    # TerraMind: use tuned backbone/head LR & WD with param groups if available
+    if isinstance(model, TerraMind) and all(
+        hasattr(conf, a) for a in ("tm_lr_backbone", "tm_lr_head_mult", "tm_weight_decay")
+    ):
+        opt_obj = _make_tm_optimizer(
             model,
+            lr_bb=float(getattr(conf, "tm_lr_backbone")),
+            lr_head_mult=float(getattr(conf, "tm_lr_head_mult")),
+            wd=float(getattr(conf, "tm_weight_decay")),
+            opt=(opt_name or "adamw"),
         )
-        if hasattr(opt_obj, "param_groups"):
-            for g in opt_obj.param_groups:
-                g["lr"] = float(lr)
-                if opt_name == "adamw" and wd is not None:
-                    g["weight_decay"] = float(wd)
-    except Exception:
-        opt_obj = None
-
-    # Fallback optimizer construction
-    if opt_obj is None or isinstance(opt_obj, str):
-        params = model.parameters()
-        if (opt_name or "adam").lower() == "adamw":
-            opt_obj = torch.optim.AdamW(
-                params, lr=float(lr), weight_decay=float(_default(wd, 1e-6))
+    else:
+        # Try project optimizer factory
+        try:
+            opt_obj = get_optimizer(
+                _default(opt_name, getattr(conf, "optimizer_fn", "adam")),
+                _default(getattr(conf, "num_epochs", max_epochs), max_epochs),
+                _default(getattr(conf, "num_training_steps", steps_per_epoch), steps_per_epoch),
+                model,
             )
-        else:
-            opt_obj = torch.optim.Adam(params, lr=float(lr))
+            if hasattr(opt_obj, "param_groups"):
+                for g in opt_obj.param_groups:
+                    g["lr"] = float(lr)
+                    if opt_name == "adamw" and wd is not None:
+                        g["weight_decay"] = float(wd)
+        except Exception:
+            opt_obj = None
 
-    # Loss: BCE + (1 - Dice)
+        # Fallback optimizer construction
+        if opt_obj is None or isinstance(opt_obj, str):
+            params = model.parameters()
+            if (opt_name or "adam").lower() == "adamw":
+                opt_obj = torch.optim.AdamW(
+                    params, lr=float(lr), weight_decay=float(_default(wd, 1e-6))
+                )
+            else:
+                opt_obj = torch.optim.Adam(params, lr=float(lr))
+
+    # Tversky loss (alpha + beta = 1)
+    alpha = float(tversky_alpha) if tversky_alpha is not None else 0.7
+    beta = 1.0 - alpha
+
     def criterion(y_true, y_pred, w: Optional[torch.Tensor] = None):
         yt = _nan_to_num_torch(y_true.float(), 0.0).clamp(0.0, 1.0)
-        # OUT-OF-PLACE clamp keeps graph intact
         yp = torch.clamp(_nan_to_num_torch(y_pred.float(), 0.5), 1e-6, 1.0 - 1e-6)
-        if w is None:
-            bce_term = F.binary_cross_entropy(yp, yt)
-        else:
-            w_sanit = _sanitize_weights(w)
-            loss_elt = F.binary_cross_entropy(yp, yt, reduction="none")
-            while w_sanit.ndim < loss_elt.ndim:
-                w_sanit = w_sanit.unsqueeze(-1)
-            bce_term = (loss_elt * w_sanit).mean()
-        return bce_term + (1.0 - _safe_dice(yt, yp))
+        # We ignore w here for simplicity; Tversky already focuses on imbalance via alpha/beta.
+        return 1.0 - _tversky(yt, yp, alpha=alpha, beta=beta)
 
     # Scheduler setup
     scheduler = None
@@ -535,11 +573,23 @@ def _run_phase(
 ) -> Tuple[Dict[str, Any], "optuna.Study"]:
     frames = get_all_frames(conf)
 
-    # cache dataloaders for (patch_h, patch_w, aug, minpos) combos (batch fixed)
-    dl_cache: Dict[Tuple[int, int, float, float], Tuple[Iterable, Iterable]] = {}
+    # cache dataloaders for (patch_h, patch_w, aug, minpos, pos_ratio) combos (batch fixed)
+    dl_cache: Dict[Tuple[int, int, float, float, float], Tuple[Iterable, Iterable]] = {}
 
-    def _get_loaders_for(ph: int, pw: int, aug: float, minpos: float) -> Tuple[Iterable, Iterable]:
-        key = (int(ph), int(pw), float(aug), float(minpos))
+    def _get_loaders_for(
+        ph: int,
+        pw: int,
+        aug: float,
+        minpos: float,
+        pos_ratio: Optional[float],
+    ) -> Tuple[Iterable, Iterable]:
+        key = (
+            int(ph),
+            int(pw),
+            float(aug),
+            float(minpos),
+            float(pos_ratio) if pos_ratio is not None else -1.0,
+        )
         if key in dl_cache:
             return dl_cache[key]
 
@@ -547,11 +597,13 @@ def _run_phase(
         old_patch = getattr(conf, "patch_size", None)
         old_aug = getattr(conf, "augmenter_strength", None)
         old_minpos = getattr(conf, "min_pos_frac", None)
+        old_posratio = getattr(conf, "pos_ratio", None)
 
         conf.train_batch_size = int(tune_batch)
         conf.patch_size = (int(ph), int(pw))
         conf.augmenter_strength = float(aug)
         conf.min_pos_frac = float(minpos)
+        conf.pos_ratio = pos_ratio  # may be None
 
         train_iter, val_iter, _ = create_train_val_datasets(frames)
 
@@ -563,10 +615,11 @@ def _run_phase(
             conf.augmenter_strength = old_aug
         if old_minpos is not None:
             conf.min_pos_frac = old_minpos
+        conf.pos_ratio = old_posratio
 
         dl_cache[key] = (train_iter, val_iter)
 
-        if len(dl_cache) > 10: # keep cache size small
+        if len(dl_cache) > 10:  # keep cache size small
             for k in list(dl_cache.keys())[:-10]:
                 try:
                     tr_dl, va_dl = dl_cache[k]
@@ -595,7 +648,7 @@ def _run_phase(
 
     _phase_banner(model_key, phase, max_epochs, steps, val_steps, tune_batch)
 
-    # Track best within this phase for nicer printing 
+    # Track best within this phase for nicer printing
     best_print = {"score": None, "cfg": None}
 
     def _single_execution(
@@ -610,7 +663,7 @@ def _run_phase(
         freeze_ep: int = 0,
     ) -> float:
         best_val_dice = -float("inf")
-        patience = 5
+        patience = 20
         no_improve = 0
         was_frozen = None
 
@@ -656,7 +709,7 @@ def _run_phase(
                         if y_pred_full.shape[1] > 1:
                             cls_idx = int(getattr(conf, "metrics_class", 1))
                             cls_idx = max(0, min(cls_idx, y_pred_full.shape[1] - 1))
-                            y_pred = y_pred_full[:, cls_idx : cls_idx + 1]
+                            y_pred = y_pred_full[:, cls_idx: cls_idx + 1]
                         else:
                             y_pred = y_pred_full
                     else:
@@ -707,7 +760,7 @@ def _run_phase(
                         if yp_full.shape[1] > 1:
                             cls_idx = int(getattr(conf, "metrics_class", 1))
                             cls_idx = max(0, min(cls_idx, yp_full.shape[1] - 1))
-                            yp = yp_full[:, cls_idx : cls_idx + 1]
+                            yp = yp_full[:, cls_idx: cls_idx + 1]
                         else:
                             yp = yp_full
                     else:
@@ -737,26 +790,82 @@ def _run_phase(
     def objective(trial: "optuna.Trial") -> float:
         # Sample HPs
         if model_key == "unet":
-            dilation, layer_cnt, l2w, drp = _unet_space_hb(trial) if phase == "HB" else (None, None, None, None)
-            opt, lr, wd = _optimizer_space_hb(trial) if phase == "HB" else _optimizer_space_bo(trial, fixed.get("optimizer", "adam"))
-            sched = _schedule_space_hb(trial) if phase == "HB" else trial.suggest_categorical("scheduler", ["none", "cosine", "onecycle"])
+            if phase == "HB":
+                dilation, layer_cnt, l2w, drp = _unet_space_hb(trial)
+            else:
+                dilation = int(fixed.get("dilation_rate", getattr(conf, "dilation_rate", 1)))
+                layer_cnt = int(fixed.get("layer_count", getattr(conf, "layer_count", 64)))
+                l2w = float(fixed.get("l2_weight", getattr(conf, "l2_weight", 0.0)))
+                drp = float(fixed.get("dropout", getattr(conf, "dropout", 0.0)))
+            opt, lr, wd = _optimizer_space_hb(trial) if phase == "HB" else _optimizer_space_bo(
+                trial, fixed.get("optimizer", "adam")
+            )
+            sched = _schedule_space_hb(trial) if phase == "HB" else trial.suggest_categorical(
+                "scheduler", ["none", "cosine", "onecycle"]
+            )
+
         elif model_key == "swin":
             C, drop_path = _swin_space_hb(trial) if phase == "HB" else (None, None)
-            opt, lr, wd = _optimizer_space_hb(trial) if phase == "HB" else _optimizer_space_bo(trial, fixed.get("optimizer", "adam"))
-            sched = _schedule_space_hb(trial) if phase == "HB" else trial.suggest_categorical("scheduler", ["none", "cosine", "onecycle"])
-        else:  # tm
-            dec, dec_ch, head_do, freeze_ep, lr_backbone, lr_head_mult, wdtm = _tm_space_hb(trial) if phase == "HB" else (None, None, None, None, None, None, None)
-            opt, lr, wd = _optimizer_space_hb(trial) if phase == "HB" else _optimizer_space_bo(trial, fixed.get("optimizer", "adamw"))
-            sched = _schedule_space_hb(trial) if phase == "HB" else trial.suggest_categorical("scheduler", ["none", "cosine", "onecycle"])
+            opt, lr, wd = _optimizer_space_hb(trial) if phase == "HB" else _optimizer_space_bo(
+                trial, fixed.get("optimizer", "adam")
+            )
+            sched = _schedule_space_hb(trial) if phase == "HB" else trial.suggest_categorical(
+                "scheduler", ["none", "cosine", "onecycle"]
+            )
 
-        # Data HPs
+        else:  # tm
+            if phase == "HB":
+                dec, dec_ch, head_do, freeze_ep, lr_backbone, lr_head_mult, wdtm = _tm_space_hb(trial)
+                opt = trial.suggest_categorical("optimizer", ["adamw", "adam"])
+                # use tm_* LR/WD as the actual learning rate/weight decay
+                lr = lr_backbone
+                wd = wdtm
+                sched = _schedule_space_hb(trial)
+            else:
+                dec = fixed.get("tm_decoder", "UperNetDecoder")
+                dec_ch = int(fixed.get("tm_decoder_channels", 256))
+                head_do = float(fixed.get("tm_head_dropout", 0.0))
+                freeze_ep = int(fixed.get("tm_freeze_backbone_epochs", 1))
+                lr_backbone, lr_head_mult, wdtm = _tm_space_bo(trial, fixed)
+                opt = fixed.get("optimizer", "adamw")
+                lr = lr_backbone
+                wd = wdtm
+                sched = trial.suggest_categorical("scheduler", ["none", "cosine", "onecycle"])
+
+        # Tversky loss alpha (beta = 1 - alpha)
+        if phase == "HB":
+            tv_alpha = trial.suggest_float("tversky_alpha", 0.3, 0.9)
+        else:
+            tv_alpha = float(fixed.get("tversky_alpha", 0.7))
+
+        # Data HPs (class imbalance / sampling)
         patch_h = hb_data_hp["patch_h"]
         patch_w = hb_data_hp["patch_w"]
         aug = hb_data_hp["augmenter_strength"]
-        minpos = hb_data_hp["min_pos_frac"]
+
+        if phase == "HB":
+            minpos = trial.suggest_categorical("min_pos_frac", [0.0, 0.01, 0.02, 0.05, 0.1])
+            pos_ratio = trial.suggest_categorical("pos_ratio", [None, 0.1, 0.25, 0.5])
+        else:
+            minpos = hb_data_hp["min_pos_frac"]
+            pos_ratio = hb_data_hp.get("pos_ratio", getattr(conf, "pos_ratio", None))
+
+        # Propagate sampled architecture / TM-specific params into conf for this trial
+        if model_key == "unet":
+            conf.dilation_rate = int(dilation)
+            conf.layer_count = int(layer_cnt)
+            conf.l2_weight = float(l2w)
+            conf.dropout = float(drp)
+        elif model_key == "tm":
+            conf.tm_decoder = dec
+            conf.tm_decoder_channels = int(dec_ch)
+            conf.tm_head_dropout = float(head_do)
+            conf.tm_lr_backbone = float(lr_backbone)
+            conf.tm_lr_head_mult = float(lr_head_mult)
+            conf.tm_weight_decay = float(wdtm)
 
         # Build data loaders for this configuration
-        train_iter, val_iter = _get_loaders_for(patch_h, patch_w, aug, minpos)
+        train_iter, val_iter = _get_loaders_for(patch_h, patch_w, aug, minpos, pos_ratio)
 
         # Build model
         if model_key == "unet":
@@ -793,18 +902,11 @@ def _run_phase(
             )
 
         else:  # tm
-            model = TerraMind(
-                in_channels=len(getattr(conf, "channel_list", [])),
-                num_classes=int(getattr(conf, "num_classes", 1)),
-                modality=getattr(conf, "modality", "S2"),
-                tm_size=getattr(conf, "terramind_size", "base"),
-                merge_method=getattr(conf, "terramind_merge_method", "mean"),
-                pretrained=True,
-            )
+            model = _build_terramind(conf, dec, dec_ch, head_do)
 
         # Compile
         model, optimizer, criterion, scheduler, step_per_batch = _compile_with_optimizer(
-            model, opt, lr, wd, sched, steps, max_epochs, conf
+            model, opt, lr, wd, sched, steps, max_epochs, conf, tversky_alpha=tv_alpha
         )
 
         # Optional: freeze backbone for first epochs (TM)
@@ -837,7 +939,7 @@ def _run_phase(
         json.dump(best_params, f, indent=2)
     print(f"\n[{tag} {phase}] best saved to: {best_json_path}")
 
-    # --- NEW: ensure loaders are shut down ---
+    # --- ensure loaders are shut down ---
     try:
         for _k, (tr_dl, va_dl) in list(dl_cache.items()):
             _stop_dataloader_workers(tr_dl)
@@ -858,7 +960,7 @@ def _tune_chained(
 ) -> Dict[str, Any]:
     """
     Two-stage tuning: HyperBand (broad) then Bayesian Optimization (refinement).
-    Batch stays fixed; BCE+(1-Dice) loss; clipnorm=1.0; AMP off for parity/stability.
+    Batch stays fixed; Tversky loss (alpha tuned, beta=1-alpha); clipnorm=1.0; AMP off for parity/stability.
     """
     global config
     config = conf
@@ -879,7 +981,7 @@ def _tune_chained(
     )
     tune_batch = _default(
         getattr(config, "tune_batch_size", None),
-        min(8, _default(getattr(config, "train_batch_size", 8), 8)),
+        max(8, _default(getattr(config, "train_batch_size", 8), 8)),
     )
 
     logs_dir = _default(getattr(config, "logs_dir", "./logs"), "./logs")
@@ -892,6 +994,7 @@ def _tune_chained(
     # HB data defaults
     hb_aug = _default(getattr(config, "augmenter_strength", None), 1.0)
     hb_minpos = _default(getattr(config, "min_pos_frac", None), 0.0)
+    hb_posratio = getattr(config, "pos_ratio", None)
 
     if key == "swin":
         # Match training defaults: swin_patch_size=16, swin_window=7
@@ -913,26 +1016,28 @@ def _tune_chained(
             patch_w=hb_patch_w,
             augmenter_strength=hb_aug,
             min_pos_frac=hb_minpos,
+            pos_ratio=hb_posratio,
             fixed=dict(patch_size=fixed_ps, window_size=fixed_ws),
         )
 
-    
     elif key == "tm":
-        hb_patch_h, hb_patch_w = 384, 384
+        hb_patch_h, hb_patch_w = config.patch_size if hasattr(config, "patch_size") else (256, 256)
         hb_data_hp = dict(
             patch_h=hb_patch_h,
             patch_w=hb_patch_w,
             augmenter_strength=hb_aug,
             min_pos_frac=hb_minpos,
+            pos_ratio=hb_posratio,
             fixed={},
         )
     else:
-        hb_patch_h, hb_patch_w = 384, 384
+        hb_patch_h, hb_patch_w = config.patch_size if hasattr(config, "patch_size") else (128, 128)
         hb_data_hp = dict(
             patch_h=hb_patch_h,
             patch_w=hb_patch_w,
             augmenter_strength=hb_aug,
             min_pos_frac=hb_minpos,
+            pos_ratio=hb_posratio,
             fixed={},
         )
 
@@ -953,6 +1058,11 @@ def _tune_chained(
         hb_data_hp,
     )
 
+    # Update sampling and loss params from HB best
+    hb_minpos = float(hb_best.get("min_pos_frac", hb_minpos))
+    hb_posratio = hb_best.get("pos_ratio", hb_posratio)
+    tv_alpha_best = float(hb_best.get("tversky_alpha", getattr(config, "tversky_alpha", 0.7)))
+
     # Merge HB best and set up BO fixed settings
     if key == "unet":
         fixed = dict(
@@ -962,6 +1072,7 @@ def _tune_chained(
             layer_count=int(hb_best.get("layer_count", getattr(config, "layer_count", 64))),
             l2_weight=float(hb_best.get("l2_weight", getattr(config, "l2_weight", 0.0))),
             dropout=float(hb_best.get("dropout", getattr(config, "dropout", 0.0))),
+            tversky_alpha=tv_alpha_best,
         )
         bo_patch_h, bo_patch_w = int(hb_data_hp["patch_h"]), int(hb_data_hp["patch_w"])
     elif key == "swin":
@@ -976,6 +1087,7 @@ def _tune_chained(
             "patch_size": hb_data_hp["fixed"]["patch_size"],
             "window_size": hb_data_hp["fixed"]["window_size"],
             "drop_path": float(hb_best.get("drop_path", 0.1)),
+            "tversky_alpha": tv_alpha_best,
         }
         bo_patch_h, bo_patch_w = int(hb_data_hp["patch_h"]), int(hb_data_hp["patch_w"])
     else:  # tm
@@ -988,6 +1100,10 @@ def _tune_chained(
             "tm_decoder_channels": int(hb_best.get("tm_decoder_channels", 256)),
             "tm_head_dropout": float(hb_best.get("tm_head_dropout", 0.0)),
             "tm_freeze_backbone_epochs": int(hb_best.get("tm_freeze_backbone_epochs", 1)),
+            "tm_lr_backbone": float(hb_best.get("tm_lr_backbone", getattr(config, "tm_lr_backbone", 1e-5))),
+            "tm_lr_head_mult": float(hb_best.get("tm_lr_head_mult", getattr(config, "tm_lr_head_mult", 10.0))),
+            "tm_weight_decay": float(hb_best.get("tm_weight_decay", getattr(config, "tm_weight_decay", 1e-4))),
+            "tversky_alpha": tv_alpha_best,
         }
         bo_patch_h, bo_patch_w = int(hb_data_hp["patch_h"]), int(hb_data_hp["patch_w"])
 
@@ -997,6 +1113,7 @@ def _tune_chained(
         patch_w=bo_patch_w,
         augmenter_strength=hb_aug,
         min_pos_frac=hb_minpos,
+        pos_ratio=hb_posratio,
         fixed=fixed,
     )
 
@@ -1022,10 +1139,18 @@ def _tune_chained(
         final["learning_rate"] = float(bo_best["learning_rate"])
     if "weight_decay" in bo_best:
         final["weight_decay"] = float(bo_best["weight_decay"])
+    if "scheduler" in bo_best:
+        final["scheduler"] = bo_best["scheduler"]
+    # TM-specific refined values (if present)
+    for k in ("tm_lr_backbone", "tm_lr_head_mult", "tm_weight_decay"):
+        if k in bo_best:
+            final[k] = float(bo_best[k])
     final["patch_h"] = bo_patch_h
     final["patch_w"] = bo_patch_w
     final["augmenter_strength"] = float(hb_aug)
     final["min_pos_frac"] = float(hb_minpos)
+    final["pos_ratio"] = hb_posratio
+    final["tversky_alpha"] = float(tv_alpha_best)
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     final_path = os.path.join(project_dir, f"{stamp}_{key}_tuning_FINAL_best_hparams.json")
