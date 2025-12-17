@@ -25,7 +25,7 @@ if __name__ == "__main__":
 
     # TRAINING
     #for i in range(10):
-        #training.train_SwinUNetPP(config)
+    #    training.train_SwinUNetPP(config)
 
     # EVALUATION
     #evaluation.evaluate_SwinUNetPP(config)

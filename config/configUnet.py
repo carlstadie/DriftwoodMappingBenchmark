@@ -72,20 +72,29 @@ class Configuration:
         self.tune_patch_w = 32
         self.tversky_alphabeta = (0.6, 0.4)
         self.dilation_rate = 1
+        self.dropout = 0.1
+        # Tuned UNet architecture / regularization params 
+        self.layer_count = 64      
+        self.l2_weight = 0.0001       
         self.model_name = self.run_name
 
         # ------ OPTIM / SCHED / EPOCHS ------
         self.loss_fn = "tversky"
         self.optimizer_fn = "adam"
+   
+        self.learning_rate = 2.6e-5
+        self.weight_decay = 1e-5
+        self.scheduler = "onecycle"
+        
         self.train_batch_size = 32
         self.num_epochs = 10
         self.num_training_steps = 100
         self.num_validation_images = 50
 
         # ------ EMA ------
-        self.use_ema = True
+        self.use_ema = False
         self.ema_decay = 0.999
-        self.eval_with_ema = True
+        self.eval_with_ema = False
 
         # ------ CHECKPOINTING / LOGGING ------
         self.model_save_interval = None
@@ -99,8 +108,8 @@ class Configuration:
 
         # ------ AUG / SAMPLING / DATALOADER ------
         self.augmenter_strength = 0.7
-        self.min_pos_frac = 0.3
-        self.pos_ratio = 0.3
+        self.min_pos_frac = 0.05
+        self.pos_ratio = 0.5
         self.patch_stride = None
         self.fit_workers = 8
         self.steps_per_execution = 1
@@ -108,6 +117,9 @@ class Configuration:
         # ------ EVALUATION ------
         self.eval_threshold = 0.5
         self.heavy_eval_steps = 50
+        self.print_pos_stats = True
+        self.eval_mc_dropout = True
+        self.mc_dropout_samples = 20
 
         # ------ MIXED PRECISION / COMPILE / REPRO ------
         self.use_torch_compile = False

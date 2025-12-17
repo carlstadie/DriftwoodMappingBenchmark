@@ -1,375 +1,486 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+"""
+Histogram matching pipeline (fast + memory-efficient), matching BOTH folders to S2.
+
+Fix included:
+- Uses `from rasterio.warp import transform_bounds` instead of `rasterio.warp.transform_bounds`
+  to avoid: AttributeError: module 'rasterio' has no attribute 'warp'
+"""
+
+from __future__ import annotations
+
 import os
-import re
-import rasterio
-import traceback
+from pathlib import Path
+from typing import Iterable, List, Optional, Tuple
+
 import numpy as np
-from rasterio.shutil import copy as rio_copy
+import rasterio
+from rasterio.enums import Resampling
+from rasterio.windows import Window
+from rasterio.warp import transform_bounds  # <-- FIX
 
-# --------------------------
-# Paths (edit as needed)
-# --------------------------
-REF_IMG_DIR = '/isipd/projects/p_planetdw/data/methods_test/training_images/S2'
-MACS_DIR   = '/isipd/projects/p_planetdw/data/methods_test/training_images/MACS'
-PS_DIR     = '/isipd/projects/p_planetdw/data/methods_test/training_images/PS'
-OUTPUT_DIR = '/isipd/projects/p_planetdw/data/methods_test/training_images/histomatch_output'
+try:
+    from tqdm import tqdm
+except Exception:
+    tqdm = None
 
 
-# --------------------------
-# Core: robust histogram matching (no spatial size assumption)
-# --------------------------
-def histogram_match(input_img, ref_img, nodata_val=0):
+# =============================================================================
+# PATHS (hard-coded)
+# =============================================================================
+REF_IMG_DIR = "/isipd/projects/p_planetdw/data/methods_test/training_images/S2"
+MACS_DIR = "/isipd/projects/p_planetdw/data/methods_test/training_images/AE/to_encode"
+PS_DIR = "/isipd/projects/p_planetdw/data/methods_test/training_images/PS"
+OUTPUT_DIR = (
+    "/isipd/projects/p_planetdw/data/methods_test/training_images/histomatch_output"
+)
+
+INPUT_SOURCES = [
+    ("MACS", MACS_DIR),
+    ("PS", PS_DIR),
+]
+
+# =============================================================================
+# HISTOGRAM MATCH CONFIG
+# =============================================================================
+NODATA_OUT = 0.0
+
+MAX_SAMPLE_PIXELS = 200_000
+N_BINS = 4096
+ROBUST_PERCENTILES = (0.5, 99.5)
+
+RANDOM_STATE = 1234
+WINDOW_SIZE = 512
+MAX_WINDOWS = 256
+READ_DOWNSAMPLE = 2
+
+OUTPUT_DTYPE = "float32"
+OUTPUT_SCALE = 1.0
+
+
+# =============================================================================
+# FILE DISCOVERY
+# =============================================================================
+def list_tifs(folder: str) -> List[Path]:
+    base = Path(folder)
+    if not base.exists():
+        return []
+    return sorted(list(base.rglob("*.tif")) + list(base.rglob("*.tiff")))
+
+
+# =============================================================================
+# SPATIAL HELPERS (overlap-based ref selection)
+# =============================================================================
+def _bbox_area(bounds: Tuple[float, float, float, float]) -> float:
+    minx, miny, maxx, maxy = bounds
+    return max(0.0, maxx - minx) * max(0.0, maxy - miny)
+
+
+def _bbox_intersection(
+    b1: Tuple[float, float, float, float],
+    b2: Tuple[float, float, float, float],
+) -> Tuple[float, float, float, float]:
+    minx1, miny1, maxx1, maxy1 = b1
+    minx2, miny2, maxx2, maxy2 = b2
+
+    ix1 = max(minx1, minx2)
+    iy1 = max(miny1, miny2)
+    ix2 = min(maxx1, maxx2)
+    iy2 = min(maxy1, maxy2)
+    return ix1, iy1, ix2, iy2
+
+
+def _intersection_ratio(
+    b1: Tuple[float, float, float, float],
+    b2: Tuple[float, float, float, float],
+) -> float:
+    inter = _bbox_area(_bbox_intersection(b1, b2))
+    a1 = _bbox_area(b1)
+    if a1 <= 0:
+        return 0.0
+    return inter / a1
+
+
+def bounds_4326(path: Path) -> Tuple[float, float, float, float]:
     """
-    Histogram-match input_img to ref_img per band.
-    No-data (== nodata_val) and NaNs are ignored and preserved.
-
-    Parameters
-    ----------
-    input_img : np.ndarray  (bands, rows, cols)
-    ref_img   : np.ndarray  (bands, rows, cols)
-    nodata_val : numeric
-
-    Returns
-    -------
-    np.ndarray (float64) same shape as input_img
+    Returns dataset bounds in EPSG:4326.
     """
-    if input_img.ndim != 3 or ref_img.ndim != 3:
-        raise ValueError("Expected input and reference arrays with 3 dims: (bands, rows, cols).")
+    with rasterio.open(path) as ds:
+        b = ds.bounds
+        if ds.crs and ds.crs.to_string() != "EPSG:4326":
+            left, bottom, right, top = transform_bounds(
+                ds.crs,
+                "EPSG:4326",
+                b.left,
+                b.bottom,
+                b.right,
+                b.top,
+                densify_pts=21,
+            )
+            return left, bottom, right, top
+        return b.left, b.bottom, b.right, b.top
 
-    if input_img.shape[0] != ref_img.shape[0]:
-        raise ValueError(
-            f"Band mismatch: input has {input_img.shape[0]} bands, ref has {ref_img.shape[0]} bands."
+
+def find_best_s2_ref_by_overlap(
+    input_path: Path,
+    ref_paths: List[Path],
+    min_intersection_ratio: float = 0.2,
+) -> Tuple[Optional[Path], Optional[Tuple[float, float, float, float]]]:
+    ib = bounds_4326(input_path)
+
+    best_ref: Optional[Path] = None
+    best_ratio = 0.0
+    best_overlap: Optional[Tuple[float, float, float, float]] = None
+
+    for rp in ref_paths:
+        rb = bounds_4326(rp)
+        ratio = _intersection_ratio(ib, rb)
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_ref = rp
+            best_overlap = _bbox_intersection(ib, rb)
+
+    if best_ref is None or best_ratio < min_intersection_ratio:
+        return None, None
+
+    if best_overlap is None or _bbox_area(best_overlap) <= 0:
+        return None, None
+
+    return best_ref, best_overlap
+
+
+def overlap_window_in_ref(
+    ref_ds: rasterio.DatasetReader,
+    overlap_bbox_4326: Tuple[float, float, float, float],
+) -> Optional[Window]:
+    if ref_ds.crs is None:
+        return None
+
+    left, bottom, right, top = overlap_bbox_4326
+    try:
+        l2, b2, r2, t2 = transform_bounds(
+            "EPSG:4326",
+            ref_ds.crs,
+            left,
+            bottom,
+            right,
+            top,
+            densify_pts=21,
+        )
+        win = rasterio.windows.from_bounds(l2, b2, r2, t2, transform=ref_ds.transform)
+        win = win.round_offsets().round_lengths()
+        win = win.intersection(Window(0, 0, ref_ds.width, ref_ds.height))
+        if win.width <= 1 or win.height <= 1:
+            return None
+        return win
+    except Exception:
+        return None
+
+
+# =============================================================================
+# S2 BAND RULE: BGRNIR = B2,B3,B4,B8 (fallback to 2,3,4,8)
+# =============================================================================
+def s2_bgrnir_band_indices(ref_ds: rasterio.DatasetReader) -> List[int]:
+    wanted = ["B2", "B3", "B4", "B8"]
+    desc = ref_ds.descriptions
+
+    if desc:
+        upper = [(d or "").strip().upper() for d in desc]
+        idxs: List[int] = []
+        ok = True
+        for w in wanted:
+            if w in upper:
+                idxs.append(upper.index(w) + 1)
+            else:
+                ok = False
+                break
+        if ok:
+            return idxs
+
+    return [2, 3, 4, 8]
+
+
+# =============================================================================
+# FAST HISTOGRAM MATCH: sampling + binned CDF + block apply
+# =============================================================================
+def _valid_mask(arr: np.ndarray, nodata: Optional[float]) -> np.ndarray:
+    mask = np.isfinite(arr)
+    if nodata is not None:
+        mask &= (arr != nodata)
+    return mask
+
+
+def _sample_band_values(
+    ds: rasterio.DatasetReader,
+    band_1based: int,
+    nodata: Optional[float],
+    max_pixels: int,
+    window_size: int,
+    max_windows: int,
+    read_downsample: int,
+    seed: int,
+    sample_domain: Optional[Window] = None,
+) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+
+    if sample_domain is None:
+        domain = Window(0, 0, ds.width, ds.height)
+    else:
+        domain = sample_domain
+
+    if domain.width <= 1 or domain.height <= 1:
+        domain = Window(0, 0, ds.width, ds.height)
+
+    vals_list: List[np.ndarray] = []
+    total = 0
+
+    for _ in range(max_windows):
+        if total >= max_pixels:
+            break
+
+        max_row = max(0, int(domain.height) - 1)
+        max_col = max(0, int(domain.width) - 1)
+        if max_row == 0 or max_col == 0:
+            break
+
+        dr = int(rng.integers(0, max_row))
+        dc = int(rng.integers(0, max_col))
+
+        r0 = int(domain.row_off + dr)
+        c0 = int(domain.col_off + dc)
+
+        r1 = min(int(domain.row_off + domain.height), r0 + window_size)
+        c1 = min(int(domain.col_off + domain.width), c0 + window_size)
+
+        win = Window(col_off=c0, row_off=r0, width=c1 - c0, height=r1 - r0)
+        if win.width <= 1 or win.height <= 1:
+            continue
+
+        if read_downsample and read_downsample > 1:
+            out_h = max(1, int(win.height // read_downsample))
+            out_w = max(1, int(win.width // read_downsample))
+            block = ds.read(
+                band_1based,
+                window=win,
+                out_shape=(out_h, out_w),
+                resampling=Resampling.nearest,
+            ).astype(np.float32, copy=False)
+        else:
+            block = ds.read(band_1based, window=win).astype(np.float32, copy=False)
+
+        mask = _valid_mask(block, nodata)
+        if not mask.any():
+            continue
+
+        v = block[mask]
+        if v.size == 0:
+            continue
+
+        remaining = max_pixels - total
+        if v.size > remaining:
+            idx = rng.choice(v.size, remaining, replace=False)
+            v = v[idx]
+
+        vals_list.append(v)
+        total += v.size
+
+    if not vals_list:
+        return np.empty((0,), dtype=np.float32)
+
+    vals = np.concatenate(vals_list).astype(np.float32, copy=False)
+    return vals[:max_pixels]
+
+
+def _cdf_from_hist(vals: np.ndarray, vmin: float, vmax: float, n_bins: int):
+    hist, edges = np.histogram(vals, bins=n_bins, range=(vmin, vmax))
+    if hist.sum() <= 0:
+        return None, None
+    cdf = np.cumsum(hist, dtype=np.float64)
+    cdf /= cdf[-1]
+    centers = (edges[:-1] + edges[1:]) * 0.5
+    return cdf, centers
+
+
+def histogram_match_raster(
+    input_path: Path,
+    ref_path: Path,
+    overlap_bbox_4326: Tuple[float, float, float, float],
+    output_path: Path,
+    input_bands: List[int],
+    ref_bands: List[int],
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with rasterio.open(input_path) as src, rasterio.open(ref_path) as ref:
+        src_nodata = src.nodata
+        ref_nodata = ref.nodata
+
+        ref_domain = overlap_window_in_ref(ref, overlap_bbox_4326)
+
+        luts: List[np.ndarray] = []
+        vmins: List[float] = []
+        vmaxs: List[float] = []
+
+        for i, (ib, rb) in enumerate(zip(input_bands, ref_bands)):
+            src_vals = _sample_band_values(
+                ds=src,
+                band_1based=ib,
+                nodata=src_nodata,
+                max_pixels=MAX_SAMPLE_PIXELS,
+                window_size=WINDOW_SIZE,
+                max_windows=MAX_WINDOWS,
+                read_downsample=READ_DOWNSAMPLE,
+                seed=RANDOM_STATE + i * 101,
+                sample_domain=None,
+            )
+            ref_vals = _sample_band_values(
+                ds=ref,
+                band_1based=rb,
+                nodata=ref_nodata,
+                max_pixels=MAX_SAMPLE_PIXELS,
+                window_size=WINDOW_SIZE,
+                max_windows=MAX_WINDOWS,
+                read_downsample=READ_DOWNSAMPLE,
+                seed=RANDOM_STATE + i * 101 + 1,
+                sample_domain=ref_domain,
+            )
+
+            if src_vals.size == 0:
+                raise ValueError(f"No valid samples in input band {ib}")
+
+            if ref_vals.size == 0:
+                # fallback to full ref sampling
+                ref_vals = _sample_band_values(
+                    ds=ref,
+                    band_1based=rb,
+                    nodata=ref_nodata,
+                    max_pixels=MAX_SAMPLE_PIXELS,
+                    window_size=WINDOW_SIZE,
+                    max_windows=MAX_WINDOWS,
+                    read_downsample=READ_DOWNSAMPLE,
+                    seed=RANDOM_STATE + i * 101 + 2,
+                    sample_domain=None,
+                )
+                if ref_vals.size == 0:
+                    raise ValueError(f"No valid samples in ref band {rb}")
+
+            lo, hi = ROBUST_PERCENTILES
+            src_lo, src_hi = np.percentile(src_vals, [lo, hi])
+            ref_lo, ref_hi = np.percentile(ref_vals, [lo, hi])
+
+            vmin = float(min(src_lo, ref_lo))
+            vmax = float(max(src_hi, ref_hi))
+            if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+                raise ValueError("Bad vmin/vmax from samples.")
+
+            src_cdf, centers = _cdf_from_hist(src_vals, vmin, vmax, N_BINS)
+            ref_cdf, _ = _cdf_from_hist(ref_vals, vmin, vmax, N_BINS)
+            if src_cdf is None or ref_cdf is None:
+                raise ValueError("Failed to build histograms (empty counts).")
+
+            lut = np.interp(src_cdf, ref_cdf, centers).astype(np.float32)
+            luts.append(lut)
+            vmins.append(vmin)
+            vmaxs.append(vmax)
+
+        profile = src.profile.copy()
+        profile.update(
+            dtype=OUTPUT_DTYPE,
+            count=len(input_bands),
+            nodata=NODATA_OUT,
+            tiled=True,
+            compress=profile.get("compress", "deflate"),
+            bigtiff="if_safer",
         )
 
-    # Work in float for safety; do not mutate callers' arrays
-    input_img = input_img.astype(np.float64, copy=True)
-    ref_img   = ref_img.astype(np.float64, copy=True)
+        windows = list(src.block_windows(1))
+        iterator: Iterable = windows
+        if tqdm is not None:
+            iterator = tqdm(windows, desc=f"histmatch {input_path.name}", total=len(windows))
 
-    out_img = np.full_like(input_img, nodata_val, dtype=np.float64)
+        with rasterio.open(output_path, "w", **profile) as dst:
+            for _, win in iterator:
+                block = src.read(indexes=input_bands, window=win).astype(np.float32, copy=False)
+                out_block = np.full(block.shape, NODATA_OUT, dtype=np.float32)
 
-    for band in range(input_img.shape[0]):
-        src = input_img[band]
-        ref = ref_img[band]
+                for bi in range(block.shape[0]):
+                    vals = block[bi]
+                    mask = _valid_mask(vals, src_nodata)
+                    if not mask.any():
+                        continue
 
-        # Valid where not NaN and not nodata
-        src_valid = (~np.isnan(src)) & (src != nodata_val)
-        ref_valid = (~np.isnan(ref)) & (ref != nodata_val)
+                    vmin = vmins[bi]
+                    vmax = vmaxs[bi]
+                    lut = luts[bi]
+                    scale = (N_BINS - 1) / (vmax - vmin)
 
-        if not np.any(src_valid):
-            # Nothing to do on this band; leave as nodata
+                    vv = vals[mask]
+                    idx = ((vv - vmin) * scale).astype(np.int32)
+                    np.clip(idx, 0, N_BINS - 1, out=idx)
+
+                    out_block[bi][mask] = lut[idx]
+
+                if OUTPUT_SCALE != 1.0:
+                    out_block *= float(OUTPUT_SCALE)
+
+                dst.write(out_block.astype(OUTPUT_DTYPE, copy=False), window=win)
+
+
+# =============================================================================
+# MAIN: process both folders against S2
+# =============================================================================
+def main() -> None:
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    ref_paths = list_tifs(REF_IMG_DIR)
+    if not ref_paths:
+        raise FileNotFoundError(f"No S2 .tif found in: {REF_IMG_DIR}")
+
+    print(f"[refs] {len(ref_paths)} S2 file(s) in {REF_IMG_DIR}")
+    print(f"[out]  {OUTPUT_DIR}")
+
+    for source_name, source_dir in INPUT_SOURCES:
+        input_paths = list_tifs(source_dir)
+        if not input_paths:
+            print(f"[skip] No inputs found in {source_dir}")
             continue
 
-        if not np.any(ref_valid):
-            raise ValueError("Reference basemap has only nodata for this scene (band {}).".format(band + 1))
+        out_subdir = Path(OUTPUT_DIR) / source_name
+        out_subdir.mkdir(parents=True, exist_ok=True)
 
-        # Unique values and CDF for input (valid pixels only)
-        src_vals, src_counts = np.unique(src[src_valid], return_counts=True)
-        src_cdf = np.cumsum(src_counts, dtype=np.float64)
-        src_cdf /= src_cdf[-1]
+        print(f"\n[{source_name}] {len(input_paths)} file(s) in {source_dir}")
 
-        # Unique values and CDF for reference (valid pixels only)
-        ref_vals, ref_counts = np.unique(ref[ref_valid], return_counts=True)
-        ref_cdf = np.cumsum(ref_counts, dtype=np.float64)
-        ref_cdf /= ref_cdf[-1]
-
-        # Map: input value -> input CDF -> reference value
-        ref_vals_for_src = np.interp(src_cdf, ref_cdf, ref_vals)
-
-        # Apply LUT onto all valid pixels
-        matched_band_vals = np.interp(src[src_valid], src_vals, ref_vals_for_src)
-
-        # Compose output band (preserve nodata)
-        out_band = np.full_like(src, nodata_val, dtype=np.float64)
-        out_band[src_valid] = matched_band_vals
-        out_img[band] = out_band
-
-    return out_img
-
-
-# --------------------------
-# Sentinel-2 helpers: pick B2,B3,B4,B8
-# --------------------------
-_BAND_NAME_RE = re.compile(r'\bB(\d{1,2}A?)\b', re.IGNORECASE)
-
-def _find_s2_band_indices_by_description(descriptions, targets=('B2','B3','B4','B8')):
-    """
-    Try to map band descriptions to indices (0-based) for specified targets.
-    Accepts variants like 'B02', 'B2', 'Band 2', 'S2_B2', etc.
-    """
-    if not descriptions or all(d is None for d in descriptions):
-        return None  # no descriptions to parse
-
-    # Build map normalized_name -> index
-    name_to_idx = {}
-    for idx, desc in enumerate(descriptions):
-        if not desc:
-            continue
-        desc_low = desc.lower()
-        # Heuristics: search for B<number> or "band <number>"
-        m = _BAND_NAME_RE.search(desc)
-        norm = None
-        if m:
-            norm = 'B' + m.group(1).upper().lstrip('0')  # e.g., 'B02' -> 'B2', 'B8A' -> 'B8A'
-        else:
-            # fallback: look for 'band ' + number
-            m2 = re.search(r'band\s*([0-9]{1,2}a?)', desc_low)
-            if m2:
-                norm = 'B' + m2.group(1).upper().lstrip('0')
-        if norm:
-            name_to_idx[norm] = idx
-
-    out = []
-    for t in targets:
-        # normalized target without leading zero
-        tnorm = 'B' + t[1:].upper().lstrip('0')
-        if tnorm in name_to_idx:
-            out.append(name_to_idx[tnorm])
-        else:
-            return None  # couldn't resolve all targets
-
-    return tuple(out)
-
-
-def select_s2_bgrnir(ref_arr, descriptions=None):
-    """
-    From a stacked Sentinel-2 array (bands, rows, cols), select B2, B3, B4, B8 in that order.
-    If descriptions are available, use them; otherwise fall back to common S2 ordering:
-    [B1,B2,B3,B4,B5,B6,B7,B8,B8A,B9,B11,B12] -> indices [1,2,3,7]
-    """
-    n_bands = ref_arr.shape[0]
-
-    # Try description-based mapping first
-    idxs = _find_s2_band_indices_by_description(descriptions, ('B2','B3','B4','B8')) if descriptions else None
-    if idxs is None:
-        # Fallback: typical 12-band S2 stack order (no B10)
-        # 1-based: 1..12 => [B1,B2,B3,B4,B5,B6,B7,B8,B8A,B9,B11,B12]
-        # 0-based indices for B2,B3,B4,B8 -> 1,2,3,7
-        guess = (1, 2, 3, 7)
-        if max(guess) >= n_bands:
-            raise ValueError(
-                f"Cannot select S2 B2,B3,B4,B8 by fallback indices from {n_bands} bands. "
-                "Provide proper band descriptions or a known band order."
+        for inp in input_paths:
+            ref, overlap = find_best_s2_ref_by_overlap(
+                inp, ref_paths, min_intersection_ratio=0.2
             )
-        idxs = guess
+            if ref is None or overlap is None:
+                print(f"[skip] {source_name}: no overlapping S2 ref for {inp.name}")
+                continue
 
-    # Slice and return as new array
-    return ref_arr[np.array(idxs), ...]
+            input_bands = [1, 2, 3, 4]
 
+            with rasterio.open(ref) as ref_ds:
+                ref_bands = s2_bgrnir_band_indices(ref_ds)
 
-# --------------------------
-# Pairing logic
-# --------------------------
-def list_tifs(folder):
-    return [os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(('.tif', '.tiff'))]
+            out_path = out_subdir / f"{inp.stem}_histmatch.tif"
+            print(f"\n[match] {source_name}: {inp.name} <-ref- {ref.name}")
+            print(f"        input_bands={input_bands} ref_bands={ref_bands}")
 
-
-def find_matching_ref_image(ref_path, img_path, img_type='MACS'):
-    """
-    Finds matching pairs between reference (Sentinel-2) and input images.
-
-    Reference key: basename.split('_')[0]
-    MACS key:      basename.split('_')[1]
-    PS key:        basename.split('_')[2]
-    """
-    ref_paths = list_tifs(ref_path)
-    ref_names = [os.path.basename(i).split('_')[0] for i in ref_paths]
-
-    print(f'Found {len(ref_names)} reference images in {ref_path}')
-
-    img_paths = list_tifs(img_path)
-    if img_type.upper() == 'MACS':
-        img_names = [os.path.basename(i).split('_')[1] if len(os.path.basename(i).split('_')) > 1 else '' for i in img_paths]
-    elif img_type.upper() == 'PS':
-        img_names = [os.path.basename(i).split('_')[2] if len(os.path.basename(i).split('_')) > 2 else '' for i in img_paths]
-    else:
-        raise ValueError("img_type must be 'MACS' or 'PS'.")
-
-    print(f'Found {len(img_names)} input images in {img_path}')
-
-    matched_ref_imgs = {}
-    for idx, name in enumerate(img_names):
-        if name in ref_names:
-            matched_ref_imgs[img_paths[idx]] = ref_paths[ref_names.index(name)]
-            print(f'\n >> Found pair:\n    {img_paths[idx]}\n    {ref_paths[ref_names.index(name)]}')
-        else:
-            print(f'\n No matching reference image found for {img_paths[idx]}')
-
-    print('\n' + '=' * 40)
-    print(f'Summary of matched images for {img_type}:')
-    print('=' * 40)
-    for k, v in matched_ref_imgs.items():
-        print(f'Input image:     {os.path.basename(k)}')
-        print(f'Reference image: {os.path.basename(v)}\n')
-
-    return matched_ref_imgs
-
-
-# --------------------------
-# I/O helpers
-# --------------------------
-def read_raster_with_meta(path):
-    with rasterio.open(path) as ds:
-        arr = ds.read()  # (bands, rows, cols)
-        profile = ds.profile
-        nodata = ds.nodata
-        descriptions = tuple(ds.descriptions) if ds.descriptions else None
-    return arr, profile, nodata, descriptions
-
-
-def normalise_ref_nodata(ref_img, ref_nodata, target_nodata):
-    """
-    Return a copy of ref_img where ref_nodata is replaced by target_nodata.
-    If ref_nodata is None or equals target_nodata, returns original array.
-    """
-    if ref_nodata is None or ref_nodata == target_nodata:
-        return ref_img
-    ref_img = ref_img.copy()
-    ref_img[ref_img == ref_nodata] = target_nodata
-    return ref_img
-
-
-def write_raster(path, arr, profile, nodata):
-    """
-    Write array to Cloud Optimized GeoTIFF with the same spatial size/transform
-    as the input. The output array size is defined by arr.shape.
-    """
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-
-    dtype_str = profile['dtype']
-    dtype = np.dtype(dtype_str)
-
-    def scale_array(arr_in, nodata_in, dtype_str_in):
-        """
-        Scale / cast array to match requested dtype.
-        Supports uint16 and float32 outputs.
-        """
-        if dtype_str_in == 'uint16':
-            arr_scaled = np.full_like(arr_in, 0, dtype=np.uint16)
-            nodata_uint16 = np.uint16(0)
-            valid_mask = arr_in != nodata_in
-            if np.any(valid_mask):
-                arr_valid = arr_in[valid_mask].astype(np.float64)
-                arr_min = np.min(arr_valid)
-                arr_max = np.max(arr_valid)
-                if arr_max != arr_min:
-                    scale = 65535.0 / (arr_max - arr_min)
-                    arr_scaled[valid_mask] = ((arr_valid - arr_min) * scale).astype(np.uint16)
-            return arr_scaled, nodata_uint16
-
-        elif dtype_str_in in ('float32', 'float64'):
-            arr_scaled = arr_in.astype(np.float32, copy=False)
-            nodata_scaled = np.float32(nodata_in) if nodata_in is not None else None
-            return arr_scaled, nodata_scaled
-
-        else:
-            raise ValueError(f"Unsupported dtype {dtype_str_in} for scaling.")
-
-    # Make sure we preserve the input array size (bands, rows, cols)
-    bands, rows, cols = arr.shape
-
-    # Scale the array based on the required output type
-    arr_scaled, nodata_scaled = scale_array(arr, nodata, dtype_str)
-
-    # Temporary GTiff path (will be converted to COG)
-    tmp_path = path + ".tmp.tif"
-
-    # Base GTiff profile (same spatial metadata as input; explicit size)
-    prof = profile.copy()
-    prof.update(
-        driver="GTiff",
-        dtype=dtype_str,
-        nodata=nodata_scaled,
-        count=bands,
-        height=rows,
-        width=cols,
-        tiled=True,         # tiled storage required for COG
-        blockxsize=256,
-        blockysize=256,
-        compress="LZW",
-        predictor=2 if np.issubdtype(dtype, np.number) else 1,
-    )
-
-    # Write the temporary tiled GeoTIFF
-    with rasterio.open(tmp_path, "w", **prof) as dst:
-        dst.write(arr_scaled)
-
-    # Convert to Cloud Optimized GeoTIFF
-    cog_opts = {
-        "driver": "COG",
-        "compress": "LZW",
-        "blocksize": 256,
-        "overview_resampling": "average",
-    }
-    rio_copy(tmp_path, path, **cog_opts)
-
-    # Clean up temporary file
-    try:
-        os.remove(tmp_path)
-    except OSError:
-        pass
-
-
-# --------------------------
-# Processing driver
-# --------------------------
-def process_pairs(pairs_dict, label):
-    if not pairs_dict:
-        print(f'No {label} pairs to process.')
-        return
-
-    print(f'\nProcessing {len(pairs_dict)} {label} pair(s)...\n')
-
-    for input_img_path, ref_img_path in pairs_dict.items():
-        try:
-            # Read input (MACS/PS = 4-band B,G,R,NIR expected)
-            input_img, in_profile, in_nodata, _ = read_raster_with_meta(input_img_path)
-            if in_nodata is None:
-                in_nodata = 0  # fallback; adjust if your data uses a different no-data
-
-            # Read reference (S2 stacked)
-            ref_img_full, _, ref_nodata, ref_desc = read_raster_with_meta(ref_img_path)
-            # Select S2 B2,B3,B4,B8 to match B,G,R,NIR
-            ref_img_s4 = select_s2_bgrnir(ref_img_full, descriptions=ref_desc)
-
-            # Align nodata values
-            ref_img_s4 = normalise_ref_nodata(ref_img_s4, ref_nodata, in_nodata)
-
-            # Safety: ensure both are 4-band
-            if input_img.shape[0] != ref_img_s4.shape[0]:
-                raise ValueError(
-                    f"After S2 selection, band mismatch persists: input {input_img.shape[0]} vs ref {ref_img_s4.shape[0]}"
+            try:
+                histogram_match_raster(
+                    input_path=inp,
+                    ref_path=ref,
+                    overlap_bbox_4326=overlap,
+                    output_path=out_path,
+                    input_bands=input_bands,
+                    ref_bands=ref_bands,
                 )
-
-            # Histogram-match (spatial sizes may differ; that's fine)
-            matched = histogram_match(input_img, ref_img_s4, nodata_val=in_nodata)
-
-            # Enforce same shape as input
-            assert matched.shape == input_img.shape, \
-                f"Histogram-matched array shape {matched.shape} != input shape {input_img.shape}"
-
-            # Output path as COG
-            out_name = f'histmatch_{label.lower()}_{os.path.basename(input_img_path)}'
-            out_path = os.path.join(OUTPUT_DIR, out_name)
-            write_raster(out_path, matched, in_profile, in_nodata)
-
-            print(f'YAY!!! Saved COG: {out_path}')
-
-        except Exception as e:
-            print(f'Error processing {input_img_path} and {ref_img_path}: {e}')
-            traceback.print_exc()
-
-
-# --------------------------
-# Main
-# --------------------------
-def main():
-    macs_pairs = find_matching_ref_image(REF_IMG_DIR, MACS_DIR, img_type='MACS')
-    ps_pairs   = find_matching_ref_image(REF_IMG_DIR, PS_DIR,   img_type='PS')
-
-    process_pairs(macs_pairs, label='MACS')
-    process_pairs(ps_pairs,   label='PS')
+                print(f"[done]  wrote: {out_path}")
+            except Exception as exc:
+                print(f"[ERROR] {source_name}: {inp.name}: {exc}")
 
 
 if __name__ == "__main__":

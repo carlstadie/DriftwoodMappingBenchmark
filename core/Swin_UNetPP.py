@@ -65,6 +65,51 @@ def _to_nchw(x: torch.Tensor) -> torch.Tensor:
 
 
 # ----------------------------
+# Band reordering helper
+# ----------------------------
+def _reorder_input_bands(x: torch.Tensor) -> torch.Tensor:
+    """
+    Reorder input bands so that the first three channels are always [R, G, B].
+
+    Assumptions based on user setup:
+      - 3-band inputs are BGR  -> reorder to RGB      [2, 1, 0]
+      - 4-band inputs are B,G,R,N -> reorder to R,G,B,N [2, 1, 0, 3]
+      - For C > 4, bands follow 1-based indices:
+            B=2, G=3, R=4  -> 0-based (1, 2, 3)
+        We reorder to [R, G, B, ...rest...].
+
+    Args:
+        x: Tensor of shape (N, C, H, W).
+
+    Returns:
+        Tensor with channels permuted but same shape.
+    """
+    if x.ndim != 4:
+        return x
+
+    n, c, h, w = x.shape
+
+    # 3-band: BGR -> RGB
+    if c == 3:
+        return x[:, [2, 1, 0], :, :]
+
+    # 4-band: B,G,R,N -> R,G,B,N
+    if c == 4:
+        return x[:, [2, 1, 0, 3], :, :]
+
+    # Multiband: B=2, G=3, R=4 (1-based) -> 0-based indices (1,2,3)
+    if c > 4:
+        r_idx, g_idx, b_idx = 3, 2, 1  # 0-based positions of R,G,B
+        all_idx = list(range(c))
+        other_idx = [i for i in all_idx if i not in (r_idx, g_idx, b_idx)]
+        order = [r_idx, g_idx, b_idx] + other_idx
+        return x[:, order, :, :]
+
+    # Fallback (C<3, unexpected)
+    return x
+
+
+# ----------------------------
 # Band adaptation: inflate first patch-embed conv (3 -> N)
 # ----------------------------
 def _inflate_patch_embed_conv(backbone: nn.Module, in_chans: int) -> None:
@@ -544,7 +589,6 @@ def _init_decoder_from_encoder(decoder: _Decoder, backbone: SwinTransformer) -> 
         )
 
 
-
 # ----------------------------
 # SwinUNet
 # ----------------------------
@@ -711,6 +755,9 @@ class SwinUNet(nn.Module):
         Returns:
             Tensor of shape (N, num_class, H, W) with probabilities in [0, 1].
         """
+        # Reorder bands so the first three channels are [R, G, B]
+        x = _reorder_input_bands(x)
+
         # Encoder (TorchVision Swin provides NHWC features)
         s3, skips = self.encoder(x)  # s3 deepest, skips=[s0, s1, s2]
 

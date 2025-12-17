@@ -6,7 +6,7 @@ import shutil
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
-from typing import Any, Dict, Iterable, Iterator, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, Optional, Tuple, List
 
 import h5py  # kept for old .h5 checkpoints compatibility in case I have a TF model. I dont think there are any left
 import numpy as np
@@ -20,6 +20,8 @@ import torchvision.utils as vutils
 from torch.utils.data import DataLoader, IterableDataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+import inspect
+from torch.optim.lr_scheduler import CosineAnnealingLR, OneCycleLR
 
 # ===== Fast execution defaults / mixed precision =====
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -75,14 +77,53 @@ config = None  # set in train_UNet / train_SwinUNetPP etc
 
 
 # -----------------------------
+# Sanitizers (mirroring tuning.py)
+# -----------------------------
+def _nan_to_num_torch(x: torch.Tensor, constant: float) -> torch.Tensor:
+    """
+    Replace NaN/Inf with a finite constant (like numpy.nan_to_num),
+    but keeping gradients for finite values.
+    """
+    return torch.where(
+        torch.isfinite(x),
+        x,
+        torch.as_tensor(constant, dtype=x.dtype, device=x.device),
+    )
+
+
+def _sanitize_pair_xy(x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Match tuning.py behaviour:
+      - cast to float32
+      - replace NaN/Inf
+      - clamp inputs/labels into [0, 1]
+    """
+    x = x.to(dtype=torch.float32)
+    y = y.to(dtype=torch.float32)
+    x = _nan_to_num_torch(x, 0.0).clamp_(0.0, 1.0)
+    y = _nan_to_num_torch(y, 0.0).clamp_(0.0, 1.0)
+    return x, y
+
+
+# -----------------------------
 # Build models
 # -----------------------------
 def _build_model_unet() -> nn.Module:
+    """
+    UNet builder that respects tuned architecture knobs from config
+    and matches tuning's assumption that UNet returns probabilities.
+    """
+    in_ch = len(getattr(config, "channel_list", []))
     model = UNet(
-        [config.train_batch_size, *config.patch_size, len(config.channel_list)],
-        [len(config.channel_list)],
-        config.dilation_rate,
+        [config.train_batch_size, *config.patch_size, in_ch],
+        [in_ch],
+        dilation_rate=int(getattr(config, "dilation_rate", 1)),
+        layer_count=int(getattr(config, "layer_count", 64)),
+        l2_weight=float(getattr(config, "l2_weight", 1e-4)),
+        dropout=float(getattr(config, "dropout", 0.0)),
     )
+    # Important: UNetAttention head already applies sigmoid; treat as probabilities
+    setattr(model, "_returns_probabilities", True)
     return model
 
 
@@ -90,7 +131,11 @@ def _build_model_swin() -> nn.Module:
     base_c = getattr(config, "swin_base_channels", 64)
     swin_patch_size = getattr(config, "swin_patch_size", 16)
     swin_window = getattr(config, "swin_window", 7)
-    model = SwinUNet(
+    drop_path = getattr(config, "drop_path", 0.0)  # tuned drop_path if provided
+
+    # Robust to signature changes
+    sig = inspect.signature(SwinUNet)
+    kwargs = dict(
         h=config.patch_size[0],
         w=config.patch_size[1],
         ch=len(getattr(config, "channels_used", config.channel_list)),
@@ -98,6 +143,10 @@ def _build_model_swin() -> nn.Module:
         patch_size=swin_patch_size,
         window_size=swin_window,
     )
+    if "drop_path" in sig.parameters:
+        kwargs["drop_path"] = float(drop_path)
+
+    model = SwinUNet(**kwargs)
     return model
 
 
@@ -111,8 +160,9 @@ def _build_model_terramind() -> nn.Module:
 
     # ---- map your tm_* config to TerraMind kwargs ----
     tm_backbone = getattr(config, "tm_backbone", None)  # e.g. "terramind_v1_large"
-    tm_decoder = getattr(config, "tm_decoder", "UperNetDecoder")  # "UperNetDecoder" | "UNetDecoder" | ...
-    tm_dec_ch = getattr(config, "tm_decoder_channels", 256)  # int or list[int]
+    tm_decoder = getattr(config, "tm_decoder", "UperNetDecoder")  # tuned
+    tm_dec_ch = getattr(config, "tm_decoder_channels", 256)  # tuned
+    tm_head_do = getattr(config, "tm_head_dropout", None)  # tuned (optional)
     tm_indices = getattr(config, "tm_select_indices", None)  # list[int] or None
     tm_bands = getattr(config, "tm_bands", None)  # list[str] or None
     tm_ckpt = getattr(config, "tm_backbone_ckpt_path", None)
@@ -121,18 +171,18 @@ def _build_model_terramind() -> nn.Module:
 
     # Accept either a direct backbone name or infer size from the suffix
     def _parse_size_from_backbone(
-        s: str | None, default_size: str = "base"
-    ) -> tuple[str | None, str]:
+        s: Optional[str], default_size: str = "base"
+    ) -> Tuple[Optional[str], str]:
         if not s:
             return None, default_size
         lower = s.lower()
         if lower.startswith("terramind"):
-            size = "large" if "large" in lower else (
-                "base" if "base" in lower else (
-                    "small" if "small" in lower else (
-                        "tiny" if "tiny" in lower else default_size
-                    )
-                )
+            size = (
+                "large" if "large" in lower else
+                "base" if "base" in lower else
+                "small" if "small" in lower else
+                "tiny" if "tiny" in lower else
+                default_size
             )
             return s, size
         # if it is not a full terramind id, treat it like a size token
@@ -144,25 +194,33 @@ def _build_model_terramind() -> nn.Module:
         tm_backbone, tm_size_fallback
     )
 
-    # Optional extra decoder kwargs
-    decoder_kwargs = {}
+    decoder_kwargs: Dict[str, Any] = {}
 
-    model = TerraMind(
-        in_channels=in_ch,
-        num_classes=num_classes,
-        modality=modality,
-        tm_size=tm_size,
-        merge_method=tm_merge,
-        pretrained=True,
-        ckpt_path=tm_ckpt,
-        indices_override=tm_indices,
-        bands_override=tm_bands,
-        decoder=tm_decoder,
-        decoder_channels=tm_dec_ch,
-        decoder_kwargs=decoder_kwargs,
-        backbone=backbone_override,  # direct backbone string, if provided
-        rescale=True,
-    )
+    # Build kwargs dynamically, respecting TerraMind __init__ signature
+    sig = inspect.signature(TerraMind)
+    kwargs: Dict[str, Any] = {}
+
+    def _add_if_supported(name: str, value: Any):
+        if name in sig.parameters and value is not None:
+            kwargs[name] = value
+
+    _add_if_supported("in_channels", in_ch)
+    _add_if_supported("num_classes", num_classes)
+    _add_if_supported("modality", modality)
+    _add_if_supported("tm_size", tm_size)
+    _add_if_supported("merge_method", tm_merge)
+    _add_if_supported("pretrained", True)
+    _add_if_supported("ckpt_path", tm_ckpt)
+    _add_if_supported("indices_override", tm_indices)
+    _add_if_supported("bands_override", tm_bands)
+    _add_if_supported("decoder", tm_decoder)
+    _add_if_supported("decoder_channels", tm_dec_ch)
+    _add_if_supported("decoder_kwargs", decoder_kwargs)
+    _add_if_supported("backbone", backbone_override)
+    _add_if_supported("rescale", True)
+    _add_if_supported("head_dropout", tm_head_do)
+
+    model = TerraMind(**kwargs)
 
     # mark for downstream detection even if compiled later, technically does only matter for printing
     setattr(model, "_is_terramind", True)
@@ -176,6 +234,142 @@ def _build_model_terramind() -> nn.Module:
     return model
 
 
+# -----------------------------
+# TerraMind-specific optimizer helpers
+# -----------------------------
+def _split_backbone_head_params(inner_model: nn.Module) -> Tuple[List[nn.Parameter], List[nn.Parameter]]:
+    """
+    Split TerraMind-style model parameters into backbone vs 'head' groups.
+    Works even if the TerraMind model is wrapped (model.model).
+    Returns (backbone_params, head_params).
+    """
+    inner = inner_model
+    if hasattr(inner, "model") and isinstance(inner.model, nn.Module):
+        inner = inner.model
+
+    bb_params: List[nn.Parameter] = []
+    head_params: List[nn.Parameter] = []
+
+    if hasattr(inner, "backbone") and isinstance(inner.backbone, nn.Module):
+        bb_params = list(inner.backbone.parameters())
+        bb_ids = {id(p) for p in bb_params}
+        for p in inner_model.parameters():
+            if id(p) not in bb_ids:
+                head_params.append(p)
+    else:
+        head_params = list(inner_model.parameters())
+
+    return bb_params, head_params
+
+
+def _make_tm_optimizer_from_config(model: nn.Module, opt_name: str) -> optim.Optimizer:
+    """
+    Build TerraMind optimizer using tm_lr_backbone, tm_lr_head_mult, tm_weight_decay
+    from config (set manually).
+    """
+    lr_bb = float(getattr(config, "tm_lr_backbone"))
+    lr_head_mult = float(getattr(config, "tm_lr_head_mult", 10.0))
+    wd = float(getattr(config, "tm_weight_decay", 1e-4))
+
+    bb_params, head_params = _split_backbone_head_params(model)
+    if len(bb_params) == 0:
+        groups = [{"params": head_params, "lr": lr_bb * lr_head_mult, "weight_decay": wd}]
+    else:
+        groups = [
+            {"params": head_params, "lr": lr_bb * lr_head_mult, "weight_decay": wd},
+            {"params": bb_params, "lr": lr_bb, "weight_decay": wd},
+        ]
+
+    opt_name = (opt_name or "adamw").lower()
+    if opt_name == "adamw":
+        return optim.AdamW(groups)
+    return optim.Adam(groups)
+
+
+def _set_backbone_requires_grad(model: nn.Module, requires_grad: bool):
+    """
+    Turn gradient on/off for TerraMind backbone parameters (used with tm_freeze_backbone_epochs).
+    """
+    inner = model
+    if hasattr(inner, "model") and isinstance(inner.model, nn.Module):
+        inner = inner.model
+    if hasattr(inner, "backbone") and isinstance(inner.backbone, nn.Module):
+        for p in inner.backbone.parameters():
+            p.requires_grad = requires_grad
+
+
+# -----------------------------
+# Optimizer + scheduler builder
+# -----------------------------
+def _build_optimizer_and_scheduler(model: nn.Module) -> Tuple[optim.Optimizer, Optional[Any], bool]:
+    """
+    Build optimizer (respecting config.optimizer_fn / learning_rate / weight_decay /
+    TerraMind tm_lr_backbone etc.) and an optional scheduler.
+
+    Returns (optimizer, scheduler, scheduler_step_per_batch).
+    """
+    total_epochs = int(getattr(config, "num_epochs", 1))
+    steps_per_epoch = int(getattr(config, "num_training_steps", 1))
+
+    opt_name = getattr(config, "optimizer_fn", "adam")
+    lr_tuned = getattr(config, "learning_rate", None)
+    wd_tuned = getattr(config, "weight_decay", None)
+    sched_name = str(getattr(config, "scheduler", "none")).lower()
+
+    # ---- build optimizer ----
+    # TerraMind path with tm_* LR params if available
+    is_tm = _is_terramind_model(model) or isinstance(model, TerraMind)
+    if is_tm and all(
+        hasattr(config, a) for a in ("tm_lr_backbone", "tm_lr_head_mult", "tm_weight_decay")
+    ):
+        optimizer = _make_tm_optimizer_from_config(model, opt_name)
+        base_lr = float(getattr(config, "tm_lr_backbone"))
+    else:
+        # project-level factory
+        optimizer = get_optimizer(
+            opt_name,
+            getattr(config, "num_epochs", total_epochs),
+            getattr(config, "num_training_steps", steps_per_epoch),
+            model,
+        )
+        # override with config.learning_rate / weight_decay if present
+        if lr_tuned is not None or wd_tuned is not None:
+            for g in optimizer.param_groups:
+                if lr_tuned is not None:
+                    g["lr"] = float(lr_tuned)
+                if wd_tuned is not None and str(opt_name).lower() == "adamw":
+                    g["weight_decay"] = float(wd_tuned)
+        base_lr = float(
+            lr_tuned if lr_tuned is not None
+            else optimizer.param_groups[0].get("lr", 1e-3)
+        )
+
+    # ---- scheduler ----
+    scheduler = None
+    step_per_batch = False
+
+    if sched_name == "onecycle":
+        scheduler = OneCycleLR(
+            optimizer,
+            max_lr=base_lr,
+            steps_per_epoch=steps_per_epoch,
+            epochs=total_epochs,
+        )
+        step_per_batch = True
+    elif sched_name == "cosine":
+        scheduler = CosineAnnealingLR(
+            optimizer,
+            T_max=total_epochs,
+            eta_min=base_lr * 0.01,
+        )
+        step_per_batch = False
+
+    return optimizer, scheduler, step_per_batch
+
+
+# -----------------------------
+# Logging helpers etc.
+# -----------------------------
 class BestModelSaver:
     """Saves best model weights based on a monitored value (her minimal loss)."""
 
@@ -285,6 +479,8 @@ class HeavyMetricsEvaluator:
                     self.device, non_blocking=True
                 ).contiguous(memory_format=torch.channels_last)
                 y_true = y_true.to(self.device, non_blocking=True)
+                # sanitize inputs/labels like in tuning
+                x, y_true = _sanitize_pair_xy(x, y_true)
 
                 # TerraMind-aware / Swin-aware probabilities
                 if _is_terramind_model(model):
@@ -312,9 +508,13 @@ class HeavyMetricsEvaluator:
                 if y_prob_full.shape[1] > 1:
                     cls_idx = int(getattr(config, "metrics_class", 1))
                     cls_idx = max(0, min(cls_idx, y_prob_full.shape[1] - 1))
-                    y_prob = y_prob_full[:, cls_idx : cls_idx + 1]
+                    y_prob = y_prob_full[:, cls_idx: cls_idx + 1]
                 else:
                     y_prob = y_prob_full
+
+                # sanitize predictions like in tuning
+                y_prob = _nan_to_num_torch(y_prob.float(), 0.5)
+                y_prob = y_prob.clamp(1e-6, 1.0 - 1.0e-6)
 
                 y_bin = (y_prob >= self.threshold).float()
 
@@ -346,6 +546,8 @@ def _print_run_banner(model_key: str, log_dir: str):
     loss_name = getattr(config, "loss_fn", "tversky")
     ab = getattr(config, "tversky_alphabeta", (0.5, 0.5))
     optimizer_name = getattr(config, "optimizer_fn", "adam")
+    scheduler_name = getattr(config, "scheduler", "none")
+    lr_val = getattr(config, "learning_rate", None)
 
     def _dtype_str(dt):
         if dt is torch.bfloat16:
@@ -387,13 +589,17 @@ def _print_run_banner(model_key: str, log_dir: str):
         )
     # Explicit loss + optimizer print
     if str(loss_name).lower().startswith("tversky"):
+        extra_lr = "" if lr_val is None else f", lr={lr_val:.2e}"
         print(
             f"[{model_key.upper()}][TRAIN]  loss={loss_name} "
-            f"(alpha={ab[0]:.2f}, beta={ab[1]:.2f}), optimizer={optimizer_name}"
+            f"(alpha={ab[0]:.2f}, beta={ab[1]:.2f}), optimizer={optimizer_name}, "
+            f"scheduler={scheduler_name}{extra_lr}"
         )
     else:
+        extra_lr = "" if lr_val is None else f", lr={lr_val:.2e}"
         print(
-            f"[{model_key.upper()}][TRAIN]  loss={loss_name}, optimizer={optimizer_name}"
+            f"[{model_key.upper()}][TRAIN]  loss={loss_name}, optimizer={optimizer_name}, "
+            f"scheduler={scheduler_name}{extra_lr}"
         )
     print(f"[{model_key.upper()}][TRAIN]  logs_dir={log_dir}")
     print("=" * 90 + "\n")
@@ -411,6 +617,8 @@ def _fit_model(
     log_name: str = "",
     optimizer: Optional[optim.Optimizer] = None,
     criterion: Optional[nn.Module] = None,
+    scheduler: Optional[Any] = None,
+    scheduler_step_per_batch: bool = False,
 ) -> None:
     best_saver, log_dir = _create_logging(model_path, log_suffix=log_name)
 
@@ -506,6 +714,12 @@ def _fit_model(
     # Track the best (by val_loss)
     best_val_loss = float("inf")
 
+    # TerraMind backbone freeze schedule (tm_freeze_backbone_epochs)
+    freeze_ep = 0
+    was_frozen = None
+    if _is_terramind_model(model):
+        freeze_ep = int(getattr(config, "tm_freeze_backbone_epochs", 0))
+
     # --- training epochs ---
     for epoch in range(starting_epoch, total_epochs):
         t0 = time.time()
@@ -513,6 +727,15 @@ def _fit_model(
         logs: Dict[str, Any] = {}
         train_loss_accum = 0.0
         metric_accums = {fn.__name__: 0.0 for fn in light_metric_fns}
+
+        # Optional: epoch-based backbone freeze schedule for TerraMind
+        if freeze_ep > 0 and _is_terramind_model(model):
+            if epoch < freeze_ep and was_frozen is not True:
+                _set_backbone_requires_grad(model, False)
+                was_frozen = True
+            elif epoch >= freeze_ep and was_frozen:
+                _set_backbone_requires_grad(model, True)
+                was_frozen = False
 
         # Iterate fixed number of steps per epoch (with progress bar)
         train_range = range(steps_per_epoch)
@@ -535,6 +758,9 @@ def _fit_model(
             ).contiguous(memory_format=torch.channels_last)
             y = y.to(device, non_blocking=True)
 
+            # sanitize x,y like tuning
+            x, y = _sanitize_pair_xy(x, y)
+
             with torch.cuda.amp.autocast(
                 enabled=torch.cuda.is_available(), dtype=_AMP_DTYPE
             ):
@@ -547,7 +773,7 @@ def _fit_model(
                 num_classes = int(getattr(config, "num_classes", 1))
 
                 if getattr(model, "_returns_probabilities", False):
-                    # e.g. SwinUNet already returns probabilities in [0,1]
+                    # e.g. SwinUNet/UNet already returns probabilities in [0,1]
                     y_prob_full = _ensure_nchw(y_pred_raw).float()
                 elif _is_terramind_model(model):
                     y_prob_full = _as_probs_from_terratorch_logits_first(
@@ -577,7 +803,33 @@ def _fit_model(
                         )
                     )
 
+                # Sanitize predictions like tuning (replace NaN/Inf, clamp)
+                y_prob = _nan_to_num_torch(y_prob.float(), 0.5)
+                y_prob = y_prob.clamp(1e-6, 1.0 - 1.0e-6)
+
                 loss = criterion(y, y_prob)
+
+            # Optional guard if anything still went wrong
+            if not torch.isfinite(loss):
+                print(">>> NaN loss detected")
+                with torch.no_grad():
+                    try:
+                        print(f"  y unique: {torch.unique(y)}")
+                    except Exception:
+                        pass
+                    try:
+                        print(f"  y_prob min/max: {y_prob.min()} {y_prob.max()}")
+                    except Exception:
+                        pass
+                    try:
+                        print(f"  y_prob all_zero: {bool((y_prob == 0).all().item())}")
+                    except Exception:
+                        pass
+                    try:
+                        print(f"  y all_zero: {bool((y == 0).all().item())}")
+                    except Exception:
+                        pass
+                raise RuntimeError("NaN in loss")
 
             scaler.scale(loss / grad_accum).backward()
 
@@ -593,6 +845,13 @@ def _fit_model(
                 optimizer.zero_grad(set_to_none=True)
                 if ema is not None:
                     ema.update()
+
+                # Scheduler step (per-batch style, e.g. OneCycle)
+                if scheduler is not None and scheduler_step_per_batch:
+                    try:
+                        scheduler.step()
+                    except Exception:
+                        pass
 
             # track loss & light metrics
             train_loss_accum += float(loss.detach().cpu().item())
@@ -685,6 +944,9 @@ def _fit_model(
                     ).contiguous(memory_format=torch.channels_last)
                     y = y.to(device, non_blocking=True)
 
+                    # sanitize x,y like tuning
+                    x, y = _sanitize_pair_xy(x, y)
+
                     if _is_terramind_model(model):
                         y_pred_raw = _forward_with_autopad(model, x)
                     else:
@@ -711,6 +973,10 @@ def _fit_model(
                         y_prob = y_prob_full[:, cls_idx : cls_idx + 1]
                     else:
                         y_prob = y_prob_full
+
+                    # sanitize predictions
+                    y_prob = _nan_to_num_torch(y_prob.float(), 0.5)
+                    y_prob = y_prob.clamp(1e-6, 1.0 - 1.0e-6)
 
                     loss = criterion(y, y_prob)
                     val_loss_accum += float(loss.detach().cpu().item())
@@ -847,6 +1113,13 @@ def _fit_model(
                 tb.add_scalars(base, {"val": logs[name]}, epoch)
         tb.flush()
 
+        # Per-epoch scheduler step (e.g. cosine)
+        if scheduler is not None and not scheduler_step_per_batch:
+            try:
+                scheduler.step()
+            except Exception:
+                pass
+
         # Per-epoch metadata JSON
         meta_data = {
             "name": config.model_name,
@@ -915,15 +1188,15 @@ def _fit_model(
             or (epoch == 0)
             or (epoch + 1 == total_epochs)
         ):
-            lr_val = None
+            lr_val_runtime = None
             try:
-                lr_val = optimizer.param_groups[0].get("lr", None)
+                lr_val_runtime = optimizer.param_groups[0].get("lr", None)
             except Exception:
                 pass
             took = _fmt_seconds(time.time() - t0)
             head = f"\n Epoch {epoch+1}/{total_epochs} [{took}]"
-            if lr_val is not None:
-                head += f"  lr={lr_val:.2e}"
+            if lr_val_runtime is not None:
+                head += f"  lr={lr_val_runtime:.2e}"
             print(head)
 
             # Split logs into train / val for organized printing
@@ -1039,10 +1312,8 @@ def train_UNet(conf):
         except Exception:
             pass
 
-    # Optimizer / loss
-    optimizer = get_optimizer(
-        config.optimizer_fn, config.num_epochs, config.num_training_steps, model
-    )
+    # Optimizer / loss using config.* (including tuned values you set)
+    optimizer, scheduler, scheduler_step_per_batch = _build_optimizer_and_scheduler(model)
     criterion = get_loss(
         config.loss_fn, getattr(config, "tversky_alphabeta", (0.5, 0.5))
     )
@@ -1073,6 +1344,8 @@ def train_UNet(conf):
         log_name="_unet",
         optimizer=optimizer,
         criterion=criterion,
+        scheduler=scheduler,
+        scheduler_step_per_batch=scheduler_step_per_batch,
     )
 
     print(
@@ -1116,7 +1389,7 @@ def train_SwinUNetPP(conf):
             pass
 
     # Optimizer / loss
-    optimizer = get_optimizer(config.optimizer_fn, None, None, model)
+    optimizer, scheduler, scheduler_step_per_batch = _build_optimizer_and_scheduler(model)
     criterion = get_loss(
         config.loss_fn, getattr(config, "tversky_alphabeta", (0.5, 0.5))
     )
@@ -1147,6 +1420,8 @@ def train_SwinUNetPP(conf):
         log_name="_swin",
         optimizer=optimizer,
         criterion=criterion,
+        scheduler=scheduler,
+        scheduler_step_per_batch=scheduler_step_per_batch,
     )
 
     print(
@@ -1183,7 +1458,7 @@ def train_TerraMind(conf):
         except Exception:
             pass
 
-    optimizer = get_optimizer(config.optimizer_fn, None, None, model)
+    optimizer, scheduler, scheduler_step_per_batch = _build_optimizer_and_scheduler(model)
     criterion = get_loss(
         config.loss_fn, getattr(config, "tversky_alphabeta", (0.5, 0.5))
     )
@@ -1212,6 +1487,8 @@ def train_TerraMind(conf):
         log_name="_tm",
         optimizer=optimizer,
         criterion=criterion,
+        scheduler=scheduler,
+        scheduler_step_per_batch=scheduler_step_per_batch,
     )
 
     print(

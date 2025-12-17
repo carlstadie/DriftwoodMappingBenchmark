@@ -663,7 +663,7 @@ def _run_phase(
         freeze_ep: int = 0,
     ) -> float:
         best_val_dice = -float("inf")
-        patience = 20
+        patience = 5
         no_improve = 0
         was_frozen = None
 

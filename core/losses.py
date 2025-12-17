@@ -142,20 +142,198 @@ def _tversky_loss(alpha: float, beta: float):
     return _fn
 
 
-# ---- Heavy metrics placeholders (keep names; implement simple surrogates) ----
-def nominal_surface_distance(y_true: torch.Tensor, y_pred: torch.Tensor) -> torch.Tensor:
-    # Lightweight surrogate: 1 - Dice as a proxy; avoids heavy computation during frequent evals
-    return dice_loss(y_true, y_pred)
+# ---- Heavy metrics  ----
+def _extract_boundaries(mask: torch.Tensor, dilation_iters: int = 1) -> torch.Tensor:
+    """
+    Extract boundaries from a binary mask using morphological operations.
+    Returns the boundary pixels (edge between foreground and background).
+    
+    Args:
+        mask: Binary mask of shape (B, 1, H, W) with values in [0, 1]
+        dilation_iters: Number of dilation iterations for boundary thickness
+    
+    Returns:
+        Boundary mask of shape (B, 1, H, W)
+    """
+    # Binarize the mask
+    binary_mask = (mask >= 0.5).float()
+    
+    # Create erosion kernel (3x3)
+    kernel = torch.ones(1, 1, 3, 3, device=mask.device, dtype=mask.dtype)
+    
+    # Erode the mask
+    # Use padding to maintain size
+    eroded = binary_mask
+    for _ in range(dilation_iters):
+        eroded = F.conv2d(eroded, kernel, padding=1)
+        eroded = (eroded >= 9.0).float()  # All 9 neighbors must be 1
+    
+    # Boundary is original mask minus eroded mask
+    boundary = binary_mask - eroded
+    boundary = torch.clamp(boundary, 0.0, 1.0)
+    
+    return boundary
 
 
-def Hausdorff_distance(y_true: torch.Tensor, y_pred: torch.Tensor) -> torch.Tensor:
-    # Lightweight surrogate: 1 - IoU proxy
-    return 1.0 - IoU(y_true, y_pred)
+def _compute_distance_transform(mask: torch.Tensor, eps: float = _EPS) -> torch.Tensor:
+    """
+    Approximate distance transform using repeated max pooling.
+    For each background pixel, approximates distance to nearest foreground pixel.
+    
+    Args:
+        mask: Binary mask of shape (B, 1, H, W)
+    
+    Returns:
+        Distance map of shape (B, 1, H, W)
+    """
+    binary_mask = (mask >= 0.5).float()
+    distance_map = torch.zeros_like(binary_mask)
+    
+    # Invert mask to get background
+    background = 1.0 - binary_mask
+    
+    # For pixels in the background, compute approximate distance
+    current = binary_mask.clone()
+    dist = 0.0
+    
+    # Iteratively grow the foreground region and track distance
+    for d in range(1, min(mask.shape[-2], mask.shape[-1]) // 2):
+        # Dilate current mask
+        dilated = F.max_pool2d(
+            F.pad(current, (1, 1, 1, 1), mode='constant', value=0),
+            kernel_size=3,
+            stride=1
+        )
+        
+        # Find newly covered background pixels
+        newly_covered = (dilated > current) * background
+        
+        # Update distance map for newly covered pixels
+        distance_map = distance_map + newly_covered * float(d)
+        
+        # Update current mask
+        current = dilated
+        
+        # Stop if all background is covered
+        if newly_covered.sum() < eps:
+            break
+    
+    return distance_map
 
 
-def boundary_intersection_over_union(y_true: torch.Tensor, y_pred: torch.Tensor) -> torch.Tensor:
-    # Simple proxy using IoU (without explicit boundary extraction to keep runtime low)
-    return IoU(y_true, y_pred)
+def nominal_surface_distance(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = _EPS) -> torch.Tensor:
+    """
+    Normalized Surface Distance (NSD): Average distance between predicted and true boundaries.
+    Lower is better. Returns normalized value in [0, 1] range.
+    
+    This computes the mean distance from boundary pixels of prediction to boundary pixels of ground truth,
+    and vice versa, then averages both directions.
+    """
+    yt, yp = _ensure_nchw_1(y_true, y_pred)
+    
+    # Binarize predictions
+    yp_bin = (yp >= 0.5).float()
+    yt_bin = (yt >= 0.5).float()
+    
+    # Extract boundaries
+    boundary_true = _extract_boundaries(yt_bin, dilation_iters=1)
+    boundary_pred = _extract_boundaries(yp_bin, dilation_iters=1)
+    
+    # If either boundary is empty, return a penalty
+    if boundary_true.sum() < eps or boundary_pred.sum() < eps:
+        return torch.tensor(1.0, device=yt.device, dtype=yt.dtype)
+    
+    # Compute distance transforms
+    dist_true = _compute_distance_transform(yt_bin)
+    dist_pred = _compute_distance_transform(yp_bin)
+    
+    # Average distance from pred boundary to true mask
+    pred_to_true_dist = (boundary_pred * dist_true).sum() / (boundary_pred.sum() + eps)
+    
+    # Average distance from true boundary to pred mask
+    true_to_pred_dist = (boundary_true * dist_pred).sum() / (boundary_true.sum() + eps)
+    
+    # Average both directions and normalize by image diagonal
+    max_dist = torch.sqrt(
+        torch.tensor(yt.shape[-2]**2 + yt.shape[-1]**2, dtype=yt.dtype, device=yt.device)
+    )
+    nsd = (pred_to_true_dist + true_to_pred_dist) / (2.0 * max_dist + eps)
+    
+    return torch.clamp(nsd, 0.0, 1.0)
+
+
+def Hausdorff_distance(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = _EPS) -> torch.Tensor:
+    """
+    Hausdorff Distance: Maximum distance from any boundary point to the nearest point on the other boundary.
+    Lower is better. Returns normalized value in [0, 1] range.
+    
+    Computes max(max distance from pred to true, max distance from true to pred).
+    """
+    yt, yp = _ensure_nchw_1(y_true, y_pred)
+    
+    # Binarize predictions
+    yp_bin = (yp >= 0.5).float()
+    yt_bin = (yt >= 0.5).float()
+    
+    # Extract boundaries
+    boundary_true = _extract_boundaries(yt_bin, dilation_iters=1)
+    boundary_pred = _extract_boundaries(yp_bin, dilation_iters=1)
+    
+    # If either boundary is empty, return maximum penalty
+    if boundary_true.sum() < eps or boundary_pred.sum() < eps:
+        return torch.tensor(1.0, device=yt.device, dtype=yt.dtype)
+    
+    # Compute distance transforms
+    dist_true = _compute_distance_transform(yt_bin)
+    dist_pred = _compute_distance_transform(yp_bin)
+    
+    # Max distance from pred boundary points to true mask
+    pred_to_true_max = (boundary_pred * dist_true).max()
+    
+    # Max distance from true boundary points to pred mask
+    true_to_pred_max = (boundary_true * dist_pred).max()
+    
+    # Hausdorff is the maximum of these two
+    hausdorff = torch.max(pred_to_true_max, true_to_pred_max)
+    
+    # Normalize by image diagonal
+    max_dist = torch.sqrt(
+        torch.tensor(yt.shape[-2]**2 + yt.shape[-1]**2, dtype=yt.dtype, device=yt.device)
+    )
+    hausdorff_normalized = hausdorff / (max_dist + eps)
+    
+    return torch.clamp(hausdorff_normalized, 0.0, 1.0)
+
+
+def boundary_intersection_over_union(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = _EPS) -> torch.Tensor:
+    """
+    Boundary IoU: IoU computed specifically on the boundary regions.
+    Higher is better. Returns value in [0, 1] range.
+    
+    This focuses on how well the boundaries align, ignoring the interior regions.
+    """
+    yt, yp = _ensure_nchw_1(y_true, y_pred)
+    
+    # Binarize predictions
+    yp_bin = (yp >= 0.5).float()
+    yt_bin = (yt >= 0.5).float()
+    
+    # Extract boundaries
+    boundary_true = _extract_boundaries(yt_bin, dilation_iters=1)
+    boundary_pred = _extract_boundaries(yp_bin, dilation_iters=1)
+    
+    # Compute IoU on boundaries
+    intersection = torch.sum(boundary_true * boundary_pred, dim=(1, 2, 3))
+    union = torch.sum(boundary_true + boundary_pred, dim=(1, 2, 3)) - intersection
+    
+    # Handle case where both boundaries are empty (perfect match of empty masks)
+    boundary_iou = torch.where(
+        union > eps,
+        (intersection + eps) / (union + eps),
+        torch.ones_like(intersection)
+    )
+    
+    return boundary_iou.mean()
 
 
 # ----------------- Factory -----------------

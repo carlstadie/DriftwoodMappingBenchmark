@@ -21,7 +21,6 @@ class Configuration:
 
         # ---------- PATHS -----------
 
-
         # Training data and imagery
         self.training_data_dir = (
             f"/isipd/projects/p_planetdw/data/methods_test/training/{self.modality}"
@@ -78,10 +77,15 @@ class Configuration:
         self.num_epochs = 100
         self.num_training_steps = 100
         self.num_validation_images = 50
+
+        # ------ LOSS / OPTIM / SCHED ------
         self.loss_fn = "tversky"
         self.optimizer_fn = "adam"
-        self.learning_rate = 1e-3
-        self.dilation_rate = 1
+        self.learning_rate = 1e-3          # used if you don't use tm_* LRs
+        self.weight_decay = 1e-4           # NEW: global weight decay (for AdamW / tuner "weight_decay")
+        self.scheduler = "none"            # NEW: "none" | "cosine" | "onecycle"
+
+        self.dilation_rate = 1  # unused for TerraMind itself, but kept for compatibility
         self.model_name = self.run_name
         self.boundary_weight = 5
         self.model_save_interval = None
@@ -111,8 +115,11 @@ class Configuration:
         # ------ EVALUATION ------
         self.eval_threshold = 0.5
         self.heavy_eval_steps = 50
+        self.print_pos_stats = True
         self.metrics_class = 1
         self.viz_class = 1
+        self.eval_mc_dropout = True
+        self.mc_dropout_samples = 20
 
         # ------ MIXED PRECISION / COMPILE / REPRO ------
         self.use_torch_compile = False
@@ -121,14 +128,26 @@ class Configuration:
 
         # -------- TERRAMIND ARCH KNOBS --------
         self.tm_backbone = "terramind_v1_base"   # or size token: 'tiny','small','base','large'
-        self.tm_decoder = "UNetDecoder"          # or 'UperNetDecoder'
+        self.tm_decoder = "UNetDecoder"          # tuned: 'UNetDecoder' | 'UperNetDecoder'
         self.tm_decoder_channels = [512, 256, 128, 64]
+        self.tm_head_dropout = 0.0               # NEW: tuned "tm_head_dropout"
         self.tm_select_indices = None
         self.tm_bands = None
         self.tm_backbone_ckpt_path = None
         self.terramind_merge_method = "mean"
         self.terramind_size = "base"
-        self.tm_freeze_backbone = False
+        self.tm_freeze_backbone = False          # full freeze at init
+
+        # --- TerraMind optimizer / schedule knobs (from tuner) ---       # NEW block
+        # These are used in training._build_optimizer_and_scheduler()
+        # when training a TerraMind model.
+        self.tm_lr_backbone = 1e-5               # NEW: tuned "tm_lr_backbone"
+        self.tm_lr_head_mult = 10.0              # NEW: tuned "tm_lr_head_mult"
+        self.tm_weight_decay = 1e-4              # NEW: tuned "tm_weight_decay"
+        self.tm_freeze_backbone_epochs = 0       # NEW: freeze backbone for first N epochs
+
+        # (Optionally) keep tversky_alpha around for direct copy from tuner JSON  # NEW (optional)
+        self.tversky_alpha = self.tversky_alphabeta[0]
 
         # --- POSTPROCESSING (kept for downstream scripts) ---
         self.create_polygons = True

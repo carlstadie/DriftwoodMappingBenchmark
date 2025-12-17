@@ -1,7 +1,7 @@
 # evaluation.py (PyTorch) - Full-image sliding-window evaluation with BF16 + channels-last
 # Evaluates all checkpoints in saved_models_dir and computes dataset-level metrics
 # matching the training implementation (core.losses). Outputs georeferenced prediction
-# masks and a CSV summary table.
+# masks and (optionally) uncertainty maps, plus a CSV summary table.
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import rasterio
 import torch
+import torch.nn as nn
 from tqdm import tqdm
 
 # ===== Project imports =====
@@ -235,6 +236,7 @@ def _build_swin(config) -> torch.nn.Module:
     )
     return model
 
+
 def _build_terramind(config) -> torch.nn.Module:
     """Construct TerraMind for evaluation using the same knobs as training."""
     in_ch = len(getattr(config, "channels_used", getattr(config, "channel_list", [])))
@@ -340,9 +342,22 @@ def _select_eval_channel(prob_nchw: torch.Tensor, config) -> torch.Tensor:
     return prob_nchw
 
 
+def _enable_mc_dropout(model: torch.nn.Module) -> None:
+    """
+    Enable MC dropout by setting all dropout modules to train mode.
+
+    BatchNorm and other layers remain in evaluation mode, so call this
+    *after* model.eval(). This works generically for UNet, SwinUNet and
+    TerraMind backbones without changing their implementations.
+    """
+    for m in model.modules():
+        if isinstance(m, (nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
+            m.train()
+
+
 def _infer_full_image(
     model: torch.nn.Module, frame, device: torch.device, config
-) -> np.ndarray:
+) -> np.ndarray | Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Sliding-window full-image inference that mirrors the training forward path:
       - same channel selection (channels_used / channel_list)
@@ -350,8 +365,19 @@ def _infer_full_image(
       - same TerraMind / non-TerraMind logits -> probabilities decode
       - same channels_last + AMP dtype
 
-    Returns a [H,W] numpy array of probabilities in [0,1].
+    If config.eval_mc_dropout is False (default), returns a single [H,W]
+    numpy array of probabilities in [0,1].
+
+    If config.eval_mc_dropout is True, performs MC dropout with
+    config.eval_mc_samples forward passes per patch and returns a triple:
+        (mean_prob, epistemic_uncertainty, aleatoric_uncertainty),
+    each of shape [H,W].
     """
+    # MC dropout controls
+    use_mc_dropout = bool(getattr(config, "eval_mc_dropout", False))
+    mc_samples = int(getattr(config, "eval_mc_samples", 8))
+    mc_samples = max(1, mc_samples)
+
     x_full = frame.img  # [H,W,C]
     img_h, img_w = x_full.shape[:2]
 
@@ -399,13 +425,24 @@ def _infer_full_image(
     prob_accum = np.zeros((pad_h_total, pad_w_total), dtype=np.float32)
     weight_accum = np.zeros((pad_h_total, pad_w_total), dtype=np.float32)
 
+    # Additional accumulators for uncertainty when MC dropout is enabled
+    if use_mc_dropout:
+        epi_accum = np.zeros((pad_h_total, pad_w_total), dtype=np.float32)
+        alea_accum = np.zeros((pad_h_total, pad_w_total), dtype=np.float32)
+    else:
+        epi_accum = alea_accum = None  # type: ignore[assignment]
+
     # Use training batch size to avoid TerraTorch batch_size=1 quirks
     batch_size = int(getattr(config, "train_batch_size", 1))
     batch_size = max(1, batch_size)
 
     num_classes = int(getattr(config, "num_classes", 1))
 
+    # Eval mode overall, then selectively re-enable dropout modules if requested
     model.eval()
+    if use_mc_dropout:
+        _enable_mc_dropout(model)
+
     with torch.no_grad():
         for y0 in range(0, pad_h_total - patch_h + 1, stride_h):
             y1 = y0 + patch_h
@@ -434,40 +471,95 @@ def _infer_full_image(
                 with torch.cuda.amp.autocast(
                     enabled=torch.cuda.is_available(), dtype=_AMP_DTYPE
                 ):
+                    if not use_mc_dropout:
+                        # Single deterministic forward pass (original behaviour)
+                        if _is_terramind_model(model):
+                            y_raw = _forward_with_autopad(model, x_t)
+                        else:
+                            y_raw = model(x_t)
 
-                    if _is_terramind_model(model):
-                        y_raw = _forward_with_autopad(model, x_t)
+                        if getattr(model, "_returns_probabilities", False):
+                            # e.g. SwinUNet already returns probabilities in [0,1]
+                            prob_full = _ensure_nchw(y_raw).float()
+                        elif _is_terramind_model(model):
+                            prob_full = _as_probs_from_terratorch_logits_first(
+                                y_raw, num_classes=num_classes
+                            )
+                        else:
+                            prob_full = _as_probs_from_terratorch(
+                                y_raw, num_classes=num_classes
+                            )
+
+                        prob_sel = _select_eval_channel(prob_full, config)
+
+                        # Take the first batch entry (all are copies of the same patch)
+                        prob_patch = (
+                            prob_sel[0:1]
+                            .squeeze(0)
+                            .squeeze(0)
+                            .clamp(0.0, 1.0)
+                            .detach()
+                            .cpu()
+                            .numpy()
+                        )  # [patch_h, patch_w]
+
+                        prob_accum[y0:y1, x0:x1] += prob_patch
+                        weight_accum[y0:y1, x0:x1] += 1.0
                     else:
-                        y_raw = model(x_t)
+                        # MC dropout: multiple stochastic forward passes
+                        mc_patches = []
 
-                    if getattr(model, "_returns_probabilities", False):
-                        # e.g. SwinUNet already returns probabilities in [0,1]
-                        prob_full = _ensure_nchw(y_raw).float()
-                    elif _is_terramind_model(model):
-                        prob_full = _as_probs_from_terratorch_logits_first(
-                            y_raw, num_classes=num_classes
+                        for _ in range(mc_samples):
+                            if _is_terramind_model(model):
+                                y_raw = _forward_with_autopad(model, x_t)
+                            else:
+                                y_raw = model(x_t)
+
+                            if getattr(model, "_returns_probabilities", False):
+                                prob_full = _ensure_nchw(y_raw).float()
+                            elif _is_terramind_model(model):
+                                prob_full = _as_probs_from_terratorch_logits_first(
+                                    y_raw, num_classes=num_classes
+                                )
+                            else:
+                                prob_full = _as_probs_from_terratorch(
+                                    y_raw, num_classes=num_classes
+                                )
+
+                            prob_sel = _select_eval_channel(prob_full, config)
+
+                            prob_patch_sample = (
+                                prob_sel[0:1]
+                                .squeeze(0)
+                                .squeeze(0)
+                                .clamp(0.0, 1.0)
+                                .detach()
+                                .cpu()
+                                .numpy()
+                            )  # [patch_h, patch_w]
+                            mc_patches.append(prob_patch_sample)
+
+                        mc_stack = np.stack(mc_patches, axis=0)  # [S, H, W]
+                        mean_patch = mc_stack.mean(axis=0).astype(np.float32)
+
+                        # Aleatoric: expected variance of Bernoulli conditional on weights
+                        alea_patch = np.mean(
+                            mc_stack * (1.0 - mc_stack), axis=0
+                        ).astype(np.float32)
+
+                        # Total variance of predictive probabilities
+                        second_moment = np.mean(mc_stack ** 2, axis=0)
+                        total_var = second_moment - mean_patch ** 2
+
+                        # Epistemic: total variance minus aleatoric, clipped at 0
+                        epi_patch = np.clip(total_var - alea_patch, 0.0, None).astype(
+                            np.float32
                         )
-                    else:
-                        prob_full = _as_probs_from_terratorch(
-                            y_raw, num_classes=num_classes
-                        )
 
-                    prob_sel = _select_eval_channel(prob_full, config)
-
-
-                # Take the first batch entry (all are copies of the same patch)
-                prob_patch = (
-                    prob_sel[0:1]
-                    .squeeze(0)
-                    .squeeze(0)
-                    .clamp(0.0, 1.0)
-                    .detach()
-                    .cpu()
-                    .numpy()
-                )  # [patch_h, patch_w]
-
-                prob_accum[y0:y1, x0:x1] += prob_patch
-                weight_accum[y0:y1, x0:x1] += 1.0
+                        prob_accum[y0:y1, x0:x1] += mean_patch
+                        epi_accum[y0:y1, x0:x1] += epi_patch
+                        alea_accum[y0:y1, x0:x1] += alea_patch
+                        weight_accum[y0:y1, x0:x1] += 1.0
 
     # Avoid division by zero
     weight_accum = np.maximum(weight_accum, 1e-6)
@@ -476,7 +568,15 @@ def _infer_full_image(
 
     # Crop back to original image size
     prob_full = prob_full_padded[:img_h, :img_w]
-    return prob_full
+
+    if not use_mc_dropout:
+        return prob_full
+
+    # Also return epistemic / aleatoric uncertainty maps when MC dropout is on
+    epi_full = (epi_accum / weight_accum)[:img_h, :img_w]
+    alea_full = (alea_accum / weight_accum)[:img_h, :img_w]
+
+    return prob_full, epi_full, alea_full
 
 
 # -----------------------------
@@ -521,6 +621,7 @@ def _evaluate_arch(config, arch: str = "unet") -> None:
       - Runs sliding-window inference on all test frames
       - Computes dataset-level metrics (same as training)
       - Saves georeferenced prediction masks as GeoTIFFs
+      - Optionally saves per-pixel epistemic/aleatoric uncertainty maps
       - Appends summary row to CSV
     
     Args:
@@ -560,11 +661,14 @@ def _evaluate_arch(config, arch: str = "unet") -> None:
         "nominal_surface_distance",
         "Hausdorff_distance",
         "boundary_intersection_over_union",
+        "mean_epistemic_uncertainty",
+        "mean_aleatoric_uncertainty",
         "elapsed",
     ]
 
     results_written = 0
     thr = float(getattr(config, "eval_threshold", 0.5))
+    use_mc_dropout = bool(getattr(config, "eval_mc_dropout", False))
 
     # ---- Evaluate each checkpoint ----
     for ckpt_path in ckpts:
@@ -592,13 +696,26 @@ def _evaluate_arch(config, arch: str = "unet") -> None:
             accum = MetricAccumulator(device=device, threshold=thr)
             t0 = time.time()
 
+            # Dataset-level uncertainty accumulators (for MC dropout)
+            sum_epistemic = 0.0
+            sum_aleatoric = 0.0
+            unc_pixel_count = 0
+
             for i in tqdm(range(len(test_idx)), desc=f"Predicting ({arch})"):
                 idx = test_idx[i]
                 frame = frames[idx]
                 im_fp = image_paths[idx]
 
                 # Predict probability map [H,W] in [0,1] via sliding-window inference
-                prob = _infer_full_image(model, frame, device, config)
+                if use_mc_dropout:
+                    prob, epi_map, alea_map = _infer_full_image(
+                        model, frame, device, config
+                    )
+                    sum_epistemic += float(epi_map.sum())
+                    sum_aleatoric += float(alea_map.sum())
+                    unc_pixel_count += int(epi_map.size)
+                else:
+                    prob = _infer_full_image(model, frame, device, config)
 
                 # Load GT and scale to [0,1] if needed
                 gt = frame.annotations.astype(np.float32)
@@ -612,11 +729,10 @@ def _evaluate_arch(config, arch: str = "unet") -> None:
                 # Save hard mask as GeoTIFF with preserved spatial properties
                 pred_bin = (prob >= thr).astype(np.uint8)
                 with rasterio.open(im_fp) as src:
-                    profile = src.profile.copy()
+                    base_profile = src.profile.copy()
                     # Update only what's necessary, keep CRS, transform, etc.
-                    profile.update(
+                    base_profile.update(
                         count=1,
-                        dtype="uint8",
                         compress="LZW",
                         # Explicitly preserve spatial properties
                         crs=src.crs,
@@ -624,11 +740,36 @@ def _evaluate_arch(config, arch: str = "unet") -> None:
                         width=src.width,
                         height=src.height,
                     )
+
+                    # Binary mask prediction (uint8)
+                    mask_profile = base_profile.copy()
+                    mask_profile["dtype"] = "uint8"
                     out_fp = os.path.join(out_dir, os.path.basename(im_fp))
-                    with rasterio.open(out_fp, "w", **profile) as dst:
+                    with rasterio.open(out_fp, "w", **mask_profile) as dst:
                         dst.write(pred_bin, 1)
 
+                    # Optional: per-pixel uncertainty GeoTIFFs when MC dropout is enabled
+                    if use_mc_dropout:
+                        unc_profile = base_profile.copy()
+                        unc_profile["dtype"] = "float32"
+
+                        stem, ext = os.path.splitext(os.path.basename(im_fp))
+                        epi_fp = os.path.join(out_dir, f"{stem}_epistemic{ext}")
+                        alea_fp = os.path.join(out_dir, f"{stem}_aleatoric{ext}")
+
+                        with rasterio.open(epi_fp, "w", **unc_profile) as dst:
+                            dst.write(epi_map.astype(np.float32), 1)
+                        with rasterio.open(alea_fp, "w", **unc_profile) as dst:
+                            dst.write(alea_map.astype(np.float32), 1)
+
             # ---- Finalize metrics and save results ----
+            if use_mc_dropout and unc_pixel_count > 0:
+                mean_epistemic = sum_epistemic / float(unc_pixel_count)
+                mean_aleatoric = sum_aleatoric / float(unc_pixel_count)
+            else:
+                mean_epistemic = float("nan")
+                mean_aleatoric = float("nan")
+
             metrics = accum.finalize()
             elapsed = _fmt_seconds(time.time() - t0)
 
@@ -646,6 +787,8 @@ def _evaluate_arch(config, arch: str = "unet") -> None:
                 f"{metrics['nominal_surface_distance']:.6f}",
                 f"{metrics['Hausdorff_distance']:.6f}",
                 f"{metrics['boundary_intersection_over_union']:.6f}",
+                f"{mean_epistemic:.6f}",
+                f"{mean_aleatoric:.6f}",
                 elapsed,
             ]
             _append_results_row(csv_path, header, row)
@@ -673,7 +816,6 @@ def _evaluate_arch(config, arch: str = "unet") -> None:
 
                 if rows:
                     # Print header
-                    key_metrics = ["dice_coef", "IoU", "accuracy", "f1_score", "elapsed"]
                     print(
                         f"{'Checkpoint':<50} {'Dice':<10} {'IoU':<10} "
                         f"{'Acc':<10} {'F1':<10} {'Time':<10}"
