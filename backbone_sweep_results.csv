@@ -1,0 +1,17 @@
+backbone,status,best_val_loss,best_epoch,params,seconds,notes
+terratorch_dofa_small_patch16_224,SKIP,nan,-1,0,0.0,RuntimeError: Failed to build model for terratorch_dofa_small_patch16_224. Last error: dofa_small_patch16_224() missing 1 required positional argument: 'model_bands'
+terratorch_dofa_base_patch16_224,SKIP,nan,-1,0,0.0,RuntimeError: Failed to build model for terratorch_dofa_base_patch16_224. Last error: dofa_base_patch16_224() missing 1 required positional argument: 'model_bands'
+terratorch_dofa_large_patch16_224,SKIP,nan,-1,0,0.0,RuntimeError: Failed to build model for terratorch_dofa_large_patch16_224. Last error: dofa_large_patch16_224() missing 1 required positional argument: 'model_bands'
+terratorch_prithvi_eo_tiny,SKIP,nan,-1,6965505,0.16,"RuntimeError: Given groups=1, weight of size [256, 6, 1, 16, 16], expected input[16, 4, 1, 256, 256] to have 6 channels, but got 4 channels instead"
+terratorch_prithvi_eo_v1_100,SKIP,nan,-1,90173697,2.85,"RuntimeError: Given groups=1, weight of size [768, 6, 1, 16, 16], expected input[16, 4, 1, 256, 256] to have 6 channels, but got 4 channels instead"
+terratorch_prithvi_eo_v2_tiny_tl,SKIP,nan,-1,8980739,0.18,"RuntimeError: Given groups=1, weight of size [192, 6, 1, 16, 16], expected input[16, 4, 1, 256, 256] to have 6 channels, but got 4 channels instead"
+terratorch_prithvi_eo_v2_100_tl,SKIP,nan,-1,90173699,3.72,"RuntimeError: Given groups=1, weight of size [768, 6, 1, 16, 16], expected input[16, 4, 1, 256, 256] to have 6 channels, but got 4 channels instead"
+terratorch_prithvi_eo_v2_300,SKIP,nan,-1,308084993,3.99,"RuntimeError: Given groups=1, weight of size [1024, 6, 1, 16, 16], expected input[16, 4, 1, 256, 256] to have 6 channels, but got 4 channels instead"
+terratorch_prithvi_eo_v2_600,SKIP,nan,-1,635649281,9.17,"RuntimeError: Given groups=1, weight of size [1280, 6, 1, 14, 14], expected input[16, 4, 1, 280, 280] to have 6 channels, but got 4 channels instead"
+terratorch_prithvi_eo_v2_300_tl,SKIP,nan,-1,308084995,3.55,"RuntimeError: Given groups=1, weight of size [1024, 6, 1, 16, 16], expected input[16, 4, 1, 256, 256] to have 6 channels, but got 4 channels instead"
+terratorch_prithvi_eo_v2_600_tl,SKIP,nan,-1,635649283,11.39,"RuntimeError: Given groups=1, weight of size [1280, 6, 1, 14, 14], expected input[16, 4, 1, 280, 280] to have 6 channels, but got 4 channels instead"
+terratorch_terramind_v1_base,SKIP,nan,-1,89677569,7.34,TypeError: Could not extract logits from model output type=<class 'terratorch.models.model.ModelOutput'>
+terratorch_terramind_v1_base_tim,SKIP,nan,-1,0,70.43,RuntimeError: Failed to build model for terratorch_terramind_v1_base_tim. Last error: No module named 'diffusers'
+terratorch_terramind_v01_base,SKIP,nan,-1,89677569,3.2,TypeError: Could not extract logits from model output type=<class 'terratorch.models.model.ModelOutput'>
+terratorch_terramind_v01_base_tim,SKIP,nan,-1,0,69.0,RuntimeError: Failed to build model for terratorch_terramind_v01_base_tim. Last error: No module named 'diffusers'
+terratorch_terramind_v1_large,SKIP,nan,-1,307239169,6.3,TypeError: Could not extract logits from model output type=<class 'terratorch.models.model.ModelOutput'>

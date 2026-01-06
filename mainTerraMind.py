@@ -17,14 +17,16 @@ import evaluation
 if __name__ == "__main__":
 
     # PREPROCESSING
-    preprocessing.preprocess_all(config)
+    #preprocessing.preprocess_all(config)
 
     # TUNING (HYPERPARAMETER SEARCH)
-    best = tuning.tune_TerraMind(config)
+    #best = tuning.tune_TerraMind(config)
 
     # TRAINING
-    for i in range(10):
-        training.train_TerraMind(config)
+    #for i in range(10):
+
+    #    print(f"Starting training iteration {i+1}/10")
+    #    training.train_TerraMind(config)
 
     # EVALUATION
     evaluation.evaluate_TerraMind(config)

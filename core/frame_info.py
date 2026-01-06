@@ -69,7 +69,7 @@ class FrameInfo:
         # Grab slice from source (clamped to bounds)
         img_patch = self.img[top : top + h_slice, left : left + w_slice, :]
         # Normalise per patch
-        img_patch = image_normalize(img_patch, axis=(0, 1))
+        #img_patch = image_normalize(img_patch, axis=(0, 1), nodata_val=0)
 
         lab_patch = self.annotations[top : top + h_slice, left : left + w_slice]
         if lab_patch.ndim == 2:

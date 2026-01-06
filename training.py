@@ -93,16 +93,34 @@ def _nan_to_num_torch(x: torch.Tensor, constant: float) -> torch.Tensor:
 
 def _sanitize_pair_xy(x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Match tuning.py behaviour:
+    Sanitize inputs and labels:
       - cast to float32
       - replace NaN/Inf
-      - clamp inputs/labels into [0, 1]
+      - clamp ONLY labels (masks) to [0, 1]
+      - inputs are NOT clamped (to preserve z-scored negative values)
     """
     x = x.to(dtype=torch.float32)
     y = y.to(dtype=torch.float32)
-    x = _nan_to_num_torch(x, 0.0).clamp_(0.0, 1.0)
+    x = _nan_to_num_torch(x, 0.0)  # do NOT clamp z-scored inputs
+    # Optional stability clip if you see extreme outliers:
+    # x = x.clamp_(-5.0, 5.0)
     y = _nan_to_num_torch(y, 0.0).clamp_(0.0, 1.0)
     return x, y
+
+
+def _force_mask_nchw(y: torch.Tensor) -> torch.Tensor:
+    """
+    Ensure masks are shaped (B,1,H,W).
+    Handles:
+      (B,H,W,1) -> (B,1,H,W)
+      (B,H,W)   -> (B,1,H,W)
+      (B,1,H,W) -> unchanged
+    """
+    if y.ndim == 3:
+        return y.unsqueeze(1)
+    if y.ndim == 4 and y.shape[-1] == 1 and y.shape[1] != 1:
+        return y.permute(0, 3, 1, 2).contiguous()
+    return y
 
 
 # -----------------------------
@@ -326,12 +344,21 @@ def _build_optimizer_and_scheduler(model: nn.Module) -> Tuple[optim.Optimizer, O
         base_lr = float(getattr(config, "tm_lr_backbone"))
     else:
         # project-level factory
+        # project-level factory (respect config)
         optimizer = get_optimizer(
             opt_name,
             getattr(config, "num_epochs", total_epochs),
             getattr(config, "num_training_steps", steps_per_epoch),
             model,
+            lr=lr_tuned,
+            weight_decay=wd_tuned,
+            clipnorm=None,            # training loop already clips
+            internal_schedule=None,   # IMPORTANT if you use OneCycleLR / external schedulers
         )
+
+        # capture per-param-group base lrs (important for models with multiple param groups)
+        base_lrs = [float(g.get("lr", 1e-3)) for g in optimizer.param_groups]
+        base_lr = base_lrs[0]
         # override with config.learning_rate / weight_decay if present
         if lr_tuned is not None or wd_tuned is not None:
             for g in optimizer.param_groups:
@@ -349,9 +376,10 @@ def _build_optimizer_and_scheduler(model: nn.Module) -> Tuple[optim.Optimizer, O
     step_per_batch = False
 
     if sched_name == "onecycle":
+        max_lr = base_lrs if len(base_lrs) > 1 else base_lr
         scheduler = OneCycleLR(
             optimizer,
-            max_lr=base_lr,
+            max_lr=max_lr,
             steps_per_epoch=steps_per_epoch,
             epochs=total_epochs,
         )
@@ -479,6 +507,7 @@ class HeavyMetricsEvaluator:
                     self.device, non_blocking=True
                 ).contiguous(memory_format=torch.channels_last)
                 y_true = y_true.to(self.device, non_blocking=True)
+                y_true = _force_mask_nchw(y_true)
                 # sanitize inputs/labels like in tuning
                 x, y_true = _sanitize_pair_xy(x, y_true)
 
@@ -757,6 +786,7 @@ def _fit_model(
                 device, non_blocking=True
             ).contiguous(memory_format=torch.channels_last)
             y = y.to(device, non_blocking=True)
+            y = _force_mask_nchw(y)
 
             # sanitize x,y like tuning
             x, y = _sanitize_pair_xy(x, y)
@@ -943,6 +973,7 @@ def _fit_model(
                         device, non_blocking=True
                     ).contiguous(memory_format=torch.channels_last)
                     y = y.to(device, non_blocking=True)
+                    y = _force_mask_nchw(y)
 
                     # sanitize x,y like tuning
                     x, y = _sanitize_pair_xy(x, y)

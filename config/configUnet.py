@@ -15,7 +15,7 @@ class Configuration:
     def __init__(self):
         # --------- RUN NAME ---------
         # Modality to be run can be AE, PS or S2
-        self.modality = "S2"
+        self.modality = "AE"
         
         self.run_name = f"UNETx{self.modality}"
 
@@ -26,7 +26,9 @@ class Configuration:
             f"/isipd/projects/p_planetdw/data/methods_test/training/{self.modality}"
         )
         self.training_area_fn = "training_areas.gpkg"
-        self.training_polygon_fn = "labels_S2.gpkg"
+        self.training_polygon_fn = f"labels_{self.modality}.gpkg"
+        self.focus_areas = f"focus_areas_{self.modality}.gpkg"
+
         self.training_image_dir = (
             f"/isipd/projects/p_planetdw/data/methods_test/training_images/{self.modality}"
         )
@@ -35,11 +37,17 @@ class Configuration:
         self.preprocessed_base_dir = (
             f"/isipd/projects/p_planetdw/data/methods_test/preprocessed"
         )
+
+        self.training_data_base_dir = (
+            f"/isipd/projects/p_planetdw/data/methods_test/training_data/"
+        )
         # Keep explicit override exactly as provided
         self.preprocessed_dir = (
-            "/isipd/projects/p_planetdw/data/methods_test/preprocessed/"
-            "20251124-1334_UNETxS2"
+            "/isipd/projects/p_planetdw/data/methods_test/training_data/"
+            "20251226-0433_UNETxAE"
         )
+
+
 
         # Checkpointing / logs / results
         self.continue_model_path = None
@@ -66,29 +74,31 @@ class Configuration:
         self.val_ratio = 0.2
         # train is 1 - test_ratio - val_ratio
 
+        self.split_list_path = None  # Optional path to predefined train/val/test split lists
+
         # -------- TRAINING (CORE) --------
-        self.patch_size = (32, 32)
-        self.tune_patch_h = 32
-        self.tune_patch_w = 32
-        self.tversky_alphabeta = (0.6, 0.4)
-        self.dilation_rate = 1
+        self.patch_size = (256, 256)
+        self.tune_patch_h = 256
+        self.tune_patch_w = 256
+        self.tversky_alphabeta = (0.55, 0.45) #alpha controls penalty for false negatives, beta for false positives
+        self.dilation_rate = 2
         self.dropout = 0.1
         # Tuned UNet architecture / regularization params 
-        self.layer_count = 64      
-        self.l2_weight = 0.0001       
+        self.layer_count = 96     
+        self.l2_weight = 1e-5       
         self.model_name = self.run_name
 
         # ------ OPTIM / SCHED / EPOCHS ------
         self.loss_fn = "tversky"
-        self.optimizer_fn = "adam"
+        self.optimizer_fn = "adamw"
    
-        self.learning_rate = 2.6e-5
-        self.weight_decay = 1e-5
+        self.learning_rate = 0.0004
+        self.weight_decay = 4.8e-6
         self.scheduler = "onecycle"
         
         self.train_batch_size = 32
-        self.num_epochs = 10
-        self.num_training_steps = 100
+        self.num_epochs = 100
+        self.num_training_steps = 500
         self.num_validation_images = 50
 
         # ------ EMA ------
@@ -108,8 +118,8 @@ class Configuration:
 
         # ------ AUG / SAMPLING / DATALOADER ------
         self.augmenter_strength = 0.7
-        self.min_pos_frac = 0.05
-        self.pos_ratio = 0.5
+        self.min_pos_frac = 0.001
+        self.pos_ratio = None
         self.patch_stride = None
         self.fit_workers = 8
         self.steps_per_execution = 1
@@ -144,7 +154,7 @@ class Configuration:
         self.output_dtype = "bool"
 
         # ------ GPU / ENV ------
-        self.selected_GPU = 0
+        self.selected_GPU = 7
         gdal.UseExceptions()
         gdal.SetCacheMax(32000000000)
         gdal.SetConfigOption("CPL_LOG", "/dev/null")

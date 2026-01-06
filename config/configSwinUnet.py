@@ -15,7 +15,7 @@ class Configuration:
     def __init__(self):
         # --------- RUN NAME ---------
         # Modality to be run can be AE, PS or S2
-        self.modality = "S2"
+        self.modality = "AE"
 
         self.run_name = f"SWINx{self.modality}"
 
@@ -37,7 +37,7 @@ class Configuration:
         )
         self.preprocessed_dir = (
             "/isipd/projects/p_planetdw/data/methods_test/preprocessed/"
-            "20251124-1334_UNETxS2"
+            "20251226-0433_UNETxAE"
         )
 
         # Checkpointing / logs / results (model + modality subfolders)
@@ -70,10 +70,10 @@ class Configuration:
         # train is 1 - test_ratio - val_ratio
 
         # -------- TRAINING (CORE) --------
-        self.patch_size = (256, 256)
+        self.patch_size = (448, 448)
         self.tune_patch_h = None
         self.tune_patch_w = None
-        self.tversky_alphabeta = (0.5, 0.5)
+        self.tversky_alphabeta = (0.6, 0.4)
         self.model_name = self.run_name
 
         # ------ OPTIM / SCHED / EPOCHS ------
@@ -81,7 +81,7 @@ class Configuration:
         self.optimizer_fn = "adam"
 
         # These three are used directly in training.py and match tuner names   # NEW
-        self.learning_rate = 1e-3        # NEW: tuned "learning_rate" goes here
+        self.learning_rate = 0.000162        # NEW: tuned "learning_rate" goes here
         self.weight_decay = 1e-5         # NEW: tuned "weight_decay" (for AdamW)
         self.scheduler = "onecycle"      # NEW: tuned "scheduler" ("none"|"cosine"|"onecycle")
 
@@ -107,10 +107,10 @@ class Configuration:
 
         # ------ AUG / SAMPLING / DATALOADER ------
         self.augmenter_strength = 0.7
-        self.min_pos_frac = 0.02
-        self.pos_ratio = 0.5
-        self.patch_stride = 0.3
-        self.fit_workers = 8
+        self.min_pos_frac = 5e-05
+        self.pos_ratio = 0.75
+        #self.patch_stride = 0.3
+        self.fit_workers = 0
         self.steps_per_execution = 1
 
         # ------ EVALUATION ------
@@ -132,7 +132,7 @@ class Configuration:
         self.swin_base_channels = 96
         self.use_imagenet_weights = True
         # Tuned Swin stochastic depth rate (used in training._build_model_swin)  # NEW
-        self.drop_path = 0.1   # NEW: tuned "drop_path" goes here
+        self.drop_path = 0.0   # NEW: tuned "drop_path" goes here
 
         # --- POSTPROCESSING (kept for downstream scripts) ---
         self.create_polygons = True
@@ -152,7 +152,7 @@ class Configuration:
         self.output_dtype = "bool"
 
         # ------ GPU / ENV ------
-        self.selected_GPU = 3
+        self.selected_GPU = 6
         gdal.UseExceptions()
         gdal.SetCacheMax(32000000000)
         gdal.SetConfigOption("CPL_LOG", "/dev/null")

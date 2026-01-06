@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import math
-from typing import Optional
+from typing import Optional, Union
 
 import torch
 import torch.optim as optim
@@ -13,33 +13,32 @@ from torch.optim import Optimizer
 class WarmUpCosineDecay:
     """
     Warmup to base_lr, then cosine decay to base_lr * final_lr_scale.
-    Matches TF's CosineDecay with alpha=final_lr_scale and a linear warmup.
-
-    LR(step) =
-      if step < warmup_steps:
-          base_lr * step / warmup_steps
-      else:
-          base_lr * [ alpha + (1 - alpha) * 0.5 * (1 + cos(pi * (step - warmup_steps) / decay_steps)) ]
+    Linear warmup + cosine decay similar to TF CosineDecay(alpha=final_lr_scale).
     """
 
     def __init__(
         self,
         base_lr: float,
         total_steps: int,
-        warmup_steps: int,
+        warmup_steps: int = 1000,
         final_lr_scale: float = 0.1,
-    ) -> None:
+    ):
         self.base_lr = float(base_lr)
         self.total_steps = int(total_steps)
         self.warmup_steps = int(warmup_steps)
-        self.alpha = float(final_lr_scale)
+        self.final_lr_scale = float(final_lr_scale)
+
         self.decay_steps = max(1, self.total_steps - self.warmup_steps)
+        self.alpha = self.final_lr_scale
 
     def __call__(self, step: int) -> float:
         step = int(step)
-        if step < self.warmup_steps:
-            return self.base_lr * (step / max(1, self.warmup_steps))
 
+        # Linear warmup
+        if step < self.warmup_steps:
+            return float(self.base_lr * (step + 1) / max(1, self.warmup_steps))
+
+        # Cosine decay to alpha * base_lr
         t = step - self.warmup_steps
         cosine = 0.5 * (1.0 + math.cos(math.pi * t / self.decay_steps))
         lr = self.base_lr * (self.alpha + (1.0 - self.alpha) * cosine)
@@ -48,17 +47,14 @@ class WarmUpCosineDecay:
 
 class _AdamWithHooks(optim.Adam):
     """
-    Adam that supports:
-      - global-norm gradient clipping (clipnorm)
-      - per-step LR scheduling via a callable schedule(step)->lr
-
-    No changes are required in the training loop; the optimizer updates LR internally.
+    Adam with optional global-norm clipping and optional internal per-step LR schedule.
+    IMPORTANT: This does NOT change LR unless schedule is provided.
     """
 
     def __init__(
         self,
         params,
-        lr: float = 3e-4,
+        lr: float,
         betas=(0.9, 0.999),
         eps: float = 1e-8,
         weight_decay: float = 0.0,
@@ -69,25 +65,25 @@ class _AdamWithHooks(optim.Adam):
     ):
         super().__init__(
             params,
-            lr=lr,
+            lr=float(lr),
             betas=betas,
-            eps=eps,
-            weight_decay=weight_decay,
+            eps=float(eps),
+            weight_decay=float(weight_decay),
             amsgrad=amsgrad,
         )
         self._global_step = 0
-        self._clipnorm = float(clipnorm) if clipnorm else None
+        self._clipnorm = float(clipnorm) if (clipnorm is not None and float(clipnorm) > 0) else None
         self._schedule = schedule
 
     @torch.no_grad()
     def step(self, closure=None):
-        # Update learning rate from schedule (before applying the step)
+        # Only touch LR if schedule is explicitly provided
         if self._schedule is not None:
             new_lr = self._schedule(self._global_step)
             for group in self.param_groups:
                 group["lr"] = new_lr
 
-        # Global-norm gradient clipping to match Keras clipnorm behavior
+        # Optional clipping (if you enable it here; don’t double-clip in training loop)
         if self._clipnorm is not None:
             for group in self.param_groups:
                 params = [p for p in group["params"] if p.grad is not None]
@@ -100,20 +96,26 @@ class _AdamWithHooks(optim.Adam):
 
 
 class _NAdamWithClip(optim.NAdam):
-    """NAdam with optional global-norm clipping."""
+    """NAdam with optional global-norm clipping (no internal schedule)."""
 
     def __init__(
         self,
         params,
-        lr: float = 2e-3,
+        lr: float,
         betas=(0.9, 0.999),
         eps: float = 1e-8,
         weight_decay: float = 0.0,
         *,
         clipnorm: Optional[float] = None,
     ):
-        super().__init__(params, lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
-        self._clipnorm = float(clipnorm) if clipnorm else None
+        super().__init__(
+            params,
+            lr=float(lr),
+            betas=betas,
+            eps=float(eps),
+            weight_decay=float(weight_decay),
+        )
+        self._clipnorm = float(clipnorm) if (clipnorm is not None and float(clipnorm) > 0) else None
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -132,14 +134,20 @@ class _AdadeltaWithClip(optim.Adadelta):
         self,
         params,
         lr: float = 1.0,
-        rho: float = 0.95,
-        eps: float = 1e-7,
+        rho: float = 0.9,
+        eps: float = 1e-6,
         weight_decay: float = 0.0,
         *,
         clipnorm: Optional[float] = None,
     ):
-        super().__init__(params, lr=lr, rho=rho, eps=eps, weight_decay=weight_decay)
-        self._clipnorm = float(clipnorm) if clipnorm else None
+        super().__init__(
+            params,
+            lr=float(lr),
+            rho=float(rho),
+            eps=float(eps),
+            weight_decay=float(weight_decay),
+        )
+        self._clipnorm = float(clipnorm) if (clipnorm is not None and float(clipnorm) > 0) else None
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -167,13 +175,13 @@ class _AdagradWithClip(optim.Adagrad):
     ):
         super().__init__(
             params,
-            lr=lr,
-            lr_decay=lr_decay,
-            weight_decay=weight_decay,
-            initial_accumulator_value=initial_accumulator_value,
-            eps=eps,
+            lr=float(lr),
+            lr_decay=float(lr_decay),
+            weight_decay=float(weight_decay),
+            initial_accumulator_value=float(initial_accumulator_value),
+            eps=float(eps),
         )
-        self._clipnorm = float(clipnorm) if clipnorm else None
+        self._clipnorm = float(clipnorm) if (clipnorm is not None and float(clipnorm) > 0) else None
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -186,7 +194,7 @@ class _AdagradWithClip(optim.Adagrad):
 
 
 def _infer_weight_decay(model) -> float:
-    """Use model.l2_weight if available (UNetAttention sets this)."""
+    """Fallback if caller doesn't pass weight_decay explicitly."""
     if model is None:
         return 0.0
     wd = getattr(model, "l2_weight", 0.0)
@@ -197,98 +205,126 @@ def _infer_weight_decay(model) -> float:
 
 
 def get_optimizer(
-    optimizer_fn,
+    optimizer_fn: Union[str, Optimizer],
     num_epochs: Optional[int] = None,
     steps_per_epoch: Optional[int] = None,
     model=None,
+    *,
+    lr: Optional[float] = None,
+    weight_decay: Optional[float] = None,
+    clipnorm: Optional[float] = None,
+    # Off by default. Enable ONLY if you want the optimizer to own LR scheduling.
+    internal_schedule: Optional[str] = None,  # "warmup_cosine"
+    warmup_steps: int = 1000,
+    final_lr_scale: float = 0.1,
 ) -> Optimizer:
     """
-    Wrapper to allow dynamic optimizer setup with optional learning rate schedule.
-    Mirrors the original Keras behavior and defaults.
+    Optimizer factory that respects config-provided lr / weight_decay / clipnorm.
 
-    Args:
-        optimizer_fn: one of {"adam", "adam1", "adaDelta", "nadam", "adagrad"}
-                      or an Optimizer instance.
-        num_epochs: total epochs for scheduling (optional).
-        steps_per_epoch: steps per epoch for scheduling (optional).
-        model: torch.nn.Module; if it defines 'l2_weight', it's used as weight_decay.
+    Default behavior:
+      - No internal LR schedule (so external schedulers like OneCycleLR work correctly)
+      - No implicit clipnorm (so training.py can control it via config.clip_norm)
 
-    Returns:
-        torch.optim.Optimizer
+    To enable internal warmup+cosine (not recommended if you already use OneCycleLR):
+      internal_schedule="warmup_cosine"
     """
+
     # If user passes a pre-built optimizer, return it
     if isinstance(optimizer_fn, Optimizer):
         return optimizer_fn
 
-    weight_decay = _infer_weight_decay(model)
+    if model is None:
+        raise ValueError("get_optimizer(...): 'model' must be provided when optimizer_fn is a string.")
 
-    # Adam with optional warmup+cosine and clipnorm=1.0
-    if optimizer_fn == "adam":
-        base_lr = 3e-4
-        schedule = None
-        if num_epochs and steps_per_epoch:
+    name = str(optimizer_fn).strip().lower()
+
+    # Respect explicit values; otherwise fallback
+    base_lr = float(lr) if lr is not None else None
+    wd = float(weight_decay) if weight_decay is not None else _infer_weight_decay(model)
+    cn = float(clipnorm) if (clipnorm is not None and float(clipnorm) > 0) else None
+
+    # Optional internal schedule
+    schedule = None
+    if internal_schedule is not None:
+        sched_name = str(internal_schedule).strip().lower()
+        if sched_name in ("warmup_cosine", "warmupcosine", "warmup+cosine"):
+            if base_lr is None:
+                raise ValueError("internal_schedule requires lr=... (base_lr).")
+            if not (num_epochs and steps_per_epoch):
+                raise ValueError("warmup_cosine needs num_epochs and steps_per_epoch.")
             total_steps = int(num_epochs) * int(steps_per_epoch)
             schedule = WarmUpCosineDecay(
                 base_lr=base_lr,
                 total_steps=total_steps,
-                warmup_steps=1000,
-                final_lr_scale=0.1,
+                warmup_steps=warmup_steps,
+                final_lr_scale=final_lr_scale,
             )
+        else:
+            raise ValueError(f"Unknown internal_schedule: {internal_schedule}")
+
+    # ---- Optimizers ----
+    if name in ("adam", "adam1"):
+        if base_lr is None:
+            base_lr = 3e-4
+        # "adam1" historically = same Adam but no schedule
+        schedule_for_adam = schedule if name == "adam" else None
         return _AdamWithHooks(
-            model.parameters() if model is not None else [],
+            model.parameters(),
             lr=base_lr,
             betas=(0.9, 0.999),
             eps=1e-8,
-            weight_decay=weight_decay,
-            clipnorm=1.0,
-            schedule=schedule,
+            weight_decay=wd,
+            clipnorm=cn,
+            schedule=schedule_for_adam,
         )
 
-    elif optimizer_fn == "adam1":
-        # same hyperparams as your predefined 'adam'
-        return _AdamWithHooks(
-            model.parameters() if model is not None else [],
-            lr=3e-4,
+    if name == "adamw":
+        if base_lr is None:
+            base_lr = 3e-4
+        # No hidden schedule/clipping; use training loop + torch schedulers
+        return optim.AdamW(
+            model.parameters(),
+            lr=base_lr,
             betas=(0.9, 0.999),
             eps=1e-8,
-            weight_decay=weight_decay,
-            clipnorm=1.0,
-            schedule=None,
+            weight_decay=wd,
         )
 
-    elif optimizer_fn == "adaDelta":
+    if name in ("adadelta", "adadelta".lower(), "adadelta".upper(), "adadelta".title(), "adadelta".capitalize(), "adadelta".swapcase(), "adadelta"):
+        if base_lr is None:
+            base_lr = 1.0
         return _AdadeltaWithClip(
-            model.parameters() if model is not None else [],
-            lr=1.0,
+            model.parameters(),
+            lr=base_lr,
             rho=0.95,
             eps=1e-7,
-            weight_decay=0.0,
-            clipnorm=None,
+            weight_decay=wd,
+            clipnorm=cn,
         )
 
-    elif optimizer_fn == "nadam":
-        # PyTorch NAdam doesn't have schedule_decay; default behavior is fine.
+    if name == "nadam":
+        if base_lr is None:
+            base_lr = 2e-3
         return _NAdamWithClip(
-            model.parameters() if model is not None else [],
-            lr=2e-3,
+            model.parameters(),
+            lr=base_lr,
             betas=(0.9, 0.999),
             eps=1e-8,
-            weight_decay=weight_decay,
-            clipnorm=None,
+            weight_decay=wd,
+            clipnorm=cn,
         )
 
-    elif optimizer_fn == "adagrad":
+    if name == "adagrad":
+        if base_lr is None:
+            base_lr = 1e-2
         return _AdagradWithClip(
-            model.parameters() if model is not None else [],
-            lr=1e-2,
+            model.parameters(),
+            lr=base_lr,
             lr_decay=0.0,
-            weight_decay=0.0,
+            weight_decay=wd,
             initial_accumulator_value=0.0,
             eps=1e-10,
-            clipnorm=None,
+            clipnorm=cn,
         )
 
-    # Fallback: if a string we don't know, raise, or if it's an object, return it
-    if isinstance(optimizer_fn, str):
-        raise ValueError(f"Unknown optimizer name: {optimizer_fn}")
-    return optimizer_fn
+    raise ValueError(f"Unknown optimizer name: {optimizer_fn}")

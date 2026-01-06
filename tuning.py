@@ -71,7 +71,7 @@ def _sanitize_pair_xy(x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, t
     x = x.to(dtype=torch.float32)
     y = y.to(dtype=torch.float32)
     # Inputs/labels are safe to clamp in-place (no grad needed)
-    x = _nan_to_num_torch(x, 0.0).clamp_(0.0, 1.0)
+    x = _nan_to_num_torch(x, 0.0)#.clamp_(0.0, 1.0)
     y = _nan_to_num_torch(y, 0.0).clamp_(0.0, 1.0)
     return x, y
 
@@ -269,10 +269,10 @@ def _print_sxs_diff(
 # -----------------------
 def _optimizer_space_hb(trial: "optuna.Trial") -> Tuple[str, float, Optional[float]]:
     opt = trial.suggest_categorical("optimizer", ["adam", "adamw"])
-    lr = trial.suggest_float("learning_rate", 1e-5, 5e-3, log=True)
+    lr = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
     wd = None
     if opt == "adamw":
-        wd = trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)
+        wd = trial.suggest_float("weight_decay", 1e-6, 5e-4, log=True)
     return opt, lr, wd
 
 
@@ -464,7 +464,13 @@ def _build_terramind(
     if "decoder" in sig.parameters and dec is not None:
         kwargs["decoder"] = dec
     if "decoder_channels" in sig.parameters and dec_ch is not None:
-        kwargs["decoder_channels"] = int(dec_ch)
+        # UNetDecoder requires a list, other decoders expect an int
+        if dec == "UNetDecoder":
+            # Create a list with decreasing channels: [dec_ch, dec_ch//2, dec_ch//4, dec_ch//8]
+            base_ch = int(dec_ch)
+            kwargs["decoder_channels"] = [base_ch, base_ch // 2, base_ch // 4, base_ch // 8]
+        else:
+            kwargs["decoder_channels"] = int(dec_ch)
     if "head_dropout" in sig.parameters and head_do is not None:
         kwargs["head_dropout"] = float(head_do)
     return TerraMind(**kwargs)
@@ -511,12 +517,11 @@ def _compile_with_optimizer(
                 _default(getattr(conf, "num_epochs", max_epochs), max_epochs),
                 _default(getattr(conf, "num_training_steps", steps_per_epoch), steps_per_epoch),
                 model,
+                lr=float(lr),
+                weight_decay=(float(wd) if wd is not None else None),
+                clipnorm=None,
+                internal_schedule=None,
             )
-            if hasattr(opt_obj, "param_groups"):
-                for g in opt_obj.param_groups:
-                    g["lr"] = float(lr)
-                    if opt_name == "adamw" and wd is not None:
-                        g["weight_decay"] = float(wd)
         except Exception:
             opt_obj = None
 
@@ -528,7 +533,11 @@ def _compile_with_optimizer(
                     params, lr=float(lr), weight_decay=float(_default(wd, 1e-6))
                 )
             else:
-                opt_obj = torch.optim.Adam(params, lr=float(lr))
+                opt_obj = torch.optim.Adam(
+                    params,
+                    lr=float(lr),
+                    weight_decay=float(_default(wd, 0.0)),
+                )
 
     # Tversky loss (alpha + beta = 1)
     alpha = float(tversky_alpha) if tversky_alpha is not None else 0.7
@@ -545,8 +554,13 @@ def _compile_with_optimizer(
     step_per_batch = False
     scheduler_name = (scheduler_name or "none").lower()
     if scheduler_name == "onecycle":
+        base_lrs = [float(g.get("lr", lr)) for g in opt_obj.param_groups]
+        max_lr = base_lrs if len(base_lrs) > 1 else base_lrs[0]
         scheduler = OneCycleLR(
-            opt_obj, max_lr=float(lr), steps_per_epoch=int(steps_per_epoch), epochs=int(max_epochs)
+            opt_obj,
+            max_lr=max_lr,
+            steps_per_epoch=int(steps_per_epoch),
+            epochs=int(max_epochs),
         )
         step_per_batch = True
     elif scheduler_name == "cosine":
@@ -574,7 +588,9 @@ def _run_phase(
     frames = get_all_frames(conf)
 
     # cache dataloaders for (patch_h, patch_w, aug, minpos, pos_ratio) combos (batch fixed)
+    # Loader cache + restoration tracking
     dl_cache: Dict[Tuple[int, int, float, float, float], Tuple[Iterable, Iterable]] = {}
+    _saved_conf_state: Dict[str, Any] = {}  # Track original conf values for final restoration
 
     def _get_loaders_for(
         ph: int,
@@ -591,14 +607,23 @@ def _run_phase(
             float(pos_ratio) if pos_ratio is not None else -1.0,
         )
         if key in dl_cache:
+            # CACHE HIT: also set conf.* to match cached values so dynamic sampling stays consistent
+            conf.train_batch_size = int(tune_batch)
+            conf.patch_size = (int(ph), int(pw))
+            conf.augmenter_strength = float(aug)
+            conf.min_pos_frac = float(minpos)
+            conf.pos_ratio = pos_ratio
             return dl_cache[key]
 
-        old_bs = getattr(conf, "train_batch_size", None)
-        old_patch = getattr(conf, "patch_size", None)
-        old_aug = getattr(conf, "augmenter_strength", None)
-        old_minpos = getattr(conf, "min_pos_frac", None)
-        old_posratio = getattr(conf, "pos_ratio", None)
+        # Save original values ONCE (first call)
+        if not _saved_conf_state:
+            _saved_conf_state["train_batch_size"] = getattr(conf, "train_batch_size", None)
+            _saved_conf_state["patch_size"] = getattr(conf, "patch_size", None)
+            _saved_conf_state["augmenter_strength"] = getattr(conf, "augmenter_strength", None)
+            _saved_conf_state["min_pos_frac"] = getattr(conf, "min_pos_frac", None)
+            _saved_conf_state["pos_ratio"] = getattr(conf, "pos_ratio", None)
 
+        # Set conf.* for this trial's sampled values
         conf.train_batch_size = int(tune_batch)
         conf.patch_size = (int(ph), int(pw))
         conf.augmenter_strength = float(aug)
@@ -607,15 +632,8 @@ def _run_phase(
 
         train_iter, val_iter, _ = create_train_val_datasets(frames)
 
-        if old_bs is not None:
-            conf.train_batch_size = old_bs
-        if old_patch is not None:
-            conf.patch_size = old_patch
-        if old_aug is not None:
-            conf.augmenter_strength = old_aug
-        if old_minpos is not None:
-            conf.min_pos_frac = old_minpos
-        conf.pos_ratio = old_posratio
+        # DO NOT RESTORE conf.* immediately - keep sampled values active for the trial
+        # Restoration will happen at end of phase
 
         dl_cache[key] = (train_iter, val_iter)
 
@@ -631,6 +649,13 @@ def _run_phase(
                 gc.collect()
 
         return dl_cache[key]
+
+    def _restore_conf():
+        """Restore original conf values after phase completes."""
+        if _saved_conf_state:
+            for k, v in _saved_conf_state.items():
+                setattr(conf, k, v)
+            _saved_conf_state.clear()
 
     # Study
     direction = "maximize"
@@ -834,7 +859,7 @@ def _run_phase(
 
         # Tversky loss alpha (beta = 1 - alpha)
         if phase == "HB":
-            tv_alpha = trial.suggest_float("tversky_alpha", 0.3, 0.9)
+            tv_alpha = trial.suggest_float("tversky_alpha", 0.55, 0.95)
         else:
             tv_alpha = float(fixed.get("tversky_alpha", 0.7))
 
@@ -844,11 +869,64 @@ def _run_phase(
         aug = hb_data_hp["augmenter_strength"]
 
         if phase == "HB":
-            minpos = trial.suggest_categorical("min_pos_frac", [0.0, 0.01, 0.02, 0.05, 0.1])
-            pos_ratio = trial.suggest_categorical("pos_ratio", [None, 0.1, 0.25, 0.5])
+            minpos = trial.suggest_categorical("min_pos_frac", [0.0, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3])
+            pos_ratio = trial.suggest_categorical("pos_ratio", [None, 0.25, 0.5, 0.75])
         else:
             minpos = hb_data_hp["min_pos_frac"]
             pos_ratio = hb_data_hp.get("pos_ratio", getattr(conf, "pos_ratio", None))
+
+        # Print trial configuration summary
+        print(f"\n{'='*80}")
+        print(f"TRIAL {trial.number} CONFIGURATION ({model_key.upper()} / {phase})")
+        print(f"{'='*80}")
+        
+        # Model architecture parameters
+        print(f"\n[MODEL ARCHITECTURE]")
+        if model_key == "unet":
+            print(f"  dilation_rate    : {dilation}")
+            print(f"  layer_count      : {layer_cnt}")
+            print(f"  l2_weight        : {l2w}")
+            print(f"  dropout          : {drp}")
+        elif model_key == "swin":
+            if phase == "HB":
+                print(f"  C                : {C}")
+                print(f"  drop_path        : {drop_path}")
+            else:
+                print(f"  C                : {hb_data_hp['fixed']['C']}")
+                print(f"  drop_path        : {hb_data_hp['fixed']['drop_path']}")
+            print(f"  patch_size       : {hb_data_hp['fixed'].get('patch_size', 'N/A')}")
+            print(f"  window_size      : {hb_data_hp['fixed'].get('window_size', 'N/A')}")
+        else:  # tm
+            print(f"  tm_decoder       : {dec}")
+            print(f"  tm_decoder_ch    : {dec_ch}")
+            print(f"  tm_head_dropout  : {head_do}")
+            print(f"  tm_freeze_epochs : {freeze_ep}")
+            print(f"  tm_lr_backbone   : {lr_backbone:.2e}")
+            print(f"  tm_lr_head_mult  : {lr_head_mult}")
+            print(f"  tm_weight_decay  : {wdtm:.2e}")
+        
+        # Optimizer & scheduler
+        print(f"\n[OPTIMIZER & SCHEDULER]")
+        print(f"  optimizer        : {opt}")
+        print(f"  learning_rate    : {lr:.2e}")
+        if wd is not None:
+            print(f"  weight_decay     : {wd:.2e}")
+        print(f"  scheduler        : {sched}")
+        
+        # Loss function
+        print(f"\n[LOSS FUNCTION]")
+        print(f"  tversky_alpha    : {tv_alpha:.4f}")
+        print(f"  tversky_beta     : {1.0 - tv_alpha:.4f}")
+        
+        # Data parameters
+        print(f"\n[DATA PARAMETERS]")
+        print(f"  patch_size       : {patch_h}x{patch_w}")
+        print(f"  augmentation     : {aug}")
+        print(f"  min_pos_frac     : {minpos}")
+        print(f"  pos_ratio        : {pos_ratio}")
+        print(f"  batch_size       : {tune_batch}")
+        
+        print(f"{'='*80}\n")
 
         # Propagate sampled architecture / TM-specific params into conf for this trial
         if model_key == "unet":
@@ -869,10 +947,74 @@ def _run_phase(
 
         # Build model
         if model_key == "unet":
+            # Try to pass layer_count, dropout, l2_weight if UNet supports them
+            _in_ch = len(getattr(conf, "channel_list", []))
+            _shape_in = [conf.train_batch_size, patch_h, patch_w, _in_ch]
+            _shape_out = [_in_ch]
+            _dil = getattr(conf, "dilation_rate", 1)
+            
+            # Introspect UNet signature to see what it accepts
+            unet_sig = inspect.signature(UNet)
+            unet_params = set(unet_sig.parameters.keys())
+            
+            # Try common names for these parameters
+            layer_count_aliases = ["layer_count", "base_filters", "base_channels", "filters", "n_filters", "features", "start_filters"]
+            dropout_aliases = ["dropout", "dropout_rate", "p_dropout"]
+            l2_weight_aliases = ["l2_weight", "l2", "l2_reg", "l2_lambda", "weight_decay"]
+            
+            kwargs = {}
+            not_passed = []
+            
+            # Try to pass layer_count
+            layer_count_val = getattr(conf, "layer_count", None)
+            if layer_count_val is not None:
+                found = False
+                for alias in layer_count_aliases:
+                    if alias in unet_params:
+                        kwargs[alias] = int(layer_count_val)
+                        found = True
+                        break
+                if not found and ("kwargs" in unet_params or "**" in str(unet_sig)):
+                    kwargs["layer_count"] = int(layer_count_val)
+                    found = True
+                if not found:
+                    not_passed.append(f"layer_count={layer_count_val}")
+            
+            # Try to pass dropout
+            dropout_val = getattr(conf, "dropout", None)
+            if dropout_val is not None:
+                found = False
+                for alias in dropout_aliases:
+                    if alias in unet_params:
+                        kwargs[alias] = float(dropout_val)
+                        found = True
+                        break
+                if not found and ("kwargs" in unet_params or "**" in str(unet_sig)):
+                    kwargs["dropout"] = float(dropout_val)
+                    found = True
+                if not found:
+                    not_passed.append(f"dropout={dropout_val}")
+            
+            # Try to pass l2_weight
+            l2_weight_val = getattr(conf, "l2_weight", None)
+            if l2_weight_val is not None:
+                found = False
+                for alias in l2_weight_aliases:
+                    if alias in unet_params:
+                        kwargs[alias] = float(l2_weight_val)
+                        found = True
+                        break
+                if not found and ("kwargs" in unet_params or "**" in str(unet_sig)):
+                    kwargs["l2_weight"] = float(l2_weight_val)
+                    found = True
+                if not found:
+                    not_passed.append(f"l2_weight={l2_weight_val}")
+            
             model = UNet(
                 [conf.train_batch_size, patch_h, patch_w, len(getattr(conf, "channel_list", []))],
                 [len(getattr(conf, "channel_list", []))],
                 getattr(conf, "dilation_rate", 1),
+                **kwargs
             )
 
         elif model_key == "swin":
@@ -948,6 +1090,9 @@ def _run_phase(
     except Exception:
         pass
     gc.collect()
+    
+    # Restore original conf values after phase completes
+    _restore_conf()
 
     return best_params, study
 
@@ -968,21 +1113,33 @@ def _tune_chained(
     print("\nStarting chained tuning (HyperBand + Bayesian).")
     _seed(_default(getattr(config, "seed", None), 42))
 
-    # Budgets
-    hb_epochs = _default(getattr(config, "tune_num_epochs", None), 20)
-    bo_epochs = _default(getattr(config, "tune_num_epochs_bo", None), hb_epochs)
-    steps = _default(
-        getattr(config, "tune_steps_per_epoch", None),
-        min(100, _default(getattr(config, "num_training_steps", 100), 100)),
-    )
-    val_steps = _default(
-        getattr(config, "tune_validation_steps", None),
-        min(50, _default(getattr(config, "num_validation_images", 50), 50)),
-    )
+    # Budgets - use better defaults for tuning if None
+    tune_epochs_raw = getattr(config, "tune_num_epochs", None)
+    tune_epochs_bo_raw = getattr(config, "tune_num_epochs_bo", None)
+    tune_steps_raw = getattr(config, "tune_steps_per_epoch", None)
+    tune_val_steps_raw = getattr(config, "tune_validation_steps", None)
+    
+    # Use tuning-friendly defaults if None
+    hb_epochs = _default(tune_epochs_raw, 10)  # Reduced from 20 for faster tuning
+    bo_epochs = _default(tune_epochs_bo_raw, hb_epochs if tune_epochs_bo_raw is None else 15)
+    steps = _default(tune_steps_raw, 200)  # Increased from 100 for better convergence signals
+    val_steps = _default(tune_val_steps_raw, 100)  # Increased from 50
+    
     tune_batch = _default(
         getattr(config, "tune_batch_size", None),
         max(8, _default(getattr(config, "train_batch_size", 8), 8)),
     )
+
+    # WARN if using defaults for critical budgets
+    if tune_epochs_raw is None or tune_steps_raw is None or tune_val_steps_raw is None:
+        print("\n" + "="*80)
+        print("⚠️  WARNING: Tuning budget parameters not set or None in config!")
+        print(f"⚠️  tune_num_epochs={tune_epochs_raw} -> using {hb_epochs}")
+        print(f"⚠️  tune_num_epochs_bo={tune_epochs_bo_raw} -> using {bo_epochs}")
+        print(f"⚠️  tune_steps_per_epoch={tune_steps_raw} -> using {steps}")
+        print(f"⚠️  tune_validation_steps={tune_val_steps_raw} -> using {val_steps}")
+        print("⚠️  Set these in your config for explicit control!")
+        print("="*80 + "\n")
 
     logs_dir = _default(getattr(config, "logs_dir", "./logs"), "./logs")
     key = (

@@ -8,6 +8,18 @@ import torch.nn.functional as F
 
 _EPS = 1e-6
 
+# --- Optional but strongly recommended for correct, stable surface distances ---
+try:
+    import numpy as np
+    from scipy.ndimage import binary_erosion, distance_transform_edt
+
+    _HAS_SCIPY = True
+except Exception:  # pragma: no cover
+    _HAS_SCIPY = False
+    np = None  # type: ignore[assignment]
+    binary_erosion = None  # type: ignore[assignment]
+    distance_transform_edt = None  # type: ignore[assignment]
+
 
 def _ensure_nchw_1(yt: torch.Tensor, yp: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
@@ -44,16 +56,24 @@ def _ensure_nchw_1(yt: torch.Tensor, yp: torch.Tensor) -> Tuple[torch.Tensor, to
 
     # If zero channels (shouldn't happen, but be defensive)
     if yp.shape[1] == 0:
-        yp = torch.zeros((yt.shape[0], 1, max(1, yp.shape[-2]), max(1, yp.shape[-1])),
-                         dtype=torch.float32, device=yt.device)
+        yp = torch.zeros(
+            (yt.shape[0], 1, max(1, yp.shape[-2]), max(1, yp.shape[-1])),
+            dtype=torch.float32,
+            device=yt.device,
+        )
 
     # Resize yp spatially if needed
     if yp.shape[-2:] != yt.shape[-2:]:
         if yp.numel() == 0 or yp.shape[-2] == 0 or yp.shape[-1] == 0:
-            yp = torch.zeros((yt.shape[0], 1, yt.shape[-2], yt.shape[-1]),
-                             dtype=torch.float32, device=yt.device)
+            yp = torch.zeros(
+                (yt.shape[0], 1, yt.shape[-2], yt.shape[-1]),
+                dtype=torch.float32,
+                device=yt.device,
+            )
         else:
-            yp = F.interpolate(yp.float(), size=yt.shape[-2:], mode="bilinear", align_corners=False)
+            yp = F.interpolate(
+                yp.float(), size=yt.shape[-2:], mode="bilinear", align_corners=False
+            )
 
     # Clamp probs safely
     yp = yp.float().clamp(_EPS, 1.0 - _EPS)
@@ -106,8 +126,8 @@ def specificity(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = _EPS) -
 
 
 def f1_score(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = _EPS) -> torch.Tensor:
-    d = dice_coef(y_true, y_pred, eps=eps)
-    return d
+    # Note: for binary masks, Dice == F1. Here dice_coef is "soft Dice" if y_pred is probabilistic.
+    return dice_coef(y_true, y_pred, eps=eps)
 
 
 def f_beta(y_true: torch.Tensor, y_pred: torch.Tensor, beta: float = 2.0, eps: float = _EPS) -> torch.Tensor:
@@ -124,7 +144,13 @@ def f_beta(y_true: torch.Tensor, y_pred: torch.Tensor, beta: float = 2.0, eps: f
 
 
 # ----------------- Tversky & helpers -----------------
-def tversky(y_true: torch.Tensor, y_pred: torch.Tensor, alpha: float = 0.5, beta: float = 0.5, eps: float = _EPS) -> torch.Tensor:
+def tversky(
+    y_true: torch.Tensor,
+    y_pred: torch.Tensor,
+    alpha: float = 0.5,
+    beta: float = 0.5,
+    eps: float = _EPS,
+) -> torch.Tensor:
     yt, yp = _ensure_nchw_1(y_true, y_pred)
     p1 = yp
     g1 = yt
@@ -142,198 +168,171 @@ def _tversky_loss(alpha: float, beta: float):
     return _fn
 
 
-# ---- Heavy metrics  ----
-def _extract_boundaries(mask: torch.Tensor, dilation_iters: int = 1) -> torch.Tensor:
-    """
-    Extract boundaries from a binary mask using morphological operations.
-    Returns the boundary pixels (edge between foreground and background).
-    
-    Args:
-        mask: Binary mask of shape (B, 1, H, W) with values in [0, 1]
-        dilation_iters: Number of dilation iterations for boundary thickness
-    
-    Returns:
-        Boundary mask of shape (B, 1, H, W)
-    """
-    # Binarize the mask
-    binary_mask = (mask >= 0.5).float()
-    
-    # Create erosion kernel (3x3)
-    kernel = torch.ones(1, 1, 3, 3, device=mask.device, dtype=mask.dtype)
-    
-    # Erode the mask
-    # Use padding to maintain size
-    eroded = binary_mask
-    for _ in range(dilation_iters):
-        eroded = F.conv2d(eroded, kernel, padding=1)
-        eroded = (eroded >= 9.0).float()  # All 9 neighbors must be 1
-    
-    # Boundary is original mask minus eroded mask
-    boundary = binary_mask - eroded
-    boundary = torch.clamp(boundary, 0.0, 1.0)
-    
-    return boundary
-
-
-def _compute_distance_transform(mask: torch.Tensor, eps: float = _EPS) -> torch.Tensor:
-    """
-    Approximate distance transform using repeated max pooling.
-    For each background pixel, approximates distance to nearest foreground pixel.
-    
-    Args:
-        mask: Binary mask of shape (B, 1, H, W)
-    
-    Returns:
-        Distance map of shape (B, 1, H, W)
-    """
-    binary_mask = (mask >= 0.5).float()
-    distance_map = torch.zeros_like(binary_mask)
-    
-    # Invert mask to get background
-    background = 1.0 - binary_mask
-    
-    # For pixels in the background, compute approximate distance
-    current = binary_mask.clone()
-    dist = 0.0
-    
-    # Iteratively grow the foreground region and track distance
-    for d in range(1, min(mask.shape[-2], mask.shape[-1]) // 2):
-        # Dilate current mask
-        dilated = F.max_pool2d(
-            F.pad(current, (1, 1, 1, 1), mode='constant', value=0),
-            kernel_size=3,
-            stride=1
+# ----------------- Heavy metrics (distance in PIXELS, EDT-based) -----------------
+def _require_scipy() -> None:
+    if not _HAS_SCIPY:
+        raise ImportError(
+            "SciPy is required for EDT-based surface distances (HD95 / ASSD). "
+            "Please install scipy (e.g. `pip install scipy`)."
         )
-        
-        # Find newly covered background pixels
-        newly_covered = (dilated > current) * background
-        
-        # Update distance map for newly covered pixels
-        distance_map = distance_map + newly_covered * float(d)
-        
-        # Update current mask
-        current = dilated
-        
-        # Stop if all background is covered
-        if newly_covered.sum() < eps:
-            break
-    
-    return distance_map
+
+
+def _surface_np(mask_bool: "np.ndarray") -> "np.ndarray":
+    """
+    1-pixel surface of a binary mask (2D), using binary erosion.
+
+    surface = mask XOR erode(mask)
+    """
+    if mask_bool.ndim != 2:
+        raise ValueError(f"mask must be 2D, got {mask_bool.ndim}D")
+    if mask_bool.sum() == 0:
+        return np.zeros_like(mask_bool, dtype=bool)
+
+    # 8-connected erosion with 3x3 structure
+    er = binary_erosion(mask_bool, structure=np.ones((3, 3), dtype=bool), border_value=0)
+    return np.logical_xor(mask_bool, er)
+
+
+def _assd_and_hd95_pixels_2d(
+    gt_bool: "np.ndarray",
+    pr_bool: "np.ndarray",
+) -> Tuple[float, float]:
+    """
+    Compute (ASSD, HD95) in PIXELS for a single 2D pair, using EDT on surfaces.
+
+    HD95 is computed as:
+      HD95 = max(p95(dist(pr_surface -> gt_surface)), p95(dist(gt_surface -> pr_surface)))
+    """
+    s_gt = _surface_np(gt_bool)
+    s_pr = _surface_np(pr_bool)
+
+    H, W = gt_bool.shape
+    diag = float(np.sqrt(H * H + W * W))
+
+    # Edge cases: empty surfaces
+    if s_gt.sum() == 0 and s_pr.sum() == 0:
+        return 0.0, 0.0
+    if s_gt.sum() == 0 or s_pr.sum() == 0:
+        return diag, diag
+
+    # EDT gives distance to nearest "False" (0) pixel; so compute EDT on complement of surface.
+    dt_gt = distance_transform_edt(~s_gt)
+    dt_pr = distance_transform_edt(~s_pr)
+
+    d_pr_to_gt = dt_gt[s_pr]  # distances at predicted surface pixels to nearest GT surface
+    d_gt_to_pr = dt_pr[s_gt]  # distances at GT surface pixels to nearest predicted surface
+
+    # Safety
+    if d_pr_to_gt.size == 0 or d_gt_to_pr.size == 0:
+        return diag, diag
+
+    assd = 0.5 * (float(d_pr_to_gt.mean()) + float(d_gt_to_pr.mean()))
+    hd95 = max(
+        float(np.percentile(d_pr_to_gt, 95)),
+        float(np.percentile(d_gt_to_pr, 95)),
+    )
+    return assd, hd95
 
 
 def nominal_surface_distance(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = _EPS) -> torch.Tensor:
     """
-    Normalized Surface Distance (NSD): Average distance between predicted and true boundaries.
-    Lower is better. Returns normalized value in [0, 1] range.
-    
-    This computes the mean distance from boundary pixels of prediction to boundary pixels of ground truth,
-    and vice versa, then averages both directions.
+    Symmetric mean surface distance (ASSD-like) in PIXELS.
+    Lower is better.
+
+    Uses exact Euclidean Distance Transform (EDT) on 1-pixel surfaces.
+
+    Edge cases:
+      - both masks empty => 0
+      - exactly one mask empty => image diagonal in pixels (penalty)
     """
+    _require_scipy()
     yt, yp = _ensure_nchw_1(y_true, y_pred)
-    
-    # Binarize predictions
-    yp_bin = (yp >= 0.5).float()
-    yt_bin = (yt >= 0.5).float()
-    
-    # Extract boundaries
-    boundary_true = _extract_boundaries(yt_bin, dilation_iters=1)
-    boundary_pred = _extract_boundaries(yp_bin, dilation_iters=1)
-    
-    # If either boundary is empty, return a penalty
-    if boundary_true.sum() < eps or boundary_pred.sum() < eps:
-        return torch.tensor(1.0, device=yt.device, dtype=yt.dtype)
-    
-    # Compute distance transforms
-    dist_true = _compute_distance_transform(yt_bin)
-    dist_pred = _compute_distance_transform(yp_bin)
-    
-    # Average distance from pred boundary to true mask
-    pred_to_true_dist = (boundary_pred * dist_true).sum() / (boundary_pred.sum() + eps)
-    
-    # Average distance from true boundary to pred mask
-    true_to_pred_dist = (boundary_true * dist_pred).sum() / (boundary_true.sum() + eps)
-    
-    # Average both directions and normalize by image diagonal
-    max_dist = torch.sqrt(
-        torch.tensor(yt.shape[-2]**2 + yt.shape[-1]**2, dtype=yt.dtype, device=yt.device)
-    )
-    nsd = (pred_to_true_dist + true_to_pred_dist) / (2.0 * max_dist + eps)
-    
-    return torch.clamp(nsd, 0.0, 1.0)
+
+    yp_bin = (yp >= 0.5)
+    yt_bin = (yt >= 0.5)
+
+    vals = []
+    B = int(yt.shape[0])
+    for b in range(B):
+        gt = yt_bin[b, 0].detach().cpu().numpy().astype(bool)
+        pr = yp_bin[b, 0].detach().cpu().numpy().astype(bool)
+        assd, _ = _assd_and_hd95_pixels_2d(gt, pr)
+        vals.append(torch.tensor(assd, device=yt.device, dtype=yt.dtype))
+    return torch.stack(vals).mean()
 
 
 def Hausdorff_distance(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = _EPS) -> torch.Tensor:
     """
-    Hausdorff Distance: Maximum distance from any boundary point to the nearest point on the other boundary.
-    Lower is better. Returns normalized value in [0, 1] range.
-    
-    Computes max(max distance from pred to true, max distance from true to pred).
+    95th percentile Hausdorff distance (HD95) in PIXELS.
+    Lower is better.
+
+    Definition:
+      HD95 = max( p95(pred_surface -> true_surface), p95(true_surface -> pred_surface) )
+
+    Uses exact Euclidean Distance Transform (EDT) on 1-pixel surfaces.
+
+    Edge cases:
+      - both masks empty => 0
+      - exactly one mask empty => image diagonal in pixels (penalty)
     """
+    _require_scipy()
     yt, yp = _ensure_nchw_1(y_true, y_pred)
-    
-    # Binarize predictions
-    yp_bin = (yp >= 0.5).float()
-    yt_bin = (yt >= 0.5).float()
-    
-    # Extract boundaries
-    boundary_true = _extract_boundaries(yt_bin, dilation_iters=1)
-    boundary_pred = _extract_boundaries(yp_bin, dilation_iters=1)
-    
-    # If either boundary is empty, return maximum penalty
-    if boundary_true.sum() < eps or boundary_pred.sum() < eps:
-        return torch.tensor(1.0, device=yt.device, dtype=yt.dtype)
-    
-    # Compute distance transforms
-    dist_true = _compute_distance_transform(yt_bin)
-    dist_pred = _compute_distance_transform(yp_bin)
-    
-    # Max distance from pred boundary points to true mask
-    pred_to_true_max = (boundary_pred * dist_true).max()
-    
-    # Max distance from true boundary points to pred mask
-    true_to_pred_max = (boundary_true * dist_pred).max()
-    
-    # Hausdorff is the maximum of these two
-    hausdorff = torch.max(pred_to_true_max, true_to_pred_max)
-    
-    # Normalize by image diagonal
-    max_dist = torch.sqrt(
-        torch.tensor(yt.shape[-2]**2 + yt.shape[-1]**2, dtype=yt.dtype, device=yt.device)
-    )
-    hausdorff_normalized = hausdorff / (max_dist + eps)
-    
-    return torch.clamp(hausdorff_normalized, 0.0, 1.0)
+
+    yp_bin = (yp >= 0.5)
+    yt_bin = (yt >= 0.5)
+
+    vals = []
+    B = int(yt.shape[0])
+    for b in range(B):
+        gt = yt_bin[b, 0].detach().cpu().numpy().astype(bool)
+        pr = yp_bin[b, 0].detach().cpu().numpy().astype(bool)
+        _, hd95 = _assd_and_hd95_pixels_2d(gt, pr)
+        vals.append(torch.tensor(hd95, device=yt.device, dtype=yt.dtype))
+    return torch.stack(vals).mean()
 
 
 def boundary_intersection_over_union(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = _EPS) -> torch.Tensor:
     """
-    Boundary IoU: IoU computed specifically on the boundary regions.
-    Higher is better. Returns value in [0, 1] range.
-    
-    This focuses on how well the boundaries align, ignoring the interior regions.
+    Boundary IoU: IoU computed specifically on boundary regions.
+    Higher is better.
+
+    Note: this is very sensitive to 1px shifts if boundary thickness is 1 pixel.
     """
     yt, yp = _ensure_nchw_1(y_true, y_pred)
-    
-    # Binarize predictions
+
     yp_bin = (yp >= 0.5).float()
     yt_bin = (yt >= 0.5).float()
-    
-    # Extract boundaries
+
+    # Keep your existing erosion-based boundary extraction (torch, GPU-friendly).
     boundary_true = _extract_boundaries(yt_bin, dilation_iters=1)
     boundary_pred = _extract_boundaries(yp_bin, dilation_iters=1)
-    
-    # Compute IoU on boundaries
+
     intersection = torch.sum(boundary_true * boundary_pred, dim=(1, 2, 3))
     union = torch.sum(boundary_true + boundary_pred, dim=(1, 2, 3)) - intersection
-    
-    # Handle case where both boundaries are empty (perfect match of empty masks)
+
     boundary_iou = torch.where(
         union > eps,
         (intersection + eps) / (union + eps),
-        torch.ones_like(intersection)
+        torch.ones_like(intersection),
     )
-    
     return boundary_iou.mean()
+
+
+def _extract_boundaries(mask: torch.Tensor, dilation_iters: int = 1) -> torch.Tensor:
+    """
+    Extract boundaries from a binary mask using erosion (torch).
+    Returns boundary pixels (edge between foreground and background).
+    """
+    binary_mask = (mask >= 0.5).float()
+    kernel = torch.ones(1, 1, 3, 3, device=mask.device, dtype=mask.dtype)
+
+    eroded = binary_mask
+    for _ in range(max(1, int(dilation_iters))):
+        eroded = F.conv2d(eroded, kernel, padding=1)
+        eroded = (eroded >= 9.0).float()
+
+    boundary = torch.clamp(binary_mask - eroded, 0.0, 1.0)
+    return boundary
 
 
 # ----------------- Factory -----------------
@@ -345,8 +344,10 @@ def get_loss(name: str, alphabeta=(0.5, 0.5)):
     if n in {"dice", "dice_loss"}:
         return dice_loss
     if n in {"bce"}:
-        return lambda yt, yp: F.binary_cross_entropy(torch.clamp(yp.float(), _EPS, 1.0 - _EPS),
-                                                     torch.clamp(yt.float(), 0.0, 1.0))
+        return lambda yt, yp: F.binary_cross_entropy(
+            torch.clamp(yp.float(), _EPS, 1.0 - _EPS),
+            torch.clamp(yt.float(), 0.0, 1.0),
+        )
     # default
     a, b = alphabeta if isinstance(alphabeta, (tuple, list)) and len(alphabeta) == 2 else (0.5, 0.5)
     return _tversky_loss(float(a), float(b))

@@ -1,0 +1,12 @@
+backbone,status,best_val_loss,best_epoch,params,seconds,notes
+terratorch_dofa_small_patch16_224,skip,nan,-1,0,0.0,incompatible: RuntimeError: Failed to build model for backbone=terratorch_dofa_small_patch16_224. Last error: dofa_small_patch16_224() missing 1 required positional argument: 'model_bands'
+terratorch_dofa_base_patch16_224,skip,nan,-1,0,0.0,incompatible: RuntimeError: Failed to build model for backbone=terratorch_dofa_base_patch16_224. Last error: dofa_base_patch16_224() missing 1 required positional argument: 'model_bands'
+terratorch_dofa_large_patch16_224,skip,nan,-1,0,0.0,incompatible: RuntimeError: Failed to build model for backbone=terratorch_dofa_large_patch16_224. Last error: dofa_large_patch16_224() missing 1 required positional argument: 'model_bands'
+terratorch_prithvi_eo_tiny,ok,nan,-1,6965505,6.0,prithvi_meanfill_4to6
+terratorch_prithvi_eo_v1_100,ok,nan,-1,92829633,4.23,prithvi_meanfill_4to6
+terratorch_prithvi_eo_v2_tiny_tl,ok,nan,-1,9147059,3.63,prithvi_meanfill_4to6
+terratorch_prithvi_eo_v2_100_tl,ok,nan,-1,92829635,3.8,prithvi_meanfill_4to6
+terratorch_prithvi_eo_v2_300,ok,nan,-1,312805889,8.55,prithvi_meanfill_4to6
+terratorch_prithvi_eo_v2_600,ok,nan,-1,643024961,19.06,prithvi_meanfill_4to6
+terratorch_prithvi_eo_v2_300_tl,ok,nan,-1,312805891,7.2,prithvi_meanfill_4to6
+terratorch_prithvi_eo_v2_600_tl,ok,nan,-1,643024963,15.42,prithvi_meanfill_4to6

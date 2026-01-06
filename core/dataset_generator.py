@@ -42,13 +42,13 @@ def alb_augmentation(
             ),
             # Geometric warps
             # A.PiecewiseAffine(scale=0.05 * s, p=0.30 * s),
-            A.ElasticTransform(
-                alpha=1.0 * s,
-                sigma=50.0 * s,
-                alpha_affine=50.0 * s,
-                p=0.30 * s,
-            ),
-            A.Perspective(scale=(0.0, 0.01 * s), keep_size=True, p=0.10 * s),
+            #A.ElasticTransform(
+            #    alpha=1.0 * s,
+            #    sigma=50.0 * s,
+            #    alpha_affine=50.0 * s,
+            #    p=0.30 * s,
+            #),
+            #A.Perspective(scale=(0.0, 0.01 * s), keep_size=True, p=0.10 * s),
         ]
     )
     return aug
@@ -183,17 +183,51 @@ class DataGenerator:
             return self.frames[idx]
         return self.frames[int(idx)]
 
-    def _random_frame_patch(self):
-        """Sample a random patch from a randomly chosen frame (area-weighted)."""
+    def _random_frame_patch(self) -> Tuple[np.ndarray, Optional[Tuple[int, int]]]:
+        """Sample a random patch from a randomly chosen frame (area-weighted).
+
+        Returns the padded patch along with the unpadded (h, w) size if padding was needed.
+        The unpadded size is used to evaluate pos_ratio against real pixels only.
+        """
         fn = int(np.random.choice(self.frame_list, p=self.frame_list_weights))
         frame = self._frame(fn)
-        # Frame supplies a full (H,W,C) composite. random_patch returns an H×W crop
-        # with all bands.
-        return frame.random_patch(self.patch_size)
 
-    def _is_positive_patch(self, ann: np.ndarray) -> bool:
-        """Return True if patch is considered 'positive' given the annotation mask."""
-        mask = ann > 0
+        # Frame supplies a full (H,W,C) composite. random_patch returns an HxW crop
+        # with all bands, padding if the frame is smaller than the target patch.
+        patch = frame.random_patch(self.patch_size)
+
+        h_frame, w_frame = frame.img.shape[:2]
+        h_target, w_target = self.patch_size
+        unpadded_slice = None
+        if h_frame < h_target or w_frame < w_target:
+            # Store the real data size so we ignore padded pixels when counting positives.
+            unpadded_slice = (min(h_frame, h_target), min(w_frame, w_target))
+
+        return patch, unpadded_slice
+
+    def _is_positive_patch(
+        self,
+        ann: np.ndarray,
+        unpadded_slice: Optional[Tuple[int, int]] = None,
+    ) -> bool:
+        """Return True if patch is considered 'positive' given the annotation mask.
+        
+        Args:
+            ann: annotation array (HxW or HxWx1)
+            unpadded_slice: optional (slice_h, slice_w) tuple indicating the real (unpadded) region.
+                           If provided, only counts positives in the unpadded region.
+        """
+        # Extract unpadded region if provided
+        if unpadded_slice is not None:
+            h_slice, w_slice = unpadded_slice
+            # Get the center crop that contains the real data
+            H, W = ann.shape[:2]
+            off_h = (H - h_slice) // 2
+            off_w = (W - w_slice) // 2
+            mask = ann[off_h : off_h + h_slice, off_w : off_w + w_slice] > 0
+        else:
+            mask = ann > 0
+        
         if self.min_pos_frac <= 0.0:
             # Any labeled pixel makes this a positive patch
             return np.any(mask)
@@ -204,17 +238,18 @@ class DataGenerator:
         """Sample a single random patch, optionally enforcing a pos/neg ratio."""
         # If no pos_ratio is set, keep original TF-style area-weighted behavior.
         if self.pos_ratio is None or not (0.0 < self.pos_ratio < 1.0):
-            return self._random_frame_patch()
+            patch, _unpadded_slice = self._random_frame_patch()
+            return patch
 
         want_pos = np.random.rand() < float(self.pos_ratio)
         max_tries = 50  # avoid infinite loops with very sparse labels
         last_patch = None
 
         for _ in range(max_tries):
-            patch = self._random_frame_patch()
+            patch, unpadded_slice = self._random_frame_patch()
             last_patch = patch
             ann = patch[..., self.annotation_channel]
-            is_pos = self._is_positive_patch(ann)
+            is_pos = self._is_positive_patch(ann, unpadded_slice)
 
             if want_pos and is_pos:
                 return patch
@@ -222,7 +257,12 @@ class DataGenerator:
                 return patch
 
         # Fallback: if we could not satisfy the constraint, return last sampled patch
-        return last_patch if last_patch is not None else self._random_frame_patch()
+        if last_patch is not None:
+            return last_patch
+
+        # If something went wrong, fall back to a fresh sample (discarding unpadded_slice).
+        fallback_patch, _ = self._random_frame_patch()
+        return fallback_patch
 
 
 # Backwards-compatible alias used by newer training code

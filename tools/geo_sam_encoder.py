@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 # Config
 checkpoint_path = '/isipd/projects/p_planetdw/data/methods_test/training_images/SAM_checkpoints/sam_vit_l_0b3195.pth'
-image_folder = '/isipd/projects/p_planetdw/data/methods_test/training_images/AE/to_encode'
+image_folder = '/isipd/projects/p_planetdw/data/methods_test/training_images/AE/to_encode/test'
 feature_dir = '/isipd/projects/p_planetdw/data/methods_test/training_images/AE/encodings'
 
 GPU_ID = 0

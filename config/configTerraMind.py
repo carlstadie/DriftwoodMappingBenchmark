@@ -26,7 +26,9 @@ class Configuration:
             f"/isipd/projects/p_planetdw/data/methods_test/training/{self.modality}"
         )
         self.training_area_fn = "training_areas.gpkg"
-        self.training_polygon_fn = "test.gpkg"
+        self.training_polygon_fn = f"labels_{self.modality}.gpkg"
+        self.focus_areas = f"focus_areas_{self.modality}.gpkg"
+
         self.training_image_dir = (
             f"/isipd/projects/p_planetdw/data/methods_test/training_images/{self.modality}"
         )
@@ -36,8 +38,8 @@ class Configuration:
             f"/isipd/projects/p_planetdw/data/methods_test/training_data/{self.modality}"
         )
         self.preprocessed_dir = (
-            "/isipd/projects/p_planetdw/data/methods_test/training_data/AE/"
-            "20250429-1208_MACS_test_utm8"
+            "/isipd/projects/p_planetdw/data/methods_test/preprocessed/"
+            "20251226-0433_UNETxAE"
         )
 
         # Checkpointing / logs / results (model + modality subfolders)
@@ -80,10 +82,10 @@ class Configuration:
 
         # ------ LOSS / OPTIM / SCHED ------
         self.loss_fn = "tversky"
-        self.optimizer_fn = "adam"
+        self.optimizer_fn = "adamw"
         self.learning_rate = 1e-3          # used if you don't use tm_* LRs
         self.weight_decay = 1e-4           # NEW: global weight decay (for AdamW / tuner "weight_decay")
-        self.scheduler = "none"            # NEW: "none" | "cosine" | "onecycle"
+        self.scheduler = "cosine"            # NEW: "none" | "cosine" | "onecycle"
 
         self.dilation_rate = 1  # unused for TerraMind itself, but kept for compatibility
         self.model_name = self.run_name
@@ -106,10 +108,10 @@ class Configuration:
 
         # ------ AUG / SAMPLING / DATALOADER ------
         self.augmenter_strength = 1.0
-        self.min_pos_frac = 0.0
-        self.pos_ratio = 0.3
+        self.min_pos_frac = 0.001
+        self.pos_ratio = 0.75
         self.patch_stride = None
-        self.fit_workers = 8
+        self.fit_workers = 0
         self.steps_per_execution = 1
 
         # ------ EVALUATION ------
@@ -119,7 +121,7 @@ class Configuration:
         self.metrics_class = 1
         self.viz_class = 1
         self.eval_mc_dropout = True
-        self.mc_dropout_samples = 20
+        self.eval_mc_samples  = 20
 
         # ------ MIXED PRECISION / COMPILE / REPRO ------
         self.use_torch_compile = False
@@ -128,9 +130,9 @@ class Configuration:
 
         # -------- TERRAMIND ARCH KNOBS --------
         self.tm_backbone = "terramind_v1_base"   # or size token: 'tiny','small','base','large'
-        self.tm_decoder = "UNetDecoder"          # tuned: 'UNetDecoder' | 'UperNetDecoder'
-        self.tm_decoder_channels = [512, 256, 128, 64]
-        self.tm_head_dropout = 0.0               # NEW: tuned "tm_head_dropout"
+        self.tm_decoder = "UperNetDecoder"          # tuned: 'UNetDecoder' | 'UperNetDecoder'
+        self.tm_decoder_channels = 256
+        self.tm_head_dropout = 0.05               # NEW: tuned "tm_head_dropout"
         self.tm_select_indices = None
         self.tm_bands = None
         self.tm_backbone_ckpt_path = None
@@ -141,10 +143,10 @@ class Configuration:
         # --- TerraMind optimizer / schedule knobs (from tuner) ---       # NEW block
         # These are used in training._build_optimizer_and_scheduler()
         # when training a TerraMind model.
-        self.tm_lr_backbone = 1e-5               # NEW: tuned "tm_lr_backbone"
-        self.tm_lr_head_mult = 10.0              # NEW: tuned "tm_lr_head_mult"
-        self.tm_weight_decay = 1e-4              # NEW: tuned "tm_weight_decay"
-        self.tm_freeze_backbone_epochs = 0       # NEW: freeze backbone for first N epochs
+        self.tm_lr_backbone = 2.7e-05               # NEW: tuned "tm_lr_backbone"
+        self.tm_lr_head_mult = 5.0              # NEW: tuned "tm_lr_head_mult"
+        self.tm_weight_decay = 0.0002              # NEW: tuned "tm_weight_decay"
+        self.tm_freeze_backbone_epochs = 3       # NEW: freeze backbone for first N epochs
 
         # (Optionally) keep tversky_alpha around for direct copy from tuner JSON  # NEW (optional)
         self.tversky_alpha = self.tversky_alphabeta[0]
@@ -153,7 +155,7 @@ class Configuration:
         self.create_polygons = True
         self.postproc_workers = 12
 
-        # Prediction outputs (for completeness with your tools)
+        # Prediction outputs (for later inference scripts)
         self.train_image_file_type = self.image_file_type
         self.train_images_prefix = ""
         self.predict_images_file_type = self.image_file_type
@@ -163,20 +165,20 @@ class Configuration:
         self.prediction_output_dir = None
         self.prediction_patch_size = None
         self.prediction_operator = "MAX"
-        self.output_prefix = "det_" + self.prediction_name + "_"
+        self.output_prefix = "INF_" + self.prediction_name + "_"
         self.output_dtype = "bool"
 
         # ------ GPU / ENV ------
-        self.selected_gpu = 7  # CUDA device index, -1 for CPU
+        self.selected_GPU = 5  # CUDA device index, -1 for CPU
         gdal.UseExceptions()
         gdal.SetCacheMax(32000000000)
         gdal.SetConfigOption("CPL_LOG", "/dev/null")
         warnings.filterwarnings("ignore")
 
-        if int(self.selected_gpu) == -1:
+        if int(self.selected_GPU) == -1:
             os.environ["CUDA_VISIBLE_DEVICES"] = ""
         else:
-            os.environ["CUDA_VISIBLE_DEVICES"] = str(self.selected_gpu)
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(self.selected_GPU)
 
     def validate(self):
         # Basic path checks

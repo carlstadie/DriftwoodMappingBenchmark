@@ -17,13 +17,13 @@ from osgeo import gdal, ogr, osr
 # ===================== CONFIG =====================
 
 # Input PlanetScope scenes
-INPUT_DIR = Path("/isipd/projects/p_planetdw/data/methods_test/training_images/AE/to_encode/")
+INPUT_DIR = Path("/isipd/projects/p_planetdw/data/methods_test/training_images/AE/to_encode/test/")
 
 # Output directory for NDVI / vegetation results
 OUTPUT_DIR = Path("/isipd/projects/p_planetdw/data/methods_test/auxilliary_data/ndvi")
 
 # Final merged vegetation GPKG
-VEG_GPKG = OUTPUT_DIR.parent / "vegetation.gpkg"
+VEG_GPKG = OUTPUT_DIR.parent / "vegetation_DWOlliIsland.gpkg"
 VEG_LAYER = "vegetation"
 
 # Temporary directory for per-chunk vector files

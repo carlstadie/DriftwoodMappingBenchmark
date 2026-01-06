@@ -57,6 +57,31 @@ Each main script typically runs:
 3) Loop of training runs (e.g., 10)
 4) `evaluation.evaluate_<Model>(config)` (saves masks + CSV rows)
 
+### TerraTorch Backbone Sweep (Experimental)
+
+The `terratorch_benchmark.py` script allows testing multiple TerraTorch foundation model backbones:
+
+```bash
+python terratorch_benchmark.py --epochs 10 --steps-per-epoch 200 --out backbone_results.csv
+```
+
+Options:
+- `--epochs`: Number of training epochs per backbone (default: 8)
+- `--steps-per-epoch`: Training steps per epoch (default: 200)
+- `--val-steps`: Validation steps per epoch (default: 50)
+- `--lr`: Learning rate (default: 1e-4)
+- `--weight-decay`: Weight decay (default: 0.05)
+- `--include`: Filter backbones by substring (e.g., `--include prithvi --include terramind`)
+- `--max-models`: Limit number of backbones to test
+- `--no-pretrained`: Skip loading pretrained weights
+- `--no-amp`: Disable automatic mixed precision
+
+The script will:
+1. Load config from `config.configTerraMind` (or `configUnet`/`configSwinUnet`)
+2. Use the project's data pipeline to load preprocessed frames
+3. Test each backbone from the TerraTorch registry
+4. Save results (validation loss, parameters, training time) to CSV
+
 ---
 
 ## Project layout
@@ -66,6 +91,7 @@ Each main script typically runs:
 ├─ mainUnet.py             # UNet pipeline entry point
 ├─ mainSwinUnet.py         # Swin-UNet pipeline entry point
 ├─ mainTerraMind.py        # TerraMind pipeline entry point
+├─ terratorch_benchmark.py # TerraTorch backbone sweep (experimental)
 |
 ├─ preprocessing.py        # builds frame dataset (GeoTIFFs with [bands | label | boundary])
 ├─ tuning.py               # hyperparameter tuning (model-specific entrypoints)
