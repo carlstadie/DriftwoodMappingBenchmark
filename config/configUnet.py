@@ -33,6 +33,9 @@ class Configuration:
             f"/isipd/projects/p_planetdw/data/methods_test/training_images/{self.modality}"
         )
 
+        self.split_list_path = "/isipd/projects/p_planetdw/data/methods_test/preprocessed/20251226-0433_UNETxAE/aa_frames_list.json"
+
+
         # Preprocessed data roots
         self.preprocessed_base_dir = (
             f"/isipd/projects/p_planetdw/data/methods_test/preprocessed"

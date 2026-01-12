@@ -49,7 +49,7 @@ from core.losses import (
     dice_loss,
     f1_score,
     f_beta,
-    nominal_surface_distance,
+    normalized_surface_distance,
     sensitivity,
     specificity,
 )
@@ -77,7 +77,7 @@ class MetricAccumulator:
       - MICRO-average (global pixel pool) for: Dice, Dice loss, IoU, accuracy,
         sensitivity, specificity, F1, F_beta.
       - MACRO-average (per-scene mean) for geometric/boundary metrics:
-        nominal_surface_distance, Hausdorff_distance, boundary_intersection_over_union.
+        normalized_surface_distance, Hausdorff_distance, boundary_intersection_over_union.
 
     This addresses heterogeneous foreground prevalence across test scenes.
     """
@@ -95,7 +95,7 @@ class MetricAccumulator:
 
         # Macro-only (geometry/boundary) metrics using training implementations
         self.macro_metric_fns = {
-            "nominal_surface_distance": nominal_surface_distance,
+            "normalized_surface_distance": normalized_surface_distance,
             "Hausdorff_distance": Hausdorff_distance,
             "boundary_intersection_over_union": boundary_intersection_over_union,
         }
@@ -110,7 +110,7 @@ class MetricAccumulator:
         # Macro accumulators for geometry metrics
         self.n_macro = 0
         self.macro_sums: Dict[str, float] = {
-            "nominal_surface_distance": 0.0,
+            "normalized_surface_distance": 0.0,
             "Hausdorff_distance": 0.0,
             "boundary_intersection_over_union": 0.0,
         }
@@ -214,8 +214,8 @@ class MetricAccumulator:
 
         # MACRO geometry metrics
         div = float(max(1, self.n_macro))
-        out["nominal_surface_distance"] = float(
-            self.macro_sums["nominal_surface_distance"] / div
+        out["normalized_surface_distance"] = float(
+            self.macro_sums["normalized_surface_distance"] / div
         )
         out["Hausdorff_distance"] = float(self.macro_sums["Hausdorff_distance"] / div)
         out["boundary_intersection_over_union"] = float(
@@ -613,6 +613,88 @@ def _infer_full_image(
 
 
 # -----------------------------
+# Batch processing helper
+# -----------------------------
+def _process_image_batch(
+    batch_frames: List[Any],
+    batch_im_fps: List[str],
+    model: nn.Module,
+    device: torch.device,
+    config: Any,
+    thr: float,
+    use_mc_dropout: bool,
+    out_dir: str,
+) -> List[Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]]:
+    """
+    Process a batch of images and return results for each.
+    Returns: List of (gt, prob, epi_map or None, alea_map or None) for each image
+    """
+    results = []
+    
+    for frame, im_fp in zip(batch_frames, batch_im_fps):
+        # Predict prob map (and uncertainty if enabled)
+        if use_mc_dropout:
+            prob, epi_map, alea_map = _infer_full_image(
+                model, frame, device, config
+            )
+        else:
+            prob = _infer_full_image(model, frame, device, config)
+            epi_map = None
+            alea_map = None
+
+        # Load GT and scale to [0,1]
+        gt = frame.annotations.astype(np.float32)
+        if gt.max() > 1.5:
+            gt = gt / 255.0
+        gt = np.clip(gt, 0.0, 1.0)
+
+        # Save hard mask and probability mask as GeoTIFF
+        pred_bin = (prob >= thr).astype(np.uint8)
+        with rasterio.open(im_fp) as src:
+            base_profile = src.profile.copy()
+            base_profile.update(
+                count=1,
+                compress="LZW",
+                crs=src.crs,
+                transform=src.transform,
+                width=src.width,
+                height=src.height,
+            )
+
+            # Save hard mask (uint8)
+            mask_profile = base_profile.copy()
+            mask_profile["dtype"] = "uint8"
+            out_fp = os.path.join(out_dir, os.path.basename(im_fp))
+            with rasterio.open(out_fp, "w", **mask_profile) as dst:
+                dst.write(pred_bin, 1)
+
+            # Save probability mask (float32)
+            prob_profile = base_profile.copy()
+            prob_profile["dtype"] = "float32"
+            stem, ext = os.path.splitext(os.path.basename(im_fp))
+            prob_fp = os.path.join(out_dir, f"{stem}_prob{ext}")
+            with rasterio.open(prob_fp, "w", **prob_profile) as dst:
+                dst.write((prob * 255.0).astype(np.float32), 1)
+
+            if use_mc_dropout and epi_map is not None and alea_map is not None:
+                unc_profile = base_profile.copy()
+                unc_profile["dtype"] = "float32"
+
+                stem, ext = os.path.splitext(os.path.basename(im_fp))
+                epi_fp = os.path.join(out_dir, f"{stem}_epistemic{ext}")
+                alea_fp = os.path.join(out_dir, f"{stem}_aleatoric{ext}")
+
+                with rasterio.open(epi_fp, "w", **unc_profile) as dst:
+                    dst.write(epi_map.astype(np.float32), 1)
+                with rasterio.open(alea_fp, "w", **unc_profile) as dst:
+                    dst.write(alea_map.astype(np.float32), 1)
+
+        results.append((gt, prob, epi_map, alea_map))
+    
+    return results
+
+
+# -----------------------------
 # Checkpoint discovery
 # -----------------------------
 def _find_all_checkpoints(folder: str) -> List[str]:
@@ -693,7 +775,7 @@ def _evaluate_arch(config, arch: str = "unet") -> None:
         "specificity",
         "f1_score",
         "f_beta",
-        "nominal_surface_distance",
+        "normalized_surface_distance",
         "Hausdorff_distance",
         "boundary_intersection_over_union",
         "mean_epistemic_uncertainty",
@@ -728,7 +810,7 @@ def _evaluate_arch(config, arch: str = "unet") -> None:
 
             model = _load_model_from_checkpoint(model, ckpt_path, device).eval()
 
-            # ---- Prediction loop ----
+            # ---- Prediction loop (batch processing with batch_size=8) ----
             accum = MetricAccumulator(
                 device=device, threshold=thr, fbeta_beta=fbeta_beta
             )
@@ -738,71 +820,47 @@ def _evaluate_arch(config, arch: str = "unet") -> None:
             sum_aleatoric = 0.0
             unc_pixel_count = 0
 
-            for i in tqdm(range(len(test_idx)), desc=f"Predicting ({arch})"):
-                idx = test_idx[i]
-                frame = frames[idx]
-                im_fp = image_paths[idx]
-
-                # Predict prob map (and uncertainty if enabled)
-                if use_mc_dropout:
-                    prob, epi_map, alea_map = _infer_full_image(
-                        model, frame, device, config
-                    )
-                    sum_epistemic += float(epi_map.sum())
-                    sum_aleatoric += float(alea_map.sum())
-                    unc_pixel_count += int(epi_map.size)
-                else:
-                    prob = _infer_full_image(model, frame, device, config)
-
-                # Load GT and scale to [0,1]
-                gt = frame.annotations.astype(np.float32)
-                if gt.max() > 1.5:
-                    gt = gt / 255.0
-                gt = np.clip(gt, 0.0, 1.0)
-
-                # Accumulate dataset metrics (micro + macro hybrid)
-                accum.add(gt, prob)
-
-                # Save hard mask and probability mask as GeoTIFF
-                pred_bin = (prob >= thr).astype(np.uint8)
-                with rasterio.open(im_fp) as src:
-                    base_profile = src.profile.copy()
-                    base_profile.update(
-                        count=1,
-                        compress="LZW",
-                        crs=src.crs,
-                        transform=src.transform,
-                        width=src.width,
-                        height=src.height,
-                    )
-
-                    # Save hard mask (uint8)
-                    mask_profile = base_profile.copy()
-                    mask_profile["dtype"] = "uint8"
-                    out_fp = os.path.join(out_dir, os.path.basename(im_fp))
-                    with rasterio.open(out_fp, "w", **mask_profile) as dst:
-                        dst.write(pred_bin, 1)
-
-                    # Save probability mask (float32)
-                    prob_profile = base_profile.copy()
-                    prob_profile["dtype"] = "float32"
-                    stem, ext = os.path.splitext(os.path.basename(im_fp))
-                    prob_fp = os.path.join(out_dir, f"{stem}_prob{ext}")
-                    with rasterio.open(prob_fp, "w", **prob_profile) as dst:
-                        dst.write((prob * 255.0).astype(np.float32), 1)
-
-                    if use_mc_dropout:
-                        unc_profile = base_profile.copy()
-                        unc_profile["dtype"] = "float32"
-
-                        stem, ext = os.path.splitext(os.path.basename(im_fp))
-                        epi_fp = os.path.join(out_dir, f"{stem}_epistemic{ext}")
-                        alea_fp = os.path.join(out_dir, f"{stem}_aleatoric{ext}")
-
-                        with rasterio.open(epi_fp, "w", **unc_profile) as dst:
-                            dst.write(epi_map.astype(np.float32), 1)
-                        with rasterio.open(alea_fp, "w", **unc_profile) as dst:
-                            dst.write(alea_map.astype(np.float32), 1)
+            # Process images in batches of 8
+            batch_size_images = 8
+            n_test = len(test_idx)
+            
+            pbar = tqdm(total=n_test, desc=f"Predicting ({arch})")
+            
+            for batch_start in range(0, n_test, batch_size_images):
+                batch_end = min(batch_start + batch_size_images, n_test)
+                
+                # Gather batch data
+                batch_frames = []
+                batch_im_fps = []
+                for i in range(batch_start, batch_end):
+                    idx = test_idx[i]
+                    batch_frames.append(frames[idx])
+                    batch_im_fps.append(image_paths[idx])
+                
+                # Process the batch
+                batch_results = _process_image_batch(
+                    batch_frames=batch_frames,
+                    batch_im_fps=batch_im_fps,
+                    model=model,
+                    device=device,
+                    config=config,
+                    thr=thr,
+                    use_mc_dropout=use_mc_dropout,
+                    out_dir=out_dir,
+                )
+                
+                # Accumulate results from batch
+                for gt, prob, epi_map, alea_map in batch_results:
+                    accum.add(gt, prob)
+                    
+                    if use_mc_dropout and epi_map is not None and alea_map is not None:
+                        sum_epistemic += float(epi_map.sum())
+                        sum_aleatoric += float(alea_map.sum())
+                        unc_pixel_count += int(epi_map.size)
+                    
+                    pbar.update(1)
+            
+            pbar.close()
 
             # ---- Finalize metrics ----
             if use_mc_dropout and unc_pixel_count > 0:
@@ -826,7 +884,7 @@ def _evaluate_arch(config, arch: str = "unet") -> None:
                 f"{metrics['specificity']:.6f}",
                 f"{metrics['f1_score']:.6f}",
                 f"{metrics['f_beta']:.6f}",
-                f"{metrics['nominal_surface_distance']:.6f}",
+                f"{metrics['normalized_surface_distance']:.6f}",
                 f"{metrics['Hausdorff_distance']:.6f}",
                 f"{metrics['boundary_intersection_over_union']:.6f}",
                 f"{mean_epistemic:.6f}",

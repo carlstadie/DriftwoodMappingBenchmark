@@ -15,7 +15,7 @@ class Configuration:
     def __init__(self):
         # --------- RUN NAME ---------
         # Modality to be run can be AE, PS or S2
-        self.modality = "AE"
+        self.modality = "S2"
 
         self.run_name = f"TERRAMINDx{self.modality}"
 
@@ -38,8 +38,8 @@ class Configuration:
             f"/isipd/projects/p_planetdw/data/methods_test/training_data/{self.modality}"
         )
         self.preprocessed_dir = (
-            "/isipd/projects/p_planetdw/data/methods_test/preprocessed/"
-            "20251226-0433_UNETxAE"
+            "/isipd/projects/p_planetdw/data/methods_test/training_data/"
+            "20260108-1335_UNETxS2"
         )
 
         # Checkpointing / logs / results (model + modality subfolders)
@@ -169,7 +169,7 @@ class Configuration:
         self.output_dtype = "bool"
 
         # ------ GPU / ENV ------
-        self.selected_GPU = 5  # CUDA device index, -1 for CPU
+        self.selected_GPU = 4  # CUDA device index, -1 for CPU
         gdal.UseExceptions()
         gdal.SetCacheMax(32000000000)
         gdal.SetConfigOption("CPL_LOG", "/dev/null")

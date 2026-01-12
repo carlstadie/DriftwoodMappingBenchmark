@@ -204,7 +204,7 @@ def build_mosaics(
 if __name__ == "__main__":
     # EDIT THIS:
     build_mosaics(
-        folder="/isipd/projects/p_planetdw/data/methods_test/preprocessed/20251222-1419_UNETxAE/",
+        folder="/isipd/projects/p_planetdw/data/methods_test/preprocessed/20260109-1434_UNETxPS/",
         tile_size=256,         # thumbnails size in the mosaic
         p_low=2, p_high=98,    # stretch percentiles
         mask_threshold=0.0,    # binarize: last_band > threshold

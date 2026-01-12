@@ -234,16 +234,22 @@ def _assd_and_hd95_pixels_2d(
     return assd, hd95
 
 
-def nominal_surface_distance(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = _EPS) -> torch.Tensor:
+def normalized_surface_distance(
+    y_true: torch.Tensor,
+    y_pred: torch.Tensor,
+    tau_px: float = 1.0,
+    eps: float = _EPS,
+) -> torch.Tensor:
     """
-    Symmetric mean surface distance (ASSD-like) in PIXELS.
-    Lower is better.
+    Normalized Surface Distance (NSD) / Surface Dice with tolerance tau.
 
-    Uses exact Euclidean Distance Transform (EDT) on 1-pixel surfaces.
+    Returns in [0,1], higher is better.
+    NSD = ( #pred-surface points within tau of GT surface  +  #GT-surface points within tau of pred surface )
+          / ( #pred-surface points + #GT-surface points )
 
-    Edge cases:
-      - both masks empty => 0
-      - exactly one mask empty => image diagonal in pixels (penalty)
+    Edge cases (choose and document):
+      - both empty => 1.0 (perfect match of "no object")
+      - exactly one empty => 0.0
     """
     _require_scipy()
     yt, yp = _ensure_nchw_1(y_true, y_pred)
@@ -256,9 +262,33 @@ def nominal_surface_distance(y_true: torch.Tensor, y_pred: torch.Tensor, eps: fl
     for b in range(B):
         gt = yt_bin[b, 0].detach().cpu().numpy().astype(bool)
         pr = yp_bin[b, 0].detach().cpu().numpy().astype(bool)
-        assd, _ = _assd_and_hd95_pixels_2d(gt, pr)
-        vals.append(torch.tensor(assd, device=yt.device, dtype=yt.dtype))
+
+        s_gt = _surface_np(gt)
+        s_pr = _surface_np(pr)
+
+        n_gt = int(s_gt.sum())
+        n_pr = int(s_pr.sum())
+
+        if n_gt == 0 and n_pr == 0:
+            vals.append(torch.tensor(1.0, device=yt.device, dtype=yt.dtype))
+            continue
+        if n_gt == 0 or n_pr == 0:
+            vals.append(torch.tensor(0.0, device=yt.device, dtype=yt.dtype))
+            continue
+
+        # distance to nearest surface pixel (EDT on complement of surface)
+        dt_gt = distance_transform_edt(~s_gt)
+        dt_pr = distance_transform_edt(~s_pr)
+
+        # count surface points within tolerance
+        tp_pr = float((dt_gt[s_pr] <= tau_px).sum())
+        tp_gt = float((dt_pr[s_gt] <= tau_px).sum())
+
+        nsd = (tp_pr + tp_gt) / (n_pr + n_gt + eps)
+        vals.append(torch.tensor(nsd, device=yt.device, dtype=yt.dtype))
+
     return torch.stack(vals).mean()
+
 
 
 def Hausdorff_distance(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = _EPS) -> torch.Tensor:

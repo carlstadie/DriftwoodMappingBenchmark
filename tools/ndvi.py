@@ -1,550 +1,350 @@
-import os
-import time
+import json
 from pathlib import Path
-import multiprocessing as mp
+import re
+from typing import Optional, List
 
-import numpy as np
 import geopandas as gpd
-import rasterio
-from rasterio.features import rasterize
-from rasterio.windows import Window, from_bounds
-import shapely.geometry as sg
-from tqdm import tqdm
+import pandas as pd
+import numpy as np
 
-from osgeo import gdal, ogr, osr
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+from matplotlib.cm import get_cmap
+from matplotlib.transforms import blended_transform_factory
+from matplotlib.ticker import FuncFormatter
+
+import seaborn as sns
 
 
-# ===================== CONFIG =====================
+# ----------------------------
+# USER OPTIONS (paper version)
+# ----------------------------
+# Leave empty => draw an empty PS subplot (but keep the 3-panel layout)
+#LABELS_PS = ""
 
-# Input PlanetScope scenes
-INPUT_DIR = Path("/isipd/projects/p_planetdw/data/methods_test/training_images/AE/to_encode/test/")
+# Boxplot settings (can adjust showfliers, width, etc.)
+# BW_ADJUST = 1.0  # Not used for boxplots
 
-# Output directory for NDVI / vegetation results
-OUTPUT_DIR = Path("/isipd/projects/p_planetdw/data/methods_test/auxilliary_data/ndvi")
+TEXTOFF = 0.925
 
-# Final merged vegetation GPKG
-VEG_GPKG = OUTPUT_DIR.parent / "vegetation_DWOlliIsland.gpkg"
-VEG_LAYER = "vegetation"
+# ----------------------------
+# PALETTE OPTIONS (CHOOSABLE CONSTANTS)
+# ----------------------------
+# Panel order (requested): AE, PS, S2
+PANEL_ORDER = ["AE", "PS", "S2"]
 
-# Temporary directory for per-chunk vector files
-TEMP_VEC_DIR = OUTPUT_DIR / "tmp_chunks"
+# Matplotlib colormaps used per modality (change these to anything in mpl colormap list)
+# Examples: "Blues", "Greens", "Oranges", "Purples", "viridis", "magma", "cividis", etc.
+MODALITY_CMAPS = {
+    "AE": "Blues",
+    "PS": "Greens",
+    "S2": "Oranges",
+}
 
-# Training areas (AOIs)
-TRAINING_AREAS_GPKG = Path(
-    "/isipd/projects/p_planetdw/data/methods_test/training/training_areas.gpkg"
+# Shade range sampled from each colormap for train/val/test (0..1)
+# Lower -> lighter, higher -> darker
+PALETTE_SHADE_MIN = 0.15
+PALETTE_SHADE_MAX = 0.65
+
+# Plot split order (keep as-is unless you change your splits)
+SPLIT_ORDER = ["training", "validation", "testing"]
+
+# ----------------------------
+# Paths
+# ----------------------------
+TRAINING_AREAS = r"/isipd/projects/p_planetdw/data/methods_test/training/AE/training_areas.gpkg"
+
+LABELS_S2 = r"/isipd/projects/p_planetdw/data/methods_test/training/S2/labels_S2_exp.gpkg"
+LABELS_AE = r"/isipd/projects/p_planetdw/data/methods_test/training/AE/labels_AE.gpkg"
+LABELS_PS = r"/isipd/projects/p_planetdw/data/methods_test/training/PS/labels_PS.gpkg"
+DATA_SPLIT_AA = r"/isipd/projects/p_planetdw/data/methods_test/preprocessed/20251226-0433_UNETxAE/aa_frames_list.json"
+
+FIG_DIR = Path("figs")
+FIG_DIR.mkdir(parents=True, exist_ok=True)
+OUT_PDF = FIG_DIR / "area_boxplots_m2ticks.pdf"
+OUT_PNG = FIG_DIR / "area_boxplots_m2ticks.png"
+
+OUT_TRAINING_AREAS_SPLIT = (
+    r"/isipd/projects/p_planetdw/data/methods_test/training/AE/training_areas_with_split.gpkg"
 )
-TRAINING_LAYER = None  # set to layer name if needed, None for default
-
-# Bands and thresholds
-RED_BAND = 3
-NIR_BAND = 4
-NDVI_THRESHOLD = 0.0
-MIN_AREA = 1     # CRS units (e.g. m² if projected). 0 = no area filtering.
-
-# Chunking & parallelism
-CHUNK_SHAPE = 1024            # pixels per chunk
-N_WORKERS = 16  # number of parallel workers
-
-# Global AOI mask (shared READ-ONLY by workers)
-AOI_MASK = None
-AOI_MASK_SHAPE = None
-AOI_MASK_INFO = ""
 
 
-# ===================== NDVI MASK =====================
-
-def vegetation_mask(red: np.ndarray, nir: np.ndarray, threshold: float) -> np.ndarray:
-    """
-    Return a uint8 mask (1 = vegetation, 0 = background) for NDVI >= threshold.
-
-    Uses inequality:
-        (nir - red) / (nir + red) >= thr
-        <=> (nir - red) >= thr * (nir + red)  for denom > 0
-    to avoid a division.
-    """
-    red = red.astype("float32", copy=False)
-    nir = nir.astype("float32", copy=False)
-
-    denom = nir + red
-    num = nir - red
-
-    valid = denom > 0.0
-    veg = np.zeros(red.shape, dtype="uint8")
-    if not valid.any():
-        return veg
-
-    thr_denom = threshold * denom[valid]
-    veg_pixels = num[valid] >= thr_denom
-    veg[valid] = veg_pixels.astype("uint8")
-    return veg
-
-
-# ===================== CHUNK WINDOWS =====================
-
-def build_chunk_windows_for_aoi_bbox(src, aoi_scene):
-    """
-    Build a list of Window objects covering only the bounding box of the AOIs
-    (not the whole raster), chunked by CHUNK_SHAPE.
-    """
-    # AOI bounds: (minx, miny, maxx, maxy)
-    minx, miny, maxx, maxy = aoi_scene.total_bounds
-
-    # Clamp AOI bounds to raster bounds
-    rb = src.bounds
-    minx = max(minx, rb.left)
-    maxx = min(maxx, rb.right)
-    miny = max(miny, rb.bottom)
-    maxy = min(maxy, rb.top)
-
-    # Convert bounds to a window in pixel coordinates
-    full_window = from_bounds(
-        minx, miny, maxx, maxy,
-        transform=src.transform,
-        width=src.width,
-        height=src.height,
-    ).round_offsets().round_lengths()
-
-    row_start = int(full_window.row_off)
-    col_start = int(full_window.col_off)
-    row_stop = row_start + int(full_window.height)
-    col_stop = col_start + int(full_window.width)
-
-    windows = []
-    for row in range(row_start, row_stop, CHUNK_SHAPE):
-        h = min(CHUNK_SHAPE, row_stop - row)
-        for col in range(col_start, col_stop, CHUNK_SHAPE):
-            w = min(CHUNK_SHAPE, col_stop - col)
-            windows.append(Window(col, row, w, h))
-
-    return windows
-
-
-# ===================== GDAL POLYGONIZE HELPER =====================
-
-def polygonize_chunk_with_gdal(
-    veg_array: np.ndarray,
-    transform,
-    crs_wkt: str,
-    src_name: str,
-    out_fp: str,
-):
-    """
-    Use GDAL Polygonize to convert a uint8 veg_array (0/1) into polygons, written to a GPKG.
-
-    Only polygons where value == 1 are kept, and MIN_AREA is applied (if > 0).
-    Also sets a 'src' field with the input raster name.
-    """
-    h, w = veg_array.shape
-    if veg_array.dtype != np.uint8:
-        veg_array = veg_array.astype("uint8")
-
-    # Skip if nothing is vegetated
-    if not veg_array.any():
+# ----------------------------
+# Helpers
+# ----------------------------
+def safe_read_labels(path: str, source: str) -> Optional[gpd.GeoDataFrame]:
+    """Read a label file if path is non-empty. Return None if empty or read fails."""
+    if path is None or str(path).strip() == "":
+        return None
+    try:
+        gdf = gpd.read_file(path)
+        if gdf is None or len(gdf) == 0:
+            return None
+        gdf = gdf.copy()
+        gdf["source"] = source
+        return gdf
+    except Exception as e:
+        print(f"[WARN] Could not read {source} labels from: {path}\n       {e}")
         return None
 
-    # Create in-memory raster
-    mem_drv = gdal.GetDriverByName("MEM")
-    ras_ds = mem_drv.Create("", w, h, 1, gdal.GDT_Byte)
-    ras_ds.SetGeoTransform(transform.to_gdal()) if hasattr(transform, "to_gdal") \
-        else ras_ds.SetGeoTransform(transform)
-    ras_ds.SetProjection(crs_wkt)
 
-    band = ras_ds.GetRasterBand(1)
-    band.WriteArray(veg_array)
-    band.SetNoDataValue(0)  # non-veg is 0
-
-    # Create output GPKG
-    gpkg_drv = ogr.GetDriverByName("GPKG")
-    if os.path.exists(out_fp):
-        gpkg_drv.DeleteDataSource(out_fp)
-    vec_ds = gpkg_drv.CreateDataSource(out_fp)
-
-    srs = osr.SpatialReference()
-    srs.ImportFromWkt(crs_wkt)
-
-    layer = vec_ds.CreateLayer("vegetation", srs=srs, geom_type=ogr.wkbPolygon)
-
-    # Fields: value (pixel value) and src (scene name)
-    fld_val = ogr.FieldDefn("value", ogr.OFTInteger)
-    layer.CreateField(fld_val)
-    fld_src = ogr.FieldDefn("src", ogr.OFTString)
-    fld_src.SetWidth(128)
-    layer.CreateField(fld_src)
-
-    layer_defn = layer.GetLayerDefn()
-    val_index = layer_defn.GetFieldIndex("value")
-    src_index = layer_defn.GetFieldIndex("src")
-
-    # Polygonize: use band as both src and mask -> non-zero pixels only
-    gdal.Polygonize(band, band, layer, val_index, [], callback=None)
-
-    # Filter features: keep only value == 1 and MIN_AREA, set src field
-    fids_to_delete = []
-    for feat in layer:
-        val = feat.GetField(val_index)
-        if val != 1:
-            fids_to_delete.append(feat.GetFID())
-            continue
-
-        geom = feat.GetGeometryRef()
-        if geom is None or geom.IsEmpty():
-            fids_to_delete.append(feat.GetFID())
-            continue
-
-        if MIN_AREA > 0 and geom.GetArea() < MIN_AREA:
-            fids_to_delete.append(feat.GetFID())
-            continue
-
-        feat.SetField(src_index, src_name)
-        layer.SetFeature(feat)
-
-    for fid in fids_to_delete:
-        layer.DeleteFeature(fid)
-
-    layer.SyncToDisk()
-
-    # Cleanup
-    layer = None
-    vec_ds = None
-    band = None
-    ras_ds = None
-
-    # If layer ended up empty, remove file and return None
-    ds_check = gpkg_drv.Open(out_fp, 0)
-    if ds_check is not None and ds_check.GetLayer(0).GetFeatureCount() == 0:
-        ds_check = None
-        gpkg_drv.DeleteDataSource(out_fp)
-        return None
-
-    return out_fp
+def make_valid(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Best-effort geometry validity fix (works well with shapely>=2)."""
+    gdf = gdf.copy()
+    try:
+        gdf["geometry"] = gdf.geometry.make_valid()
+    except Exception:
+        pass
+    return gdf
 
 
-# ===================== WORKER =====================
-
-def process_chunk(params):
+def sci_compact(x: float) -> str:
     """
-    Worker: compute NDVI + AOI mask in a chunk, polygonize with GDAL, write chunk GPKG.
-
-    params: (tif_path_str, col_off, row_off, width, height, chunk_out_fp, crs_wkt)
+    Compact scientific formatting for tick labels:
+      1e+03 -> 1e3
+      1e+00 -> 1
     """
-    global AOI_MASK, AOI_MASK_SHAPE
-
-    tif_path_str, col, row, w, h, chunk_out_fp, crs_wkt = params
-    window = Window(col, row, w, h)
-
-    # Quick AOI check using shared AOI_MASK
-    if AOI_MASK is None:
-        raise RuntimeError("AOI_MASK is not set in worker process")
-
-    r0 = int(row)
-    r1 = int(row + h)
-    c0 = int(col)
-    c1 = int(col + w)
-
-    r0 = max(0, r0)
-    c0 = max(0, c0)
-    r1 = min(AOI_MASK_SHAPE[0], r1)
-    c1 = min(AOI_MASK_SHAPE[1], c1)
-
-    aoi_sub = AOI_MASK[r0:r1, c0:c1]
-    if aoi_sub.size == 0 or not aoi_sub.any():
-        # No AOI pixels in this chunk: skip
-        return None
-
-    with rasterio.open(tif_path_str) as src:
-        arrays = src.read(
-            [RED_BAND, NIR_BAND],
-            window=window,
-            out_dtype="float32",
-        )
-        red, nir = arrays
-        transform = src.window_transform(window)
-
-    veg = vegetation_mask(red, nir, NDVI_THRESHOLD)
-
-    # Restrict to AOI
-    if aoi_sub.shape != veg.shape:
-        # Crop AOI mask to veg shape if needed (edge alignment issues)
-        aoi_sub = aoi_sub[:veg.shape[0], :veg.shape[1]]
-    veg[aoi_sub == 0] = 0
-
-    if not veg.any():
-        return None
-
-    src_name = os.path.basename(tif_path_str)
-    out_fp = polygonize_chunk_with_gdal(
-        veg,
-        transform,
-        crs_wkt,
-        src_name,
-        chunk_out_fp,
-    )
-    return out_fp
+    if not np.isfinite(x) or x <= 0:
+        return ""
+    s = f"{x:.0e}"  # e.g. 1e+03
+    s = s.replace("e+0", "e").replace("e+", "e").replace("e0", "")
+    if re.fullmatch(r"-?\d+e0", s):
+        s = s.replace("e0", "")
+    return s
 
 
-# ===================== PER-SCENE PROCESSING =====================
+def empty_panel(ax, title: str, ns: List[int], ylabel: Optional[str] = None):
+    ax.set_title(title, loc="left", pad=14)
+    if ylabel:
+        ax.set_ylabel(ylabel)
 
-def process_scene(tif_path: Path, aoi_scene: gpd.GeoDataFrame):
-    """
-    For a single raster:
-      - build AOI_MASK (global)
-      - build chunk windows over AOI bbox
-      - run per-chunk multiprocessing (GDAL polygonize)
-      - return list of chunk GPKG paths
-    """
-    global AOI_MASK, AOI_MASK_SHAPE, AOI_MASK_INFO
+    ax.set_xticks([0, 1, 2])
+    ax.set_xticklabels(["train", "val", "test"])
+    ax.set_xlabel(" ")
 
-    tif_path_str = str(tif_path)
-    chunk_outputs = []
-
-    with rasterio.open(tif_path_str) as src:
-        crs = src.crs
-        crs_wkt = crs.to_wkt()
-
-        # Ensure AOIs in same CRS
-        if aoi_scene.crs != crs:
-            aoi_scene = aoi_scene.to_crs(crs)
-
-        print(f"  - Raster size: {src.width} x {src.height} px")
-
-        # Rasterize buffered AOIs as mask
-        pixel_size = abs(src.transform.a)  # assume square, non-rotated
-        buffer_dist = pixel_size * 0.5
-
-        aoi_scene_buf = aoi_scene.copy()
-        aoi_scene_buf["geometry"] = aoi_scene_buf.geometry.buffer(buffer_dist)
-
-        shapes_for_rasterize = [
-            (geom, 1)
-            for geom in aoi_scene_buf.geometry
-            if geom is not None and not geom.is_empty and geom.is_valid
-        ]
-
-        t_mask = time.time()
-        AOI_MASK = rasterize(
-            shapes=shapes_for_rasterize,
-            out_shape=(src.height, src.width),
-            transform=src.transform,
-            fill=0,
-            dtype="uint8",
-            all_touched=True,   # be generous on edges
-        )
-        AOI_MASK_SHAPE = AOI_MASK.shape
-        n_aoi_pixels = int(AOI_MASK.sum())
-        AOI_MASK_INFO = f"AOI mask shape={AOI_MASK.shape}, AOI pixels={n_aoi_pixels}"
-        print(f"  - Rasterized buffered AOIs to mask in {time.time() - t_mask:.2f}s ({AOI_MASK_INFO})")
-
-        # Build windows over AOI bbox
-        t0 = time.time()
-        windows = build_chunk_windows_for_aoi_bbox(src, aoi_scene_buf)
-        print(f"  - Built {len(windows)} chunk windows over AOI bbox in {time.time() - t0:.2f}s")
-
-    if not windows:
-        AOI_MASK = None
-        AOI_MASK_SHAPE = None
-        AOI_MASK_INFO = ""
-        return []
-
-    # Prepare params for workers
-    scene_tmp_dir = TEMP_VEC_DIR / tif_path.stem
-    scene_tmp_dir.mkdir(parents=True, exist_ok=True)
-
-    jobs = []
-    with rasterio.open(tif_path_str) as src:
-        crs_wkt = src.crs.to_wkt()
-
-    for i, w in enumerate(windows):
-        chunk_out_fp = str(scene_tmp_dir / f"{tif_path.stem}_chunk_{i:05d}.gpkg")
-        jobs.append(
-            (tif_path_str, w.col_off, w.row_off, w.width, w.height, chunk_out_fp, crs_wkt)
+    # n labels centered above each category
+    trans = blended_transform_factory(ax.transData, ax.transAxes)
+    for i, n in enumerate(ns):
+        ax.text(
+            i, TEXTOFF, f"n={n}",
+            transform=trans, ha="center", va="bottom",
+            fontsize=9, clip_on=False
         )
 
-    print("  - Starting chunk multiprocessing...")
-    t1 = time.time()
-    with mp.Pool(processes=N_WORKERS) as pool:
-        for out_fp in tqdm(
-            pool.imap_unordered(process_chunk, jobs),
-            total=len(jobs),
-            desc=f"  Chunks {tif_path.name}",
-            position=1,
-            leave=False,
-        ):
-            if out_fp:
-                chunk_outputs.append(out_fp)
-    print(f"  - Finished chunks in {time.time() - t1:.2f}s")
-
-    # Clear AOI mask for this scene
-    AOI_MASK = None
-    AOI_MASK_SHAPE = None
-    AOI_MASK_INFO = ""
-
-    if not chunk_outputs:
-        print("  - No vegetation polygons found in AOI for this scene.")
-    else:
-        print(f"  - {len(chunk_outputs)} chunk vector files produced.")
-
-    return chunk_outputs
+    ax.grid(True, axis="y", linewidth=0.6, alpha=0.25)
+    ax.set_axisbelow(True)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.text(0.5, 0.5, "No data", transform=ax.transAxes,
+            ha="center", va="center", alpha=0.6)
 
 
-# ===================== MERGING CHUNKS =====================
+# ----------------------------
+# Load labels (PS optional)
+# ----------------------------
+labels_s2 = safe_read_labels(LABELS_S2, "S2")
+labels_ae = safe_read_labels(LABELS_AE, "AE")
+labels_ps = safe_read_labels(LABELS_PS, "PS")  # None if empty
 
-def merge_chunk_files(chunk_fps, merged_fp, layer_name):
-    """
-    Merge many GPKG chunk files into a single GPKG using GDAL/OGR.
-    """
-    if not chunk_fps:
-        return
+loaded = [g for g in (labels_s2, labels_ae, labels_ps) if g is not None]
+if not loaded:
+    raise RuntimeError("No label files could be loaded (S2/AE/PS).")
 
-    drv = ogr.GetDriverByName("GPKG")
-    if os.path.exists(merged_fp):
-        drv.DeleteDataSource(merged_fp)
+# Harmonize CRS across loaded layers (you said already UTM 8N)
+base_crs = loaded[0].crs
+for i in range(len(loaded)):
+    if loaded[i].crs != base_crs:
+        loaded[i] = loaded[i].to_crs(base_crs)
 
-    out_ds = None
-    out_layer = None
+all_labels = gpd.GeoDataFrame(pd.concat(loaded, ignore_index=True), crs=base_crs)
 
-    for i, fp in enumerate(tqdm(chunk_fps, desc="Merging chunks")):
-        src_ds = drv.Open(fp, 0)
-        if src_ds is None:
-            continue
-        src_layer = src_ds.GetLayer(0)
+# ----------------------------
+# Load training areas and align CRS
+# ----------------------------
+training_areas = gpd.read_file(TRAINING_AREAS)
+print(f"found {len(training_areas)} training areas")
 
-        if out_ds is None:
-            # Create destination
-            out_ds = drv.CreateDataSource(str(merged_fp))
-            srs = src_layer.GetSpatialRef()
-            geom_type = src_layer.GetGeomType()
-            out_layer = out_ds.CreateLayer(layer_name, srs=srs, geom_type=geom_type)
+if training_areas.crs != all_labels.crs:
+    training_areas = training_areas.to_crs(all_labels.crs)
 
-            # Copy fields
-            src_defn = src_layer.GetLayerDefn()
-            for fld_i in range(src_defn.GetFieldCount()):
-                fld_defn = src_defn.GetFieldDefn(fld_i)
-                out_layer.CreateField(fld_defn)
+training_areas = training_areas.copy()
+training_areas["training_area_id"] = training_areas.index.astype(int)
 
-        out_defn = out_layer.GetLayerDefn()
-        for feat in src_layer:
-            out_feat = ogr.Feature(out_defn)
-            out_feat.SetFrom(feat)
-            out_layer.CreateFeature(out_feat)
-            out_feat = None
+# Best-effort geometry fix
+all_labels = make_valid(all_labels)
+training_areas = make_valid(training_areas)
 
-        src_layer = None
-        src_ds = None
+# Clip labels to training areas
+all_labels_clipped = gpd.clip(all_labels, training_areas)
 
-    if out_layer is not None:
-        out_layer.SyncToDisk()
-    out_layer = None
-    out_ds = None
+# Spatial join to attach training_area_id
+all_labels_joined = gpd.sjoin(
+    all_labels_clipped,
+    training_areas[["training_area_id", "geometry"]],
+    how="left",
+    predicate="intersects",
+)
 
+# If overlapping training areas create duplicates, keep first match
+if all_labels_joined.index.duplicated().any():
+    all_labels_joined = all_labels_joined[~all_labels_joined.index.duplicated(keep="first")]
 
-# ===================== MAIN =====================
+# Remove sjoin artifact columns
+all_labels = all_labels_joined.drop(
+    columns=[c for c in all_labels_joined.columns if c.startswith("index_")],
+    errors="ignore",
+)
+all_labels["training_area_id"] = all_labels["training_area_id"].astype("Int64")
 
-def main():
-    print("=== Vegetation polygonization with GDAL (AOI-based, chunked, parallel) ===")
-    print(f"Input rasters: {INPUT_DIR}")
-    print(f"Training areas: {TRAINING_AREAS_GPKG}")
-    print(f"Output GPKG: {VEG_GPKG} (layer='{VEG_LAYER}')")
-    print(f"Chunk size: {CHUNK_SHAPE} px, workers: {N_WORKERS}")
-    print("======================================================================\n")
+# ----------------------------
+# Load split lists and assign split
+# ----------------------------
+with open(DATA_SPLIT_AA, "r") as f:
+    aa_frames = json.load(f)
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    TEMP_VEC_DIR.mkdir(parents=True, exist_ok=True)
+training_frames_list = aa_frames["training_frames"]
+validation_frames_list = aa_frames["validation_frames"]
+testing_frames_list = aa_frames["testing_frames"]
 
-    if not TRAINING_AREAS_GPKG.exists():
-        raise FileNotFoundError(f"Training areas GPKG not found: {TRAINING_AREAS_GPKG}")
+all_labels["data_split"] = "unknown"
+all_labels.loc[all_labels["training_area_id"].isin(training_frames_list), "data_split"] = "training"
+all_labels.loc[all_labels["training_area_id"].isin(validation_frames_list), "data_split"] = "validation"
+all_labels.loc[all_labels["training_area_id"].isin(testing_frames_list), "data_split"] = "testing"
 
-    # Clean existing output
-    if VEG_GPKG.exists():
-        print(f"Removing existing GPKG: {VEG_GPKG}")
-        VEG_GPKG.unlink()
+print(all_labels["data_split"].value_counts(dropna=False))
 
-    tif_paths = sorted(INPUT_DIR.glob("*.tif"))
-    if not tif_paths:
-        print(f"No .tif files found in {INPUT_DIR}")
-        return
+# ----------------------------
+# Compute area (UTM => m²) and log10 transform for plotting
+# ----------------------------
+all_labels["area_m2"] = all_labels.geometry.area.astype(float)
+all_labels.loc[all_labels["area_m2"] <= 0, "area_m2"] = np.nan
 
-    stats = {"processed": 0, "skipped": 0, "no_aoi": 0}
-    expected_crs = None
-    training_gdf = None
-    training_sindex = None
-    all_chunk_files = []
+# Violin is drawn in log10 space (better behaved for heavy tails)
+all_labels["log10_area_m2"] = np.log10(all_labels["area_m2"])
 
-    for idx, tif_path in enumerate(tqdm(tif_paths, desc="Scenes", position=0)):
-        stats["processed"] += 1
-        print(f"\n=== Scene {idx + 1}/{len(tif_paths)}: {tif_path.name} ===")
+split_order = SPLIT_ORDER
+sources_fixed = PANEL_ORDER
+panel_labels = ["(a)", "(b)", "(c)"]
 
-        with rasterio.open(tif_path) as src:
-            crs = src.crs
+df_plot = all_labels.loc[
+    all_labels["data_split"].isin(split_order) & np.isfinite(all_labels["log10_area_m2"]),
+    ["source", "data_split", "log10_area_m2"],
+].copy()
 
-            if expected_crs is None:
-                expected_crs = crs
+vals = df_plot["log10_area_m2"].to_numpy()
+if len(vals) == 0:
+    raise RuntimeError("No valid areas to plot (check geometry / split assignment).")
 
-                # Load training areas
-                if TRAINING_LAYER is None:
-                    training_gdf = gpd.read_file(TRAINING_AREAS_GPKG)
-                else:
-                    training_gdf = gpd.read_file(TRAINING_AREAS_GPKG, layer=TRAINING_LAYER)
+# Global y-lims in log10 units (full range; nothing cut off)
+ymin = float(np.nanmin(vals))
+ymax = float(np.nanmax(vals))
+pad = 0.06 * max(1e-6, (ymax - ymin))
+ymin_plot, ymax_plot = ymin - pad, ymax + pad
 
-                if training_gdf.empty:
-                    raise ValueError(f"No features found in training areas: {TRAINING_AREAS_GPKG}")
+# Decade ticks (labels will be shown in m²)
+kmin = int(np.floor(ymin_plot))
+kmax = int(np.ceil(ymax_plot))
+decade_ticks = np.arange(kmin, kmax + 1, 1)
 
-                if training_gdf.crs != expected_crs:
-                    print("Reprojecting training areas to match raster CRS...")
-                    training_gdf = training_gdf.to_crs(expected_crs)
+# ----------------------------
+# Plot styling (paper-ish)
+# ----------------------------
+mpl.rcParams.update({
+    "font.size": 10,
+    "axes.titlesize": 11,
+    "axes.labelsize": 10,
+    "xtick.labelsize": 9,
+    "ytick.labelsize": 9,
+    "axes.linewidth": 0.8,
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
+})
 
-                training_sindex = training_gdf.sindex
-                print(f"Loaded {len(training_gdf)} training polygons in CRS {training_gdf.crs}")
+sns.set_style("white")
 
-            elif crs != expected_crs:
-                raise ValueError(f"CRS mismatch in {tif_path.name}: expected {expected_crs}, got {crs}")
+# ----------------------------
+# MODALITY-SPECIFIC PALETTES
+# ----------------------------
+palettes_by_source = {}
+for src in sources_fixed:
+    cmap_name = MODALITY_CMAPS.get(src, "Greys")
+    cmap = get_cmap(cmap_name)
+    shades = cmap(np.linspace(PALETTE_SHADE_MIN, PALETTE_SHADE_MAX, 3))
+    palettes_by_source[src] = {
+        "training": shades[0],
+        "validation": shades[1],
+        "testing": shades[2],
+    }
 
-            # Raster bbox geometry
-            scene_geom = sg.box(*src.bounds)
+fig, axes = plt.subplots(1, 3, sharey=True, figsize=(10.0, 3.9), constrained_layout=True)
 
-            # Candidate AOIs via spatial index
-            possible_idx = list(training_sindex.intersection(scene_geom.bounds))
-            if not possible_idx:
-                stats["no_aoi"] += 1
-                print("  - No AOIs intersect raster bbox (by index), skipping.")
-                continue
+for ax, source, plab in zip(axes, sources_fixed, panel_labels):
+    sub = df_plot[df_plot["source"] == source]
+    title = f"{plab} {source}"
 
-            aoi_scene = training_gdf.iloc[possible_idx]
-            aoi_scene = aoi_scene[aoi_scene.intersects(scene_geom)]
+    # n centered above each boxplot (train/val/test)
+    ns = [int((sub["data_split"] == sp).sum()) for sp in split_order]
 
-            if aoi_scene.empty:
-                stats["no_aoi"] += 1
-                print("  - No AOIs intersect raster geometry, skipping.")
-                continue
+    if sub.empty:
+        empty_panel(ax, title, ns, ylabel="Area (m²)" if ax is axes[0] else None)
+        ax.set_ylim(ymin_plot, ymax_plot)
+        ax.set_yticks(decade_ticks)
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: sci_compact(10.0 ** y)))
+        continue
 
-            print(f"  - {len(aoi_scene)} training polygons overlap this scene.")
+    ax.set_title(title, loc="left", pad=14)
 
-        # Process scene with GDAL polygonize
-        chunk_files = process_scene(tif_path, aoi_scene)
-        if not chunk_files:
-            stats["skipped"] += 1
-        else:
-            all_chunk_files.extend(chunk_files)
+    split_palette = palettes_by_source[source]
 
-    # Merge all chunk GPKGs into final one
-    if all_chunk_files:
-        print("\nMerging chunk GPKGs into final vegetation.gpkg...")
-        merge_chunk_files(all_chunk_files, VEG_GPKG, VEG_LAYER)
-        print(f"Final GPKG written to {VEG_GPKG}")
-    else:
-        print("\nNo chunk files produced; final GPKG will be empty / missing.")
-
-    # Optional: clean up temp chunk directory
-    # import shutil
-    # shutil.rmtree(TEMP_VEC_DIR, ignore_errors=True)
-
-    print(
-        f"\nDone.\n"
-        f"  Rasters processed: {stats['processed']}\n"
-        f"  Scenes with AOI but no veg: {stats['skipped']}\n"
-        f"  Scenes with no AOI overlap: {stats['no_aoi']}\n"
+    sns.boxplot(
+        data=sub,
+        x="data_split",
+        y="log10_area_m2",
+        order=split_order,
+        palette=split_palette,
+        linewidth=0.9,
+        width=0.6,
+        ax=ax,
     )
 
+    ax.set_xticklabels(["train", "val", "test"])
+    ax.set_xlabel(" ")
 
-if __name__ == "__main__":
-    mp.freeze_support()
-    main()
+    # n labels centered above each boxplot
+    trans = blended_transform_factory(ax.transData, ax.transAxes)
+    for i, n in enumerate(ns):
+        ax.text(
+            i, TEXTOFF, f"n={n}",
+            transform=trans, ha="center", va="bottom",
+            fontsize=9, clip_on=False
+        )
+
+    # Y axis: plotted in log10-space, but labeled in m²
+    ax.set_ylim(ymin_plot, ymax_plot)
+    ax.set_yticks(decade_ticks)
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: sci_compact(10.0 ** y)))
+
+    ax.grid(True, axis="y", linewidth=0.6, alpha=0.25)
+    ax.set_axisbelow(True)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+axes[0].set_ylabel("Area (m²)")
+
+fig.savefig(OUT_PDF, bbox_inches="tight")
+fig.savefig(OUT_PNG, dpi=450, bbox_inches="tight")
+plt.show()
+
+print(f"Saved plots: {OUT_PDF} and {OUT_PNG}")
+
+# ----------------------------
+# Save training areas with split attribute
+# ----------------------------
+training_areas_out = training_areas.copy()
+training_areas_out["data_split"] = "unknown"
+training_areas_out.loc[training_areas_out["training_area_id"].isin(training_frames_list), "data_split"] = "training"
+training_areas_out.loc[training_areas_out["training_area_id"].isin(validation_frames_list), "data_split"] = "validation"
+training_areas_out.loc[training_areas_out["training_area_id"].isin(testing_frames_list), "data_split"] = "testing"
+
+training_areas_out.to_file(OUT_TRAINING_AREAS_SPLIT)
+print(f"Saved: {OUT_TRAINING_AREAS_SPLIT}")

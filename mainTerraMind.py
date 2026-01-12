@@ -20,7 +20,7 @@ if __name__ == "__main__":
     #preprocessing.preprocess_all(config)
 
     # TUNING (HYPERPARAMETER SEARCH)
-    #best = tuning.tune_TerraMind(config)
+    best = tuning.tune_TerraMind(config)
 
     # TRAINING
     #for i in range(10):
@@ -29,7 +29,7 @@ if __name__ == "__main__":
     #    training.train_TerraMind(config)
 
     # EVALUATION
-    evaluation.evaluate_TerraMind(config)
+    #evaluation.evaluate_TerraMind(config)
     
 
 

@@ -262,6 +262,7 @@ def _load_split_indices_from_aalist(
     Supports optional explicit id list in the JSON (area_ids/frame_ids/stems/ids).
     If absent, assumes indices already refer to the current ordering.
     """
+    print("Loading split...")
     with open(split_list_path, "r") as f:
         obj = json.load(f)
 
@@ -330,7 +331,7 @@ def _write_split_json(frames_json: str, train_idx: list, val_idx: list, test_idx
 
 def _chip_params_from_config():
     px = float(getattr(config, "pixel_size_m", 0.15))
-    ps = getattr(config, "patch_size", (256, 256))
+    ps = (16,16) #getattr(config, "patch_size", (256, 256))
     p = int(ps[0]) if isinstance(ps, (tuple, list)) else int(ps)
 
     chip_size_m = float(getattr(config, "chip_size_m", p * px))
@@ -843,12 +844,17 @@ def preprocess_all(conf):
                     while n_done < int(neg_chips_per_area) and tries < max_tries:
                         tries += 1
 
-                        if (maxx - minx) <= chip_size_m or (maxy - miny) <= chip_size_m:
+                        width = maxx - minx
+                        height = maxy - miny
+
+                        # Need enough room for a full square of side 2*half
+                        if width <= 2 * half or height <= 2 * half:
                             cx = 0.5 * (minx + maxx)
                             cy = 0.5 * (miny + maxy)
                         else:
                             cx = float(rng.uniform(minx + half, maxx - half))
                             cy = float(rng.uniform(miny + half, maxy - half))
+
 
                         # Square NEG chip box sized to produce ~neg_chip_px pixels per side
                         nb = box(cx - half, cy - half, cx + half, cy + half)

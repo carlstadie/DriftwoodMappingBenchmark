@@ -1,4 +1,4 @@
-# configSwinUnet.py
+# configUnet.py
 
 import os
 import warnings
@@ -8,16 +8,16 @@ from osgeo import gdal
 
 class Configuration:
     """
-    Configuration used by preprocessing.py, training.py, tuning.py and evaluation.py (Swin-UNet).
-    Only includes parameters referenced by the Swin workflows.
+    Configuration used by preprocessing.py, training.py, tuning.py and evaluation.py (UNet).
+    Only includes parameters actually referenced by the UNet workflows.
     """
 
     def __init__(self):
         # --------- RUN NAME ---------
         # Modality to be run can be AE, PS or S2
-        self.modality = "S2"
-
-        self.run_name = f"SWINx{self.modality}"
+        self.modality = "AE"
+        
+        self.run_name = f"UNETx{self.modality}"
 
         # ---------- PATHS -----------
 
@@ -27,30 +27,36 @@ class Configuration:
         )
         self.training_area_fn = "training_areas.gpkg"
         self.training_polygon_fn = f"labels_{self.modality}.gpkg"
+        self.focus_areas = f"focus_areas_{self.modality}.gpkg"
+
         self.training_image_dir = (
             f"/isipd/projects/p_planetdw/data/methods_test/training_images/{self.modality}"
         )
 
+        self.split_list_path = "/isipd/projects/p_planetdw/data/methods_test/preprocessed/20251226-0433_UNETxAE/aa_frames_list.json"
+
+
         # Preprocessed data roots
         self.preprocessed_base_dir = (
-            f"/isipd/projects/p_planetdw/data/methods_test/training_data/{self.modality}"
-        )
-        self.preprocessed_dir = (
-            "/isipd/projects/p_planetdw/data/methods_test/training_data/"
-            "20260108-1335_UNETxS2"
+            f"/isipd/projects/p_planetdw/data/methods_test/preprocessed"
         )
 
-        # Checkpointing / logs / results (model + modality subfolders)
+        self.training_data_base_dir = (
+            f"/isipd/projects/p_planetdw/data/methods_test/training_data/"
+        )
+        # Keep explicit override exactly as provided
+        self.preprocessed_dir = (
+            "/isipd/projects/p_planetdw/data/methods_test/training_data/"
+            "20251226-0433_UNETxAE"
+        )
+
+
+
+        # Checkpointing / logs / results
         self.continue_model_path = None
-        self.saved_models_dir = (
-            f"/isipd/projects/p_planetdw/data/methods_test/models/SWIN/{self.modality}"
-        )
-        self.logs_dir = (
-            f"/isipd/projects/p_planetdw/data/methods_test/logs/SWIN/{self.modality}"
-        )
-        self.results_dir = (
-            f"/isipd/projects/p_planetdw/data/methods_test/results/SWIN/{self.modality}"
-        )
+        self.saved_models_dir = f"/isipd/projects/p_planetdw/data/methods_test/models/UNET/{self.modality}"
+        self.logs_dir = f"/isipd/projects/p_planetdw/data/methods_test/logs/UNET/{self.modality}"
+        self.results_dir = f"/isipd/projects/p_planetdw/data/methods_test/results/UNET/{self.modality}"
 
         # -------- IMAGE / CHANNELS --------
         self.image_file_type = ".tif"
@@ -60,40 +66,48 @@ class Configuration:
             self.channels_used = [True, True, True, True]
         else:
             self.channels_used = [True, True, True, True, True, True, True, True, True, True, True, True]
-            
+
         self.preprocessing_bands = np.where(self.channels_used)[0]
-        self.channel_list = list(self.preprocessing_bands)
+        self.channel_list = self.preprocessing_bands
+        self.rasterize_borders = True
+        self.get_json = False
 
         # -------- DATA SPLIT --------
         self.test_ratio = 0.2
         self.val_ratio = 0.2
         # train is 1 - test_ratio - val_ratio
 
+        self.split_list_path = None  # Optional path to predefined train/val/test split lists
+
         # -------- TRAINING (CORE) --------
-        self.patch_size = (448, 448)
-        self.tune_patch_h = None
-        self.tune_patch_w = None
-        self.tversky_alphabeta = (0.6, 0.4)
+        self.patch_size = (256, 256)
+        self.tune_patch_h = 256
+        self.tune_patch_w = 256
+        self.tversky_alphabeta = (0.55, 0.45) #alpha controls penalty for false negatives, beta for false positives
+        self.dilation_rate = 2
+        self.dropout = 0.1
+        # Tuned UNet architecture / regularization params 
+        self.layer_count = 96     
+        self.l2_weight = 1e-5       
         self.model_name = self.run_name
 
         # ------ OPTIM / SCHED / EPOCHS ------
         self.loss_fn = "tversky"
-        self.optimizer_fn = "adam"
-
-        # These three are used directly in training.py and match tuner names   # NEW
-        self.learning_rate = 0.00012       # NEW: tuned "learning_rate" goes here
-        self.weight_decay = 1e-5         # NEW: tuned "weight_decay" (for AdamW)
-        self.scheduler = "none"      # NEW: tuned "scheduler" ("none"|"cosine"|"onecycle")
-
-        self.train_batch_size = 8
+        self.optimizer_fn = "adamw"
+   
+        self.learning_rate = 0.0004
+        self.weight_decay = 4.8e-6
+        self.scheduler = "onecycle"
+        
+        self.train_batch_size = 32
         self.num_epochs = 100
         self.num_training_steps = 500
         self.num_validation_images = 50
 
         # ------ EMA ------
-        self.use_ema = True
+        self.use_ema = False
         self.ema_decay = 0.999
-        self.eval_with_ema = True
+        self.eval_with_ema = False
 
         # ------ CHECKPOINTING / LOGGING ------
         self.model_save_interval = None
@@ -107,10 +121,10 @@ class Configuration:
 
         # ------ AUG / SAMPLING / DATALOADER ------
         self.augmenter_strength = 0.7
-        self.min_pos_frac = 5e-05
-        self.pos_ratio = 0.0
-        #self.patch_stride = 0.3
-        self.fit_workers = 0
+        self.min_pos_frac = 0.001
+        self.pos_ratio = None
+        self.patch_stride = None
+        self.fit_workers = 8
         self.steps_per_execution = 1
 
         # ------ EVALUATION ------
@@ -125,22 +139,13 @@ class Configuration:
         self.seed = None
         self.clip_norm = 0.0
 
-        # ------ SWIN-UNET (PP) ------
-        self.swin_patch_size = 4
-        self.swin_window = 7
-        self.swin_levels = 3
-        self.swin_base_channels = 96
-        self.use_imagenet_weights = True
-        # Tuned Swin stochastic depth rate (used in training._build_model_swin)  # NEW
-        self.drop_path = 0.3   # NEW: tuned "drop_path" goes here
-
-        # --- POSTPROCESSING (kept for downstream scripts) ---
+        # --- POSTPROCESSING (kept for downstream scripts) ----
         self.create_polygons = True
         self.postproc_workers = 12
 
-        # Prediction outputs (for completeness with tools)
-        self.train_image_file_type = self.image_file_type
-        self.train_images_prefix = ""
+        # Prediction outputs (for completeness with your tools)
+        self.train_image_type = self.image_file_type
+        self.train_image_prefix = ""
         self.predict_images_file_type = self.image_file_type
         self.predict_images_prefix = ""
         self.overwrite_analysed_files = False
@@ -152,7 +157,7 @@ class Configuration:
         self.output_dtype = "bool"
 
         # ------ GPU / ENV ------
-        self.selected_GPU = 5
+        self.selected_GPU = 6
         gdal.UseExceptions()
         gdal.SetCacheMax(32000000000)
         gdal.SetConfigOption("CPL_LOG", "/dev/null")

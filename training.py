@@ -63,7 +63,7 @@ from core.losses import (
     f1_score,
     f_beta,
     get_loss,
-    nominal_surface_distance,
+    normalized_surface_distance,
     sensitivity,
     specificity,
 )
@@ -476,7 +476,7 @@ class HeavyMetricsEvaluator:
             "f_beta": f_beta,
             "f1_score": f1_score,
             "IoU": IoU,
-            "nominal_surface_distance": nominal_surface_distance,
+            "normalized_surface_distance": normalized_surface_distance,
             "Hausdorff_distance": Hausdorff_distance,
             "boundary_intersection_over_union": boundary_intersection_over_union,
             "dice_loss": dice_loss,
@@ -1133,7 +1133,7 @@ def _fit_model(
             "val_f_beta",
             "val_f1_score",
             "val_IoU",
-            "val_nominal_surface_distance",
+            "val_normalized_surface_distance",
             "val_Hausdorff_distance",
             "val_boundary_intersection_over_union",
             "val_dice_loss",
@@ -1181,8 +1181,8 @@ def _fit_model(
             "last_f_beta": logs.get("val_f_beta"),
             "last_f1_score": logs.get("val_f1_score"),
             "last_IoU": logs.get("val_IoU"),
-            "last_nominal_surface_distance": logs.get(
-                "val_nominal_surface_distance"
+            "last_normalized_surface_distance": logs.get(
+                "val_normalized_surface_distance"
             ),
             "last_Hausdorff_distance": logs.get("val_Hausdorff_distance"),
             "last_boundary_intersection_over_union": logs.get(

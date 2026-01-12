@@ -21,7 +21,7 @@ if __name__ == "__main__":
     #preprocessing.preprocess_all(config)
 
     # TUNING
-    #best = tuning.tune_SwinUNetPP(config)
+    best = tuning.tune_SwinUNetPP(config)
 
     # TRAINING
     #for i in range(10):
@@ -29,4 +29,4 @@ if __name__ == "__main__":
     #    training.train_SwinUNetPP(config)
 
     # EVALUATION
-    evaluation.evaluate_SwinUNetPP(config)
+    #evaluation.evaluate_SwinUNetPP(config)
