@@ -36,7 +36,7 @@ class Configuration:
             f"/isipd/projects/p_planetdw/data/methods_test/training_data/{self.modality}"
         )
         self.preprocessed_dir = (
-            "/isipd/projects/p_planetdw/data/methods_test/training_data/"
+            "/isipd/projects/p_planetdw/data/methods_test/preprocessed/"
             "20260108-1335_UNETxS2"
         )
 
@@ -73,16 +73,16 @@ class Configuration:
         self.patch_size = (448, 448)
         self.tune_patch_h = None
         self.tune_patch_w = None
-        self.tversky_alphabeta = (0.6, 0.4)
+        self.tversky_alphabeta = (0.7, 0.3)
         self.model_name = self.run_name
 
         # ------ OPTIM / SCHED / EPOCHS ------
         self.loss_fn = "tversky"
-        self.optimizer_fn = "adam"
+        self.optimizer_fn = "adamw"
 
         # These three are used directly in training.py and match tuner names   # NEW
-        self.learning_rate = 0.00012       # NEW: tuned "learning_rate" goes here
-        self.weight_decay = 1e-5         # NEW: tuned "weight_decay" (for AdamW)
+        self.learning_rate = 0.0001       # NEW: tuned "learning_rate" goes here
+        self.weight_decay = 0.0063         # NEW: tuned "weight_decay" (for AdamW)
         self.scheduler = "none"      # NEW: tuned "scheduler" ("none"|"cosine"|"onecycle")
 
         self.train_batch_size = 8
@@ -107,7 +107,7 @@ class Configuration:
 
         # ------ AUG / SAMPLING / DATALOADER ------
         self.augmenter_strength = 0.7
-        self.min_pos_frac = 5e-05
+        self.min_pos_frac = 0.001
         self.pos_ratio = 0.0
         #self.patch_stride = 0.3
         self.fit_workers = 0
@@ -132,7 +132,7 @@ class Configuration:
         self.swin_base_channels = 96
         self.use_imagenet_weights = True
         # Tuned Swin stochastic depth rate (used in training._build_model_swin)  # NEW
-        self.drop_path = 0.3   # NEW: tuned "drop_path" goes here
+        self.drop_path = 0.2   # NEW: tuned "drop_path" goes here
 
         # --- POSTPROCESSING (kept for downstream scripts) ---
         self.create_polygons = True
@@ -152,7 +152,7 @@ class Configuration:
         self.output_dtype = "bool"
 
         # ------ GPU / ENV ------
-        self.selected_GPU = 5
+        self.selected_GPU = 3
         gdal.UseExceptions()
         gdal.SetCacheMax(32000000000)
         gdal.SetConfigOption("CPL_LOG", "/dev/null")

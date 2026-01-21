@@ -123,7 +123,7 @@ class DataGenerator:
             patches.extend(ps)
         data = np.asarray(patches)
         img = data[..., self.input_image_channel]
-        ann = data[..., self.annotation_channel]
+        ann = data[..., -1]
         return img, ann
 
     def random_patch(self, batch_size: int):
@@ -248,7 +248,7 @@ class DataGenerator:
         for _ in range(max_tries):
             patch, unpadded_slice = self._random_frame_patch()
             last_patch = patch
-            ann = patch[..., self.annotation_channel]
+            ann = patch[..., -1]
             is_pos = self._is_positive_patch(ann, unpadded_slice)
 
             if want_pos and is_pos:

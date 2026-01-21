@@ -2,10 +2,8 @@
 # Convert this to a notebook if you are using Jupyter.
 
 # This is where you can change which config to use
-from anyio import sleep
-import config.configUnet2 as configuration
-
 # For running on differnt Modalities, adjust the modality in the config file.
+import config.configSwinUnetxPS as configuration
 
 # INIT
 config = configuration.Configuration().validate()
@@ -19,17 +17,16 @@ import evaluation
 # USE PYTORCH ENV FOR THIS PROJECT
 
 if __name__ == "__main__":
-    
     # PREPROCESSING
     #preprocessing.preprocess_all(config)
 
-    # HYPERPARAMETER TUNING
-    #best = tuning.tune_UNet(config)
+    # TUNING
+    #best = tuning.tune_SwinUNetPP(config)
 
     # TRAINING
-    for i in range(2):
+    #for i in range(10):
+    #    print(f" ========== Starting training iteration {i+1}/10 =========== ")
+    #    training.train_SwinUNetPP(config)
 
-       print(f"\n =========== Starting training iteration {i+1}/2  ===========\n")
-       training.train_UNet(config)
-    # EVLAUATION
-    #evaluation.evaluate_unet(config)
+    # EVALUATION
+    evaluation.evaluate_SwinUNetPP(config)

@@ -259,14 +259,19 @@ def _gather_frames_and_test_indices(config) -> Tuple[list, list, list]:
 # Model builders (match training constructors)
 # -----------------------------
 def _build_unet(config) -> torch.nn.Module:
-    """Construct UNet for evaluation matching training architecture."""
     in_ch = len(getattr(config, "channel_list", []))
+    num_classes = int(getattr(config, "num_classes", 1))
+
     model = UNet(
         [config.train_batch_size, *config.patch_size, in_ch],
-        [in_ch],
-        getattr(config, "dilation_rate", 1),
+        num_classes,  # or [0] / [1] etc; but simplest is an int
+        dilation_rate=getattr(config, "dilation_rate", 1),
+        layer_count=getattr(config, "layer_count", 64),
+        l2_weight=getattr(config, "l2_weight", 1e-4),
+        dropout=getattr(config, "dropout", 0.0),
     )
     return model
+
 
 
 def _build_swin(config) -> torch.nn.Module:
@@ -854,8 +859,12 @@ def _evaluate_arch(config, arch: str = "unet") -> None:
                     accum.add(gt, prob)
                     
                     if use_mc_dropout and epi_map is not None and alea_map is not None:
-                        sum_epistemic += float(epi_map.sum())
-                        sum_aleatoric += float(alea_map.sum())
+
+                        epi_finite = np.isfinite(epi_map)
+                        alea_finite = np.isfinite(alea_map)
+
+                        sum_epistemic += float(np.nansum(epi_map[epi_finite]))
+                        sum_aleatoric += float(np.nansum(alea_map[alea_finite]))
                         unc_pixel_count += int(epi_map.size)
                     
                     pbar.update(1)

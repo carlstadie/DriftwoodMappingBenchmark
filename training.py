@@ -341,7 +341,9 @@ def _build_optimizer_and_scheduler(model: nn.Module) -> Tuple[optim.Optimizer, O
         hasattr(config, a) for a in ("tm_lr_backbone", "tm_lr_head_mult", "tm_weight_decay")
     ):
         optimizer = _make_tm_optimizer_from_config(model, opt_name)
-        base_lr = float(getattr(config, "tm_lr_backbone"))
+        # capture per-param-group base lrs for TerraMind configs
+        base_lrs = [float(g.get("lr", 1e-3)) for g in optimizer.param_groups]
+        base_lr = base_lrs[0]
     else:
         # project-level factory
         # project-level factory (respect config)

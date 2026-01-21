@@ -4,7 +4,7 @@
 # For running on differnt Modalities, adjust the modality in the config file.
 
 # This is where you can change which config to use
-import config.configTerraMind as configuration
+import config.configTerraMindxS2 as configuration
 
 # INIT
 config = configuration.Configuration().validate()
@@ -20,16 +20,16 @@ if __name__ == "__main__":
     #preprocessing.preprocess_all(config)
 
     # TUNING (HYPERPARAMETER SEARCH)
-    best = tuning.tune_TerraMind(config)
+    #best = tuning.tune_TerraMind(config)
 
     # TRAINING
     #for i in range(10):
 
-    #    print(f"Starting training iteration {i+1}/10")
+    #    print(f"=========== Starting training iteration {i+1}/10 ============")
     #    training.train_TerraMind(config)
 
     # EVALUATION
-    #evaluation.evaluate_TerraMind(config)
+    evaluation.evaluate_TerraMind(config)
     
 
 

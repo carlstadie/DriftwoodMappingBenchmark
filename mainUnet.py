@@ -3,7 +3,7 @@
 
 # This is where you can change which config to use
 from anyio import sleep
-import config.configUnet as configuration
+import config.configUnetxS2 as configuration
 
 # For running on differnt Modalities, adjust the modality in the config file.
 
@@ -27,9 +27,10 @@ if __name__ == "__main__":
     #best = tuning.tune_UNet(config)
 
     # TRAINING
-    for i in range(2):
+    for i in range(10):
 
-        print(f"\n =========== Starting training iteration {i+1}/2 ===========\n")
+        print(f"\n =========== Starting training iteration {i+1}/10 ===========\n")
         training.train_UNet(config)
+
     # EVLAUATION
-    #evaluation.evaluate_unet(config)
+    evaluation.evaluate_unet(config)

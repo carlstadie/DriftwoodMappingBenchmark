@@ -584,7 +584,7 @@ def load_config_from_project() -> Any:
         pass
 
     try:
-        from config import configUnet as cfg  # type: ignore
+        from config import configUnetxS2 as cfg  # type: ignore
         if hasattr(cfg, "Configuration"):
             return cfg.Configuration()
         return cfg
