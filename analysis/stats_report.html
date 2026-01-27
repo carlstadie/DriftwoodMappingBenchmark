@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Bayesian Benchmark Statistics Report (Improved)</title>
+<title>Bayesian Benchmark Statistics Report (Enhanced)</title>
 <style>
 :root {
   --bg: #0b1020;
@@ -158,16 +158,14 @@ details.footnote summary {
 </head>
 <body>
 <div class="container">
-<h1>Bayesian Benchmark Statistics Report (Improved)</h1>
+<h1>Bayesian Benchmark Statistics Report (Enhanced)</h1>
 <div class="topbar">
 <span class="badge">PyMC 5.27.0</span>
-<span class="badge">Draws 2000 | Tune 2000 | Chains 4</span>
-<span class="badge">Target accept 0.9 | HDI 95%</span>
-<span class="badge">Hierarchical Variance | Multiple BF Bandwidths</span>
+<span class="badge">Hierarchical Variance | Multiple BF Bandwidths | Publication-Ready Plots</span>
 <span class="badge" style="color:var(--accent2)">TESTMODE</span>
 </div>
 <div class="card">
-<p>This IMPROVED report includes: (1) Hierarchical variance structure for better regularization, (2) All outputs transformed to natural, interpretable scales, (3) Multiple bandwidth sensitivity analysis for Bayes factors, (4) Posterior and prior predictive checks, (5) ROPE applied on transformed scale for consistency with the model, (6) Enhanced visualizations with actual values.</p>
+<p>This ENHANCED report includes: (1) Complete factorial analysis for combined posteriors, (2) Full plot coverage for all contrasts, (3) Explicit quantification in all visualizations, (4) Publication-ready styling matching reference figures.</p>
 </div>
 <div class="tabbar">
 <button class="tabbtn" data-tab="tab-overview">Overview</button>
@@ -294,12 +292,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
 </div>
 <div class="card">
-<h2>Statistical Improvements in This Report</h2>
-<p><strong>1. Hierarchical Variance:</strong> All models now use hierarchical priors for sigma, improving regularization even with equal sample sizes (n=10).</p>
-<p><strong>2. Natural Scale Outputs:</strong> All effects are reported on both transformed and natural/interpretable scales (e.g., absolute changes, percentage changes, probability changes).</p>
-<p><strong>3. BF Sensitivity Analysis:</strong> Bayes factors computed with multiple KDE bandwidths (0.1, 0.3, 0.5, scott, silverman) to assess robustness.</p>
-<p><strong>4. ROPE Consistency:</strong> Region of Practical Equivalence (ROPE) is now applied on the transformed scale where the model lives, ensuring statistical consistency.</p>
-<p><strong>5. Predictive Checks:</strong> Prior and posterior predictive checks included to validate model assumptions and fit.</p>
+<h2>Statistical Enhancements</h2>
+<p><strong>1. Complete Factorial Analysis for Combined Posteriors:</strong> The Overall tab now includes full factorial modeling, contrasts, and interaction analysis—not just ranking.</p>
+<p><strong>2. Comprehensive Plot Coverage:</strong> Every contrast table now has a corresponding visualization. No missing plots for dataset-within-architecture or architecture-within-dataset comparisons.</p>
+<p><strong>3. Explicit Quantification:</strong> All plots now display actual numerical values, probabilities, and sample sizes directly on the visualizations.</p>
+<p><strong>4. Publication-Ready Styling:</strong> Updated visual aesthetic matching reference code with consistent colors, fonts, grid styling, and proper axis formatting.</p>
 </div>
 <div class="card">
 <h2>Interpretation Guidelines</h2>
@@ -600,8 +597,9 @@ document.addEventListener('DOMContentLoaded', () => {
 </div>
 </div>
 </div>
+<div class="card">
 <h3>Consecutive ranking comparisons</h3>
-<p>Bayes factors for each group being better than the next lower-ranked group. This shows the strength of evidence for the ranking order.</p>
+<p>Bayes factors for each group being better than the next lower-ranked group.</p>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -623,35 +621,35 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>Swin U-Net | AE</td>
       <td>Swin U-Net | PS</td>
       <td>0.9986</td>
-      <td>12.3970</td>
-      <td>10.9647</td>
-      <td>6.3793</td>
-      <td>12.5324</td>
-      <td>12.7012</td>
-      <td>strong evidence for H1</td>
-    </tr>
-    <tr>
-      <td>1</td>
-      <td>Swin U-Net | PS</td>
-      <td>U-Net | AE</td>
-      <td>0.9989</td>
-      <td>24.8981</td>
-      <td>17.5427</td>
-      <td>10.1073</td>
-      <td>23.1034</td>
-      <td>22.7874</td>
+      <td>13.4096</td>
+      <td>10.7805</td>
+      <td>6.4913</td>
+      <td>12.4674</td>
+      <td>12.1591</td>
       <td>strong evidence for H1</td>
     </tr>
     <tr>
       <td>2</td>
+      <td>Swin U-Net | PS</td>
+      <td>U-Net | AE</td>
+      <td>0.9989</td>
+      <td>24.0906</td>
+      <td>16.8052</td>
+      <td>10.1432</td>
+      <td>23.2330</td>
+      <td>23.1452</td>
+      <td>strong evidence for H1</td>
+    </tr>
+    <tr>
+      <td>3</td>
       <td>U-Net | AE</td>
       <td>U-Net | PS</td>
       <td>0.9995</td>
-      <td>30.9068</td>
-      <td>21.9563</td>
-      <td>12.1105</td>
-      <td>30.1561</td>
-      <td>29.4580</td>
+      <td>30.5236</td>
+      <td>22.4801</td>
+      <td>11.9393</td>
+      <td>30.8255</td>
+      <td>29.6730</td>
       <td>very strong evidence for H1</td>
     </tr>
     <tr>
@@ -659,11 +657,11 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>U-Net | PS</td>
       <td>Swin U-Net | S2</td>
       <td>0.7795</td>
-      <td>0.2077</td>
-      <td>0.1991</td>
-      <td>0.1955</td>
-      <td>0.2010</td>
-      <td>0.2117</td>
+      <td>0.1987</td>
+      <td>0.2063</td>
+      <td>0.1934</td>
+      <td>0.2047</td>
+      <td>0.2008</td>
       <td>moderate evidence for H0</td>
     </tr>
     <tr>
@@ -671,23 +669,23 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>Swin U-Net | S2</td>
       <td>Terramind | AE</td>
       <td>0.6779</td>
-      <td>0.1732</td>
-      <td>0.1733</td>
+      <td>0.1719</td>
+      <td>0.1775</td>
+      <td>0.1766</td>
       <td>0.1734</td>
-      <td>0.1765</td>
-      <td>0.1771</td>
+      <td>0.1676</td>
       <td>moderate evidence for H0</td>
     </tr>
     <tr>
-      <td>5</td>
+      <td>6</td>
       <td>Terramind | AE</td>
       <td>Terramind | PS</td>
       <td>0.9999</td>
-      <td>94.9714</td>
-      <td>82.7624</td>
-      <td>33.8233</td>
-      <td>102.8141</td>
-      <td>103.1258</td>
+      <td>95.8280</td>
+      <td>80.6322</td>
+      <td>34.2629</td>
+      <td>107.8329</td>
+      <td>105.1918</td>
       <td>extreme evidence for H1</td>
     </tr>
     <tr>
@@ -695,21 +693,21 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>Terramind | PS</td>
       <td>U-Net | S2</td>
       <td>0.9958</td>
-      <td>5.6932</td>
-      <td>4.8326</td>
-      <td>2.9174</td>
-      <td>5.8262</td>
-      <td>5.7773</td>
+      <td>5.7116</td>
+      <td>4.7450</td>
+      <td>2.9255</td>
+      <td>5.8829</td>
+      <td>5.5785</td>
       <td>moderate evidence for H1</td>
     </tr>
     <tr>
-      <td>7</td>
+      <td>8</td>
       <td>U-Net | S2</td>
       <td>Terramind | S2</td>
       <td>1.0000</td>
       <td>∞</td>
-      <td>61616.6622</td>
-      <td>1745.8069</td>
+      <td>62048.1670</td>
+      <td>1745.4156</td>
       <td>∞</td>
       <td>∞</td>
       <td>extreme evidence for H1</td>
@@ -725,22 +723,9 @@ document.addEventListener('DOMContentLoaded', () => {
 </div>
 
 <img class="figure" src="stats_report_assets/consecutive_bf_iou.png" alt="Consecutive BF plot for IoU">
-
-<details class="footnote">
-  <summary>Interpreting consecutive comparisons</summary>
-  <div class="small">
-<ul>
-  <li><b>Pr(better)</b> close to 1.0 → strong confidence in ranking order</li>
-  <li><b>Pr(better)</b> near 0.5 → ranking is uncertain, groups may be equivalent</li>
-  <li><b>BF10 > 10</b> → strong evidence for ranking difference</li>
-  <li><b>BF10 < 1</b> → evidence against ranking difference (groups may be equivalent)</li>
-  <li>Multiple bandwidths show robustness of conclusions</li>
-</ul>
 </div>
-</details>
 <div class="card">
 <h3>Factorial effects (Natural Scale with BF Sensitivity)</h3>
-<p>All effects shown on natural, interpretable scales. Multiple BF bandwidths show robustness of evidence. Consistent BF across bandwidths = stronger conclusion.</p>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -1084,7 +1069,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 <h3>Heatmap of posterior mean (Original Scale)</h3>
 <img class="figure" src="stats_report_assets/heat_iou.png" alt="Heatmap for IoU">
-<h3>Key architecture contrasts (within each dataset, baseline arch=U-Net; ROPE=0.05 on transformed scale)</h3>
+<h3>Architecture contrasts within each dataset (baseline=U-Net)</h3>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -1162,9 +1147,9 @@ document.addEventListener('DOMContentLoaded', () => {
   </ul>
 </div>
 
-<h3>Contrast plot</h3>
-<img class="figure" src="stats_report_assets/contrasts_iou.png" alt="Contrast plot for IoU">
-<h3>Key dataset contrasts (within each architecture, baseline dataset=AE; ROPE=0.05 on transformed scale)</h3>
+<h3>Architecture contrast plot</h3>
+<img class="figure" src="stats_report_assets/contrasts_arch_iou.png" alt="Architecture contrast plot for IoU">
+<h3>Dataset contrasts within each architecture (baseline=AE)</h3>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -1242,7 +1227,9 @@ document.addEventListener('DOMContentLoaded', () => {
   </ul>
 </div>
 
-<h3>Overall architecture contrasts (marginal over datasets, baseline arch=U-Net)</h3>
+<h3>Dataset contrast plot</h3>
+<img class="figure" src="stats_report_assets/contrasts_dataset_iou.png" alt="Dataset contrast plot for IoU">
+<h3>Overall architecture contrasts (marginal over datasets)</h3>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -1284,8 +1271,9 @@ document.addEventListener('DOMContentLoaded', () => {
   </ul>
 </div>
 
+<h3>Overall architecture contrast plot</h3>
 <img class="figure" src="stats_report_assets/arch_overall_iou.png" alt="Overall architecture contrasts for IoU">
-<h3>Overall dataset contrasts (marginal over architectures, baseline dataset=AE)</h3>
+<h3>Overall dataset contrasts (marginal over architectures)</h3>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -1327,19 +1315,8 @@ document.addEventListener('DOMContentLoaded', () => {
   </ul>
 </div>
 
+<h3>Overall dataset contrast plot</h3>
 <img class="figure" src="stats_report_assets/dataset_overall_iou.png" alt="Overall dataset contrasts for IoU">
-
-<details class="footnote">
-  <summary>Understanding the factorial section</summary>
-  <div class="small">
-<ul>
-  <li><b>Effects coding:</b> Coefficients are not simple “add to intercept” baselines.</li>
-  <li><b>Interpretable effects:</b> We compute OR/Δp (or absolute change) from <b>contrasts on predicted means</b>, which is correct under effects coding.</li>
-  <li><b>BF sensitivity:</b> If BF values are similar across bandwidths, the evidence is robust.</li>
-  <li><b>ROPE on transformed scale:</b> For consistency with the model parameter space where effects are estimated.</li>
-</ul>
-</div>
-</details>
 </div>
 </div>
 <div class="tabcontent" id="tab-dice-coef">
@@ -1593,8 +1570,9 @@ document.addEventListener('DOMContentLoaded', () => {
 </div>
 </div>
 </div>
+<div class="card">
 <h3>Consecutive ranking comparisons</h3>
-<p>Bayes factors for each group being better than the next lower-ranked group. This shows the strength of evidence for the ranking order.</p>
+<p>Bayes factors for each group being better than the next lower-ranked group.</p>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -1617,8 +1595,8 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>Swin U-Net | PS</td>
       <td>1.0000</td>
       <td>∞</td>
-      <td>9107.7679</td>
-      <td>853.2678</td>
+      <td>8893.1667</td>
+      <td>852.1743</td>
       <td>∞</td>
       <td>∞</td>
       <td>extreme evidence for H1</td>
@@ -1628,35 +1606,35 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>Swin U-Net | PS</td>
       <td>U-Net | AE</td>
       <td>0.8846</td>
-      <td>0.3711</td>
-      <td>0.3468</td>
-      <td>0.3259</td>
-      <td>0.3906</td>
-      <td>0.3741</td>
-      <td>anecdotal evidence for H0</td>
-    </tr>
-    <tr>
-      <td>2</td>
-      <td>U-Net | AE</td>
-      <td>Swin U-Net | S2</td>
-      <td>0.9286</td>
-      <td>0.5505</td>
-      <td>0.5296</td>
-      <td>0.4590</td>
-      <td>0.5545</td>
-      <td>0.5732</td>
+      <td>0.4017</td>
+      <td>0.3558</td>
+      <td>0.3277</td>
+      <td>0.3704</td>
+      <td>0.3756</td>
       <td>anecdotal evidence for H0</td>
     </tr>
     <tr>
       <td>3</td>
+      <td>U-Net | AE</td>
+      <td>Swin U-Net | S2</td>
+      <td>0.9286</td>
+      <td>0.5456</td>
+      <td>0.5323</td>
+      <td>0.4693</td>
+      <td>0.5715</td>
+      <td>0.5651</td>
+      <td>anecdotal evidence for H0</td>
+    </tr>
+    <tr>
+      <td>4</td>
       <td>Swin U-Net | S2</td>
       <td>U-Net | PS</td>
       <td>0.9994</td>
-      <td>18.6564</td>
-      <td>13.2435</td>
-      <td>7.5303</td>
-      <td>17.9811</td>
-      <td>17.6651</td>
+      <td>18.2693</td>
+      <td>12.8862</td>
+      <td>7.5875</td>
+      <td>17.7864</td>
+      <td>17.4118</td>
       <td>strong evidence for H1</td>
     </tr>
     <tr>
@@ -1664,11 +1642,11 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>U-Net | PS</td>
       <td>Terramind | AE</td>
       <td>0.9992</td>
-      <td>21.5688</td>
-      <td>15.1600</td>
-      <td>9.9456</td>
-      <td>19.0215</td>
-      <td>18.7165</td>
+      <td>19.9538</td>
+      <td>14.7556</td>
+      <td>9.8713</td>
+      <td>19.0826</td>
+      <td>18.3445</td>
       <td>strong evidence for H1</td>
     </tr>
     <tr>
@@ -1676,11 +1654,11 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>Terramind | AE</td>
       <td>Terramind | PS</td>
       <td>0.9555</td>
-      <td>0.6683</td>
-      <td>0.6320</td>
-      <td>0.5252</td>
-      <td>0.6810</td>
-      <td>0.6942</td>
+      <td>0.7237</td>
+      <td>0.6243</td>
+      <td>0.5351</td>
+      <td>0.6986</td>
+      <td>0.6978</td>
       <td>anecdotal evidence for H0</td>
     </tr>
     <tr>
@@ -1688,23 +1666,23 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>Terramind | PS</td>
       <td>U-Net | S2</td>
       <td>0.8124</td>
-      <td>0.2798</td>
-      <td>0.2770</td>
-      <td>0.2625</td>
-      <td>0.2753</td>
-      <td>0.2853</td>
+      <td>0.2922</td>
+      <td>0.2791</td>
+      <td>0.2647</td>
+      <td>0.2876</td>
+      <td>0.2901</td>
       <td>moderate evidence for H0</td>
     </tr>
     <tr>
-      <td>7</td>
+      <td>8</td>
       <td>U-Net | S2</td>
       <td>Terramind | S2</td>
       <td>0.9910</td>
-      <td>3.5041</td>
-      <td>2.5574</td>
-      <td>1.7613</td>
-      <td>3.3336</td>
-      <td>3.2447</td>
+      <td>3.6519</td>
+      <td>2.5461</td>
+      <td>1.7924</td>
+      <td>3.2654</td>
+      <td>3.2109</td>
       <td>moderate evidence for H1</td>
     </tr>
   </tbody>
@@ -1718,22 +1696,9 @@ document.addEventListener('DOMContentLoaded', () => {
 </div>
 
 <img class="figure" src="stats_report_assets/consecutive_bf_dice-coef.png" alt="Consecutive BF plot for dice_coef">
-
-<details class="footnote">
-  <summary>Interpreting consecutive comparisons</summary>
-  <div class="small">
-<ul>
-  <li><b>Pr(better)</b> close to 1.0 → strong confidence in ranking order</li>
-  <li><b>Pr(better)</b> near 0.5 → ranking is uncertain, groups may be equivalent</li>
-  <li><b>BF10 > 10</b> → strong evidence for ranking difference</li>
-  <li><b>BF10 < 1</b> → evidence against ranking difference (groups may be equivalent)</li>
-  <li>Multiple bandwidths show robustness of conclusions</li>
-</ul>
 </div>
-</details>
 <div class="card">
 <h3>Factorial effects (Natural Scale with BF Sensitivity)</h3>
-<p>All effects shown on natural, interpretable scales. Multiple BF bandwidths show robustness of evidence. Consistent BF across bandwidths = stronger conclusion.</p>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -2077,7 +2042,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 <h3>Heatmap of posterior mean (Original Scale)</h3>
 <img class="figure" src="stats_report_assets/heat_dice-coef.png" alt="Heatmap for dice_coef">
-<h3>Key architecture contrasts (within each dataset, baseline arch=U-Net; ROPE=0.05 on transformed scale)</h3>
+<h3>Architecture contrasts within each dataset (baseline=U-Net)</h3>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -2155,9 +2120,9 @@ document.addEventListener('DOMContentLoaded', () => {
   </ul>
 </div>
 
-<h3>Contrast plot</h3>
-<img class="figure" src="stats_report_assets/contrasts_dice-coef.png" alt="Contrast plot for dice_coef">
-<h3>Key dataset contrasts (within each architecture, baseline dataset=AE; ROPE=0.05 on transformed scale)</h3>
+<h3>Architecture contrast plot</h3>
+<img class="figure" src="stats_report_assets/contrasts_arch_dice-coef.png" alt="Architecture contrast plot for dice_coef">
+<h3>Dataset contrasts within each architecture (baseline=AE)</h3>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -2235,7 +2200,9 @@ document.addEventListener('DOMContentLoaded', () => {
   </ul>
 </div>
 
-<h3>Overall architecture contrasts (marginal over datasets, baseline arch=U-Net)</h3>
+<h3>Dataset contrast plot</h3>
+<img class="figure" src="stats_report_assets/contrasts_dataset_dice-coef.png" alt="Dataset contrast plot for dice_coef">
+<h3>Overall architecture contrasts (marginal over datasets)</h3>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -2277,8 +2244,9 @@ document.addEventListener('DOMContentLoaded', () => {
   </ul>
 </div>
 
+<h3>Overall architecture contrast plot</h3>
 <img class="figure" src="stats_report_assets/arch_overall_dice-coef.png" alt="Overall architecture contrasts for dice_coef">
-<h3>Overall dataset contrasts (marginal over architectures, baseline dataset=AE)</h3>
+<h3>Overall dataset contrasts (marginal over architectures)</h3>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -2320,19 +2288,8 @@ document.addEventListener('DOMContentLoaded', () => {
   </ul>
 </div>
 
+<h3>Overall dataset contrast plot</h3>
 <img class="figure" src="stats_report_assets/dataset_overall_dice-coef.png" alt="Overall dataset contrasts for dice_coef">
-
-<details class="footnote">
-  <summary>Understanding the factorial section</summary>
-  <div class="small">
-<ul>
-  <li><b>Effects coding:</b> Coefficients are not simple “add to intercept” baselines.</li>
-  <li><b>Interpretable effects:</b> We compute OR/Δp (or absolute change) from <b>contrasts on predicted means</b>, which is correct under effects coding.</li>
-  <li><b>BF sensitivity:</b> If BF values are similar across bandwidths, the evidence is robust.</li>
-  <li><b>ROPE on transformed scale:</b> For consistency with the model parameter space where effects are estimated.</li>
-</ul>
-</div>
-</details>
 </div>
 </div>
 <div class="tabcontent" id="tab-normalized-surface-distance">
@@ -2586,8 +2543,9 @@ document.addEventListener('DOMContentLoaded', () => {
 </div>
 </div>
 </div>
+<div class="card">
 <h3>Consecutive ranking comparisons</h3>
-<p>Bayes factors for each group being better than the next lower-ranked group. This shows the strength of evidence for the ranking order.</p>
+<p>Bayes factors for each group being better than the next lower-ranked group.</p>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -2609,23 +2567,23 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>Terramind | S2</td>
       <td>Terramind | AE</td>
       <td>0.9998</td>
-      <td>773.6132</td>
-      <td>133.9821</td>
-      <td>66.3664</td>
-      <td>328.5094</td>
-      <td>286.7868</td>
+      <td>845.9037</td>
+      <td>134.9780</td>
+      <td>67.7989</td>
+      <td>325.0990</td>
+      <td>297.1104</td>
       <td>extreme evidence for H1</td>
     </tr>
     <tr>
-      <td>3</td>
+      <td>2</td>
       <td>Terramind | AE</td>
       <td>U-Net | S2</td>
       <td>0.5124</td>
-      <td>0.3478</td>
-      <td>0.3538</td>
-      <td>0.3617</td>
-      <td>0.3426</td>
-      <td>0.3504</td>
+      <td>0.3505</td>
+      <td>0.3500</td>
+      <td>0.3569</td>
+      <td>0.3529</td>
+      <td>0.3420</td>
       <td>anecdotal evidence for H0</td>
     </tr>
     <tr>
@@ -2633,47 +2591,47 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>U-Net | S2</td>
       <td>U-Net | PS</td>
       <td>0.6346</td>
-      <td>0.3906</td>
-      <td>0.3800</td>
-      <td>0.3739</td>
-      <td>0.3846</td>
-      <td>0.3939</td>
-      <td>anecdotal evidence for H0</td>
-    </tr>
-    <tr>
-      <td>3</td>
-      <td>U-Net | PS</td>
-      <td>Terramind | PS</td>
-      <td>0.7136</td>
-      <td>0.4161</td>
-      <td>0.4198</td>
-      <td>0.4191</td>
-      <td>0.4277</td>
-      <td>0.4352</td>
+      <td>0.3861</td>
+      <td>0.3750</td>
+      <td>0.3722</td>
+      <td>0.3907</td>
+      <td>0.3872</td>
       <td>anecdotal evidence for H0</td>
     </tr>
     <tr>
       <td>4</td>
+      <td>U-Net | PS</td>
       <td>Terramind | PS</td>
-      <td>Swin U-Net | S2</td>
-      <td>0.6132</td>
-      <td>0.3826</td>
-      <td>0.3848</td>
-      <td>0.3797</td>
-      <td>0.3677</td>
-      <td>0.3824</td>
+      <td>0.7136</td>
+      <td>0.4583</td>
+      <td>0.4265</td>
+      <td>0.4131</td>
+      <td>0.4282</td>
+      <td>0.4383</td>
       <td>anecdotal evidence for H0</td>
     </tr>
     <tr>
       <td>5</td>
+      <td>Terramind | PS</td>
+      <td>Swin U-Net | S2</td>
+      <td>0.6132</td>
+      <td>0.3771</td>
+      <td>0.3714</td>
+      <td>0.3773</td>
+      <td>0.3753</td>
+      <td>0.3757</td>
+      <td>anecdotal evidence for H0</td>
+    </tr>
+    <tr>
+      <td>6</td>
       <td>Swin U-Net | S2</td>
       <td>Swin U-Net | PS</td>
       <td>0.9936</td>
-      <td>8.0320</td>
-      <td>6.8979</td>
-      <td>5.1474</td>
-      <td>7.6601</td>
-      <td>7.9956</td>
+      <td>7.9555</td>
+      <td>6.9371</td>
+      <td>5.1068</td>
+      <td>7.8319</td>
+      <td>7.6134</td>
       <td>moderate evidence for H1</td>
     </tr>
     <tr>
@@ -2681,11 +2639,11 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>Swin U-Net | PS</td>
       <td>U-Net | AE</td>
       <td>0.8979</td>
-      <td>0.8099</td>
-      <td>0.7558</td>
-      <td>0.7044</td>
-      <td>0.7755</td>
-      <td>0.8007</td>
+      <td>0.7998</td>
+      <td>0.7504</td>
+      <td>0.7076</td>
+      <td>0.7762</td>
+      <td>0.8026</td>
       <td>anecdotal evidence for H0</td>
     </tr>
     <tr>
@@ -2693,11 +2651,11 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>U-Net | AE</td>
       <td>Swin U-Net | AE</td>
       <td>0.6837</td>
-      <td>0.4513</td>
-      <td>0.4314</td>
-      <td>0.4318</td>
-      <td>0.4385</td>
-      <td>0.4282</td>
+      <td>0.4291</td>
+      <td>0.4332</td>
+      <td>0.4356</td>
+      <td>0.4422</td>
+      <td>0.4489</td>
       <td>anecdotal evidence for H0</td>
     </tr>
   </tbody>
@@ -2711,22 +2669,9 @@ document.addEventListener('DOMContentLoaded', () => {
 </div>
 
 <img class="figure" src="stats_report_assets/consecutive_bf_normalized-surface-distance.png" alt="Consecutive BF plot for normalized_surface_distance">
-
-<details class="footnote">
-  <summary>Interpreting consecutive comparisons</summary>
-  <div class="small">
-<ul>
-  <li><b>Pr(better)</b> close to 1.0 → strong confidence in ranking order</li>
-  <li><b>Pr(better)</b> near 0.5 → ranking is uncertain, groups may be equivalent</li>
-  <li><b>BF10 > 10</b> → strong evidence for ranking difference</li>
-  <li><b>BF10 < 1</b> → evidence against ranking difference (groups may be equivalent)</li>
-  <li>Multiple bandwidths show robustness of conclusions</li>
-</ul>
 </div>
-</details>
 <div class="card">
 <h3>Factorial effects (Natural Scale with BF Sensitivity)</h3>
-<p>All effects shown on natural, interpretable scales. Multiple BF bandwidths show robustness of evidence. Consistent BF across bandwidths = stronger conclusion.</p>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -3070,7 +3015,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 <h3>Heatmap of posterior mean (Original Scale)</h3>
 <img class="figure" src="stats_report_assets/heat_normalized-surface-distance.png" alt="Heatmap for normalized_surface_distance">
-<h3>Key architecture contrasts (within each dataset, baseline arch=U-Net; ROPE=0.05 on transformed scale)</h3>
+<h3>Architecture contrasts within each dataset (baseline=U-Net)</h3>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -3148,9 +3093,9 @@ document.addEventListener('DOMContentLoaded', () => {
   </ul>
 </div>
 
-<h3>Contrast plot</h3>
-<img class="figure" src="stats_report_assets/contrasts_normalized-surface-distance.png" alt="Contrast plot for normalized_surface_distance">
-<h3>Key dataset contrasts (within each architecture, baseline dataset=AE; ROPE=0.05 on transformed scale)</h3>
+<h3>Architecture contrast plot</h3>
+<img class="figure" src="stats_report_assets/contrasts_arch_normalized-surface-distance.png" alt="Architecture contrast plot for normalized_surface_distance">
+<h3>Dataset contrasts within each architecture (baseline=AE)</h3>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -3228,7 +3173,9 @@ document.addEventListener('DOMContentLoaded', () => {
   </ul>
 </div>
 
-<h3>Overall architecture contrasts (marginal over datasets, baseline arch=U-Net)</h3>
+<h3>Dataset contrast plot</h3>
+<img class="figure" src="stats_report_assets/contrasts_dataset_normalized-surface-distance.png" alt="Dataset contrast plot for normalized_surface_distance">
+<h3>Overall architecture contrasts (marginal over datasets)</h3>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -3270,8 +3217,9 @@ document.addEventListener('DOMContentLoaded', () => {
   </ul>
 </div>
 
+<h3>Overall architecture contrast plot</h3>
 <img class="figure" src="stats_report_assets/arch_overall_normalized-surface-distance.png" alt="Overall architecture contrasts for normalized_surface_distance">
-<h3>Overall dataset contrasts (marginal over architectures, baseline dataset=AE)</h3>
+<h3>Overall dataset contrasts (marginal over architectures)</h3>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -3313,19 +3261,8 @@ document.addEventListener('DOMContentLoaded', () => {
   </ul>
 </div>
 
+<h3>Overall dataset contrast plot</h3>
 <img class="figure" src="stats_report_assets/dataset_overall_normalized-surface-distance.png" alt="Overall dataset contrasts for normalized_surface_distance">
-
-<details class="footnote">
-  <summary>Understanding the factorial section</summary>
-  <div class="small">
-<ul>
-  <li><b>Effects coding:</b> Coefficients are not simple “add to intercept” baselines.</li>
-  <li><b>Interpretable effects:</b> We compute OR/Δp (or absolute change) from <b>contrasts on predicted means</b>, which is correct under effects coding.</li>
-  <li><b>BF sensitivity:</b> If BF values are similar across bandwidths, the evidence is robust.</li>
-  <li><b>ROPE on transformed scale:</b> For consistency with the model parameter space where effects are estimated.</li>
-</ul>
-</div>
-</details>
 </div>
 </div>
 <div class="tabcontent" id="tab-mean-epistemic-uncertainty">
@@ -3579,8 +3516,9 @@ document.addEventListener('DOMContentLoaded', () => {
 </div>
 </div>
 </div>
+<div class="card">
 <h3>Consecutive ranking comparisons</h3>
-<p>Bayes factors for each group being better than the next lower-ranked group. This shows the strength of evidence for the ranking order.</p>
+<p>Bayes factors for each group being better than the next lower-ranked group.</p>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -3602,11 +3540,11 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>Swin U-Net | AE</td>
       <td>Swin U-Net | PS</td>
       <td>0.9929</td>
-      <td>6.8156</td>
-      <td>5.5410</td>
-      <td>3.7571</td>
-      <td>6.6184</td>
-      <td>6.5098</td>
+      <td>7.2195</td>
+      <td>5.5354</td>
+      <td>3.7718</td>
+      <td>6.8126</td>
+      <td>6.6441</td>
       <td>moderate evidence for H1</td>
     </tr>
     <tr>
@@ -3614,11 +3552,11 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>Swin U-Net | PS</td>
       <td>Swin U-Net | S2</td>
       <td>0.6022</td>
-      <td>0.3170</td>
-      <td>0.3187</td>
-      <td>0.3193</td>
-      <td>0.3093</td>
-      <td>0.3176</td>
+      <td>0.3154</td>
+      <td>0.3118</td>
+      <td>0.3128</td>
+      <td>0.3089</td>
+      <td>0.3090</td>
       <td>moderate evidence for H0</td>
     </tr>
     <tr>
@@ -3626,47 +3564,47 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>Swin U-Net | S2</td>
       <td>U-Net | PS</td>
       <td>0.5844</td>
-      <td>0.3451</td>
-      <td>0.3299</td>
-      <td>0.3437</td>
-      <td>0.3375</td>
-      <td>0.3383</td>
-      <td>anecdotal evidence for H0</td>
-    </tr>
-    <tr>
-      <td>3</td>
-      <td>U-Net | PS</td>
-      <td>U-Net | AE</td>
-      <td>0.7770</td>
-      <td>0.4911</td>
-      <td>0.4761</td>
-      <td>0.4492</td>
-      <td>0.4758</td>
-      <td>0.4767</td>
+      <td>0.3468</td>
+      <td>0.3332</td>
+      <td>0.3329</td>
+      <td>0.3418</td>
+      <td>0.3279</td>
       <td>anecdotal evidence for H0</td>
     </tr>
     <tr>
       <td>4</td>
+      <td>U-Net | PS</td>
       <td>U-Net | AE</td>
-      <td>U-Net | S2</td>
-      <td>0.9320</td>
-      <td>1.0610</td>
-      <td>0.9847</td>
-      <td>0.8591</td>
-      <td>1.0849</td>
-      <td>1.0298</td>
-      <td>anecdotal evidence for H1 (effect)</td>
+      <td>0.7770</td>
+      <td>0.4448</td>
+      <td>0.4684</td>
+      <td>0.4568</td>
+      <td>0.4745</td>
+      <td>0.4799</td>
+      <td>anecdotal evidence for H0</td>
     </tr>
     <tr>
       <td>5</td>
+      <td>U-Net | AE</td>
+      <td>U-Net | S2</td>
+      <td>0.9320</td>
+      <td>1.0647</td>
+      <td>0.9894</td>
+      <td>0.8769</td>
+      <td>1.0319</td>
+      <td>1.0674</td>
+      <td>anecdotal evidence for H1 (effect)</td>
+    </tr>
+    <tr>
+      <td>6</td>
       <td>U-Net | S2</td>
       <td>Terramind | PS</td>
       <td>0.9752</td>
-      <td>2.8979</td>
-      <td>2.5826</td>
-      <td>1.9989</td>
-      <td>2.8489</td>
-      <td>2.7434</td>
+      <td>2.7368</td>
+      <td>2.4917</td>
+      <td>1.9365</td>
+      <td>2.7985</td>
+      <td>2.8705</td>
       <td>anecdotal evidence for H1 (effect)</td>
     </tr>
     <tr>
@@ -3674,11 +3612,11 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>Terramind | PS</td>
       <td>Terramind | AE</td>
       <td>0.7967</td>
-      <td>0.5257</td>
-      <td>0.5272</td>
-      <td>0.5018</td>
-      <td>0.5508</td>
-      <td>0.5218</td>
+      <td>0.5501</td>
+      <td>0.5297</td>
+      <td>0.4924</td>
+      <td>0.5391</td>
+      <td>0.5083</td>
       <td>anecdotal evidence for H0</td>
     </tr>
     <tr>
@@ -3686,11 +3624,11 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>Terramind | AE</td>
       <td>Terramind | S2</td>
       <td>0.6499</td>
-      <td>0.3903</td>
-      <td>0.4071</td>
-      <td>0.3979</td>
-      <td>0.4003</td>
-      <td>0.3994</td>
+      <td>0.4127</td>
+      <td>0.4038</td>
+      <td>0.3947</td>
+      <td>0.4078</td>
+      <td>0.3943</td>
       <td>anecdotal evidence for H0</td>
     </tr>
   </tbody>
@@ -3704,22 +3642,9 @@ document.addEventListener('DOMContentLoaded', () => {
 </div>
 
 <img class="figure" src="stats_report_assets/consecutive_bf_mean-epistemic-uncertainty.png" alt="Consecutive BF plot for mean_epistemic_uncertainty">
-
-<details class="footnote">
-  <summary>Interpreting consecutive comparisons</summary>
-  <div class="small">
-<ul>
-  <li><b>Pr(better)</b> close to 1.0 → strong confidence in ranking order</li>
-  <li><b>Pr(better)</b> near 0.5 → ranking is uncertain, groups may be equivalent</li>
-  <li><b>BF10 > 10</b> → strong evidence for ranking difference</li>
-  <li><b>BF10 < 1</b> → evidence against ranking difference (groups may be equivalent)</li>
-  <li>Multiple bandwidths show robustness of conclusions</li>
-</ul>
 </div>
-</details>
 <div class="card">
 <h3>Factorial effects (Natural Scale with BF Sensitivity)</h3>
-<p>All effects shown on natural, interpretable scales. Multiple BF bandwidths show robustness of evidence. Consistent BF across bandwidths = stronger conclusion.</p>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -4063,7 +3988,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 <h3>Heatmap of posterior mean (Original Scale)</h3>
 <img class="figure" src="stats_report_assets/heat_mean-epistemic-uncertainty.png" alt="Heatmap for mean_epistemic_uncertainty">
-<h3>Key architecture contrasts (within each dataset, baseline arch=U-Net; ROPE=0.05 on transformed scale)</h3>
+<h3>Architecture contrasts within each dataset (baseline=U-Net)</h3>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -4141,9 +4066,9 @@ document.addEventListener('DOMContentLoaded', () => {
   </ul>
 </div>
 
-<h3>Contrast plot</h3>
-<img class="figure" src="stats_report_assets/contrasts_mean-epistemic-uncertainty.png" alt="Contrast plot for mean_epistemic_uncertainty">
-<h3>Key dataset contrasts (within each architecture, baseline dataset=AE; ROPE=0.05 on transformed scale)</h3>
+<h3>Architecture contrast plot</h3>
+<img class="figure" src="stats_report_assets/contrasts_arch_mean-epistemic-uncertainty.png" alt="Architecture contrast plot for mean_epistemic_uncertainty">
+<h3>Dataset contrasts within each architecture (baseline=AE)</h3>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -4221,7 +4146,9 @@ document.addEventListener('DOMContentLoaded', () => {
   </ul>
 </div>
 
-<h3>Overall architecture contrasts (marginal over datasets, baseline arch=U-Net)</h3>
+<h3>Dataset contrast plot</h3>
+<img class="figure" src="stats_report_assets/contrasts_dataset_mean-epistemic-uncertainty.png" alt="Dataset contrast plot for mean_epistemic_uncertainty">
+<h3>Overall architecture contrasts (marginal over datasets)</h3>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -4263,8 +4190,9 @@ document.addEventListener('DOMContentLoaded', () => {
   </ul>
 </div>
 
+<h3>Overall architecture contrast plot</h3>
 <img class="figure" src="stats_report_assets/arch_overall_mean-epistemic-uncertainty.png" alt="Overall architecture contrasts for mean_epistemic_uncertainty">
-<h3>Overall dataset contrasts (marginal over architectures, baseline dataset=AE)</h3>
+<h3>Overall dataset contrasts (marginal over architectures)</h3>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -4306,19 +4234,8 @@ document.addEventListener('DOMContentLoaded', () => {
   </ul>
 </div>
 
+<h3>Overall dataset contrast plot</h3>
 <img class="figure" src="stats_report_assets/dataset_overall_mean-epistemic-uncertainty.png" alt="Overall dataset contrasts for mean_epistemic_uncertainty">
-
-<details class="footnote">
-  <summary>Understanding the factorial section</summary>
-  <div class="small">
-<ul>
-  <li><b>Effects coding:</b> Coefficients are not simple “add to intercept” baselines.</li>
-  <li><b>Interpretable effects:</b> We compute OR/Δp (or absolute change) from <b>contrasts on predicted means</b>, which is correct under effects coding.</li>
-  <li><b>BF sensitivity:</b> If BF values are similar across bandwidths, the evidence is robust.</li>
-  <li><b>ROPE on transformed scale:</b> For consistency with the model parameter space where effects are estimated.</li>
-</ul>
-</div>
-</details>
 </div>
 </div>
 <div class="tabcontent" id="tab-mean-aleatoric-uncertainty">
@@ -4572,8 +4489,9 @@ document.addEventListener('DOMContentLoaded', () => {
 </div>
 </div>
 </div>
+<div class="card">
 <h3>Consecutive ranking comparisons</h3>
-<p>Bayes factors for each group being better than the next lower-ranked group. This shows the strength of evidence for the ranking order.</p>
+<p>Bayes factors for each group being better than the next lower-ranked group.</p>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -4595,11 +4513,11 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>Swin U-Net | AE</td>
       <td>Swin U-Net | PS</td>
       <td>0.8462</td>
-      <td>0.6803</td>
-      <td>0.6646</td>
-      <td>0.6268</td>
-      <td>0.6785</td>
-      <td>0.6971</td>
+      <td>0.6723</td>
+      <td>0.6663</td>
+      <td>0.6199</td>
+      <td>0.6809</td>
+      <td>0.6701</td>
       <td>anecdotal evidence for H0</td>
     </tr>
     <tr>
@@ -4607,11 +4525,11 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>Swin U-Net | PS</td>
       <td>U-Net | PS</td>
       <td>0.7521</td>
-      <td>0.5643</td>
-      <td>0.5913</td>
-      <td>0.5779</td>
-      <td>0.6053</td>
-      <td>0.6184</td>
+      <td>0.6062</td>
+      <td>0.5848</td>
+      <td>0.5666</td>
+      <td>0.6166</td>
+      <td>0.5990</td>
       <td>anecdotal evidence for H0</td>
     </tr>
     <tr>
@@ -4619,23 +4537,23 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>U-Net | PS</td>
       <td>Swin U-Net | S2</td>
       <td>0.5535</td>
-      <td>0.3796</td>
-      <td>0.3803</td>
-      <td>0.3740</td>
-      <td>0.3630</td>
-      <td>0.3818</td>
+      <td>0.4006</td>
+      <td>0.3699</td>
+      <td>0.3834</td>
+      <td>0.3807</td>
+      <td>0.3814</td>
       <td>anecdotal evidence for H0</td>
     </tr>
     <tr>
-      <td>3</td>
+      <td>4</td>
       <td>Swin U-Net | S2</td>
       <td>U-Net | S2</td>
       <td>0.9775</td>
-      <td>3.1592</td>
-      <td>2.4693</td>
-      <td>1.9854</td>
-      <td>2.8183</td>
-      <td>2.8670</td>
+      <td>3.1200</td>
+      <td>2.4857</td>
+      <td>1.9711</td>
+      <td>2.8764</td>
+      <td>2.8494</td>
       <td>anecdotal evidence for H1 (effect)</td>
     </tr>
     <tr>
@@ -4643,47 +4561,47 @@ document.addEventListener('DOMContentLoaded', () => {
       <td>U-Net | S2</td>
       <td>U-Net | AE</td>
       <td>0.5284</td>
-      <td>0.5453</td>
-      <td>0.5289</td>
-      <td>0.5352</td>
+      <td>0.4981</td>
+      <td>0.5119</td>
+      <td>0.5277</td>
       <td>0.5309</td>
-      <td>0.5159</td>
-      <td>anecdotal evidence for H0</td>
-    </tr>
-    <tr>
-      <td>5</td>
-      <td>U-Net | AE</td>
-      <td>Terramind | PS</td>
-      <td>0.6694</td>
-      <td>0.5458</td>
-      <td>0.5446</td>
-      <td>0.5486</td>
-      <td>0.5615</td>
-      <td>0.5659</td>
+      <td>0.5214</td>
       <td>anecdotal evidence for H0</td>
     </tr>
     <tr>
       <td>6</td>
+      <td>U-Net | AE</td>
       <td>Terramind | PS</td>
-      <td>Terramind | AE</td>
-      <td>0.8071</td>
-      <td>0.7533</td>
-      <td>0.7061</td>
-      <td>0.6690</td>
-      <td>0.7193</td>
-      <td>0.7126</td>
+      <td>0.6694</td>
+      <td>0.5634</td>
+      <td>0.5515</td>
+      <td>0.5540</td>
+      <td>0.5563</td>
+      <td>0.5743</td>
       <td>anecdotal evidence for H0</td>
     </tr>
     <tr>
       <td>7</td>
+      <td>Terramind | PS</td>
+      <td>Terramind | AE</td>
+      <td>0.8071</td>
+      <td>0.7438</td>
+      <td>0.6707</td>
+      <td>0.6688</td>
+      <td>0.7002</td>
+      <td>0.7295</td>
+      <td>anecdotal evidence for H0</td>
+    </tr>
+    <tr>
+      <td>8</td>
       <td>Terramind | AE</td>
       <td>Terramind | S2</td>
       <td>0.9637</td>
-      <td>3.1902</td>
-      <td>2.8300</td>
-      <td>2.2991</td>
-      <td>3.0390</td>
-      <td>3.0811</td>
+      <td>3.1531</td>
+      <td>2.7410</td>
+      <td>2.2944</td>
+      <td>3.0575</td>
+      <td>3.1347</td>
       <td>moderate evidence for H1</td>
     </tr>
   </tbody>
@@ -4697,22 +4615,9 @@ document.addEventListener('DOMContentLoaded', () => {
 </div>
 
 <img class="figure" src="stats_report_assets/consecutive_bf_mean-aleatoric-uncertainty.png" alt="Consecutive BF plot for mean_aleatoric_uncertainty">
-
-<details class="footnote">
-  <summary>Interpreting consecutive comparisons</summary>
-  <div class="small">
-<ul>
-  <li><b>Pr(better)</b> close to 1.0 → strong confidence in ranking order</li>
-  <li><b>Pr(better)</b> near 0.5 → ranking is uncertain, groups may be equivalent</li>
-  <li><b>BF10 > 10</b> → strong evidence for ranking difference</li>
-  <li><b>BF10 < 1</b> → evidence against ranking difference (groups may be equivalent)</li>
-  <li>Multiple bandwidths show robustness of conclusions</li>
-</ul>
 </div>
-</details>
 <div class="card">
 <h3>Factorial effects (Natural Scale with BF Sensitivity)</h3>
-<p>All effects shown on natural, interpretable scales. Multiple BF bandwidths show robustness of evidence. Consistent BF across bandwidths = stronger conclusion.</p>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -5056,7 +4961,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 <h3>Heatmap of posterior mean (Original Scale)</h3>
 <img class="figure" src="stats_report_assets/heat_mean-aleatoric-uncertainty.png" alt="Heatmap for mean_aleatoric_uncertainty">
-<h3>Key architecture contrasts (within each dataset, baseline arch=U-Net; ROPE=0.05 on transformed scale)</h3>
+<h3>Architecture contrasts within each dataset (baseline=U-Net)</h3>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -5134,9 +5039,9 @@ document.addEventListener('DOMContentLoaded', () => {
   </ul>
 </div>
 
-<h3>Contrast plot</h3>
-<img class="figure" src="stats_report_assets/contrasts_mean-aleatoric-uncertainty.png" alt="Contrast plot for mean_aleatoric_uncertainty">
-<h3>Key dataset contrasts (within each architecture, baseline dataset=AE; ROPE=0.05 on transformed scale)</h3>
+<h3>Architecture contrast plot</h3>
+<img class="figure" src="stats_report_assets/contrasts_arch_mean-aleatoric-uncertainty.png" alt="Architecture contrast plot for mean_aleatoric_uncertainty">
+<h3>Dataset contrasts within each architecture (baseline=AE)</h3>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -5214,7 +5119,9 @@ document.addEventListener('DOMContentLoaded', () => {
   </ul>
 </div>
 
-<h3>Overall architecture contrasts (marginal over datasets, baseline arch=U-Net)</h3>
+<h3>Dataset contrast plot</h3>
+<img class="figure" src="stats_report_assets/contrasts_dataset_mean-aleatoric-uncertainty.png" alt="Dataset contrast plot for mean_aleatoric_uncertainty">
+<h3>Overall architecture contrasts (marginal over datasets)</h3>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -5256,8 +5163,9 @@ document.addEventListener('DOMContentLoaded', () => {
   </ul>
 </div>
 
+<h3>Overall architecture contrast plot</h3>
 <img class="figure" src="stats_report_assets/arch_overall_mean-aleatoric-uncertainty.png" alt="Overall architecture contrasts for mean_aleatoric_uncertainty">
-<h3>Overall dataset contrasts (marginal over architectures, baseline dataset=AE)</h3>
+<h3>Overall dataset contrasts (marginal over architectures)</h3>
 <table class="dataframe tbl">
   <thead>
     <tr style="text-align: right;">
@@ -5299,19 +5207,8 @@ document.addEventListener('DOMContentLoaded', () => {
   </ul>
 </div>
 
+<h3>Overall dataset contrast plot</h3>
 <img class="figure" src="stats_report_assets/dataset_overall_mean-aleatoric-uncertainty.png" alt="Overall dataset contrasts for mean_aleatoric_uncertainty">
-
-<details class="footnote">
-  <summary>Understanding the factorial section</summary>
-  <div class="small">
-<ul>
-  <li><b>Effects coding:</b> Coefficients are not simple “add to intercept” baselines.</li>
-  <li><b>Interpretable effects:</b> We compute OR/Δp (or absolute change) from <b>contrasts on predicted means</b>, which is correct under effects coding.</li>
-  <li><b>BF sensitivity:</b> If BF values are similar across bandwidths, the evidence is robust.</li>
-  <li><b>ROPE on transformed scale:</b> For consistency with the model parameter space where effects are estimated.</li>
-</ul>
-</div>
-</details>
 </div>
 </div>
 <div class="tabcontent" id="tab-overall">
@@ -5514,15 +5411,616 @@ document.addEventListener('DOMContentLoaded', () => {
   </ul>
 </div>
 
+</div>
+<div class="card">
+<h2>Factorial Analysis of Combined Posteriors</h2>
+<p>Beyond ranking, we now analyze the factorial structure of the composite score to understand dataset, architecture, and interaction effects on overall performance.</p>
+</div>
+<div class="card">
+<h3>Factorial Effects (Composite Score)</h3>
+<p>Main effects and interactions for dataset, architecture, and their combination on the overall composite performance score.</p>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>param</th>
+      <th>Pr(&gt;0)</th>
+      <th>BF10_interpretation</th>
+      <th>BF10_bw_scott</th>
+      <th>BF10_bw_0.1</th>
+      <th>BF10_bw_0.3</th>
+      <th>BF10_bw_0.5</th>
+      <th>BF10_bw_silverman</th>
+      <th>Abs_Δ_mean</th>
+      <th>Abs_Δ_lo</th>
+      <th>Abs_Δ_hi</th>
+      <th>%_change</th>
+      <th>baseline</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>beta_dataset[AE]</td>
+      <td>0.5052</td>
+      <td>strong evidence for H0 (no effect)</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>beta_dataset[PS]</td>
+      <td>0.5042</td>
+      <td>strong evidence for H0 (no effect)</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>beta_arch[U-Net]</td>
+      <td>0.5025</td>
+      <td>strong evidence for H0 (no effect)</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>beta_arch[Swin]</td>
+      <td>0.5016</td>
+      <td>strong evidence for H0 (no effect)</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[AE×U-Net]</td>
+      <td>0.4896</td>
+      <td>strong evidence for H0 (no effect)</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[AE×Swin]</td>
+      <td>0.4906</td>
+      <td>strong evidence for H0 (no effect)</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[PS×U-Net]</td>
+      <td>0.5070</td>
+      <td>strong evidence for H0 (no effect)</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[PS×Swin]</td>
+      <td>0.4974</td>
+      <td>strong evidence for H0 (no effect)</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>beta_dataset[S2]</td>
+      <td>0.4955</td>
+      <td>strong evidence for H0 (no effect)</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>beta_arch[Terramind]</td>
+      <td>0.4961</td>
+      <td>strong evidence for H0 (no effect)</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[AE×Terramind]</td>
+      <td>0.5084</td>
+      <td>strong evidence for H0 (no effect)</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[PS×Terramind]</td>
+      <td>0.4868</td>
+      <td>strong evidence for H0 (no effect)</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[S2×U-Net]</td>
+      <td>0.5005</td>
+      <td>strong evidence for H0 (no effect)</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[S2×Swin]</td>
+      <td>0.4968</td>
+      <td>strong evidence for H0 (no effect)</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[S2×Terramind]</td>
+      <td>0.5051</td>
+      <td>strong evidence for H0 (no effect)</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>param</b>: Model term (dataset/arch/interaction coefficient).</li><li><b>Pr(>0)</b>: Posterior probability the term's effect is positive (on transformed scale).</li><li><b>BF10_interpretation</b>: Qualitative interpretation of BF10 (H1: effect ≠ 0 vs H0: effect = 0).</li><li><b>BF10_bw_scott</b>: Savage–Dickey BF10 using KDE bandwidth='scott'.</li><li><b>BF10_bw_0.1</b>: Savage–Dickey BF10 using KDE bandwidth=0.1.</li><li><b>BF10_bw_0.3</b>: Savage–Dickey BF10 using KDE bandwidth=0.3.</li><li><b>BF10_bw_0.5</b>: Savage–Dickey BF10 using KDE bandwidth=0.5.</li><li><b>BF10_bw_silverman</b>: Savage–Dickey BF10 using KDE bandwidth='silverman'.</li><li><b>Abs_Δ_mean</b>: Mean absolute change on original scale for the contrast.</li><li><b>Abs_Δ_lo</b>: Lower 95% HDI of absolute change.</li><li><b>Abs_Δ_hi</b>: Upper 95% HDI of absolute change.</li><li><b>%_change</b>: Mean percent change implied by the effect (computed on transformed scale).</li><li><b>baseline</b>: Baseline level used for the contrast (original scale; depends on term type).</li>
+  </ul>
+</div>
+
+<h3>Factorial effects plot (Composite)</h3>
+<img class="figure" src="stats_report_assets/effects_composite.png" alt="Factorial effects plot for composite score">
+<h3>Predicted means per dataset×arch (Composite)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>dataset</th>
+      <th>arch</th>
+      <th>mean</th>
+      <th>hdi_lo</th>
+      <th>hdi_hi</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>AE</td>
+      <td>U-Net</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>AE</td>
+      <td>Swin</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>AE</td>
+      <td>Terramind</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>U-Net</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Swin</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Terramind</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>U-Net</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Swin</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Terramind</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+      <td>0.0000</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>dataset</b>: Dataset for this cell.</li><li><b>arch</b>: Architecture for this cell.</li><li><b>mean</b>: Posterior mean predicted performance (original scale).</li><li><b>hdi_lo</b>: Lower 95% HDI for the predicted mean.</li><li><b>hdi_hi</b>: Upper 95% HDI for the predicted mean.</li>
+  </ul>
+</div>
+
+<h3>Heatmap of composite score</h3>
+<img class="figure" src="stats_report_assets/heat_composite.png" alt="Heatmap for composite score">
+<h3>Architecture contrasts (Composite, baseline=U-Net)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>dataset</th>
+      <th>contrast</th>
+      <th>Δ_mean</th>
+      <th>Δ_lo</th>
+      <th>Δ_hi</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>AE</td>
+      <td>Swin − U-Net</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.5001</td>
+      <td>1.0000</td>
+    </tr>
+    <tr>
+      <td>AE</td>
+      <td>Terramind − U-Net</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.5048</td>
+      <td>1.0000</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Swin − U-Net</td>
+      <td>-0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.4950</td>
+      <td>1.0000</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Terramind − U-Net</td>
+      <td>-0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.4898</td>
+      <td>1.0000</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Swin − U-Net</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.5002</td>
+      <td>1.0000</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Terramind − U-Net</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.4998</td>
+      <td>1.0000</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>dataset</b>: Dataset scope for this set of architecture comparisons.</li><li><b>contrast</b>: Which architecture is compared against the baseline architecture.</li><li><b>Δ_mean</b>: Mean difference on original scale.</li><li><b>Δ_lo</b>: Lower 95% HDI for the difference.</li><li><b>Δ_hi</b>: Upper 95% HDI for the difference.</li><li><b>Pr(>0)</b>: Probability the difference is > 0 on transformed scale.</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the difference is practically negligible (ROPE) on transformed scale.</li>
+  </ul>
+</div>
+
+<h3>Architecture contrast plot (Composite)</h3>
+<img class="figure" src="stats_report_assets/contrasts_arch_composite.png" alt="Architecture contrasts for composite score">
+<h3>Dataset contrasts (Composite, baseline=AE)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>arch</th>
+      <th>contrast</th>
+      <th>Δ_mean</th>
+      <th>Δ_lo</th>
+      <th>Δ_hi</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>U-Net</td>
+      <td>PS − AE</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.5075</td>
+      <td>1.0000</td>
+    </tr>
+    <tr>
+      <td>U-Net</td>
+      <td>S2 − AE</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.5002</td>
+      <td>1.0000</td>
+    </tr>
+    <tr>
+      <td>Swin</td>
+      <td>PS − AE</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.5081</td>
+      <td>1.0000</td>
+    </tr>
+    <tr>
+      <td>Swin</td>
+      <td>S2 − AE</td>
+      <td>-0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.4993</td>
+      <td>1.0000</td>
+    </tr>
+    <tr>
+      <td>Terramind</td>
+      <td>PS − AE</td>
+      <td>-0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.4894</td>
+      <td>1.0000</td>
+    </tr>
+    <tr>
+      <td>Terramind</td>
+      <td>S2 − AE</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.4929</td>
+      <td>1.0000</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>arch</b>: Architecture scope for this set of dataset comparisons.</li><li><b>contrast</b>: Which dataset is compared against the baseline dataset.</li><li><b>Δ_mean</b>: Mean difference on original scale.</li><li><b>Δ_lo</b>: Lower 95% HDI for the difference.</li><li><b>Δ_hi</b>: Upper 95% HDI for the difference.</li><li><b>Pr(>0)</b>: Probability the difference is > 0 on transformed scale.</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the difference is practically negligible (ROPE) on transformed scale.</li>
+  </ul>
+</div>
+
+<h3>Dataset contrast plot (Composite)</h3>
+<img class="figure" src="stats_report_assets/contrasts_dataset_composite.png" alt="Dataset contrasts for composite score">
+<h3>Overall architecture contrasts (Composite)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>scope</th>
+      <th>contrast</th>
+      <th>mean_original</th>
+      <th>hdi_lo_original</th>
+      <th>hdi_hi_original</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Overall (avg over datasets)</td>
+      <td>Swin − U-Net</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.4995</td>
+      <td>1.0000</td>
+    </tr>
+    <tr>
+      <td>Overall (avg over datasets)</td>
+      <td>Terramind − U-Net</td>
+      <td>-0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.4929</td>
+      <td>1.0000</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>scope</b>: What was averaged over to form the marginal comparison.</li><li><b>contrast</b>: Comparison (A − baseline).</li><li><b>mean_original</b>: Mean difference on original scale.</li><li><b>hdi_lo_original</b>: Lower 95% HDI of difference.</li><li><b>hdi_hi_original</b>: Upper 95% HDI of difference.</li><li><b>Pr(>0)</b>: Probability the contrast > 0 (transformed scale).</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the effect is practically negligible (transformed scale ROPE).</li>
+  </ul>
+</div>
+
+<h3>Overall architecture plot (Composite)</h3>
+<img class="figure" src="stats_report_assets/arch_overall_composite.png" alt="Overall architecture contrasts for composite">
+<h3>Overall dataset contrasts (Composite)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>scope</th>
+      <th>contrast</th>
+      <th>mean_original</th>
+      <th>hdi_lo_original</th>
+      <th>hdi_hi_original</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Overall (avg over arch)</td>
+      <td>PS − AE</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.4958</td>
+      <td>1.0000</td>
+    </tr>
+    <tr>
+      <td>Overall (avg over arch)</td>
+      <td>S2 − AE</td>
+      <td>0.0000</td>
+      <td>-0.0000</td>
+      <td>0.0000</td>
+      <td>0.4954</td>
+      <td>1.0000</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>scope</b>: What was averaged over to form the marginal comparison.</li><li><b>contrast</b>: Comparison (A − baseline).</li><li><b>mean_original</b>: Mean difference on original scale.</li><li><b>hdi_lo_original</b>: Lower 95% HDI of difference.</li><li><b>hdi_hi_original</b>: Upper 95% HDI of difference.</li><li><b>Pr(>0)</b>: Probability the contrast > 0 (transformed scale).</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the effect is practically negligible (transformed scale ROPE).</li>
+  </ul>
+</div>
+
+<h3>Overall dataset plot (Composite)</h3>
+<img class="figure" src="stats_report_assets/dataset_overall_composite.png" alt="Overall dataset contrasts for composite">
 
 <details class="footnote">
-  <summary>Overall ranking interpretation</summary>
+  <summary>Understanding composite factorial analysis</summary>
   <div class="small">
 <ul>
-  <li><b>Pr(rank=1)</b> = probability a group is best overall under this utility.</li>
-  <li><b>E[rank]</b> = expected rank (lower = better).</li>
-  <li>If probabilities are spread, the winner is uncertain—consider individual metrics.</li>
-  <li><b>Important:</b> This is a composite score. Always check individual metrics for full picture.</li>
+  <li><b>Composite score</b> combines all metrics using z-score standardization and weighting.</li>
+  <li><b>Main effects</b> show how dataset/architecture choices affect overall performance.</li>
+  <li><b>Interactions</b> reveal whether certain dataset-architecture combinations perform 
+      better/worse than expected from their individual effects.</li>
+  <li><b>All visualizations include explicit values</b> for easy interpretation.</li>
+  <li>This analysis complements the ranking by showing <i>why</i> certain groups rank higher.</li>
 </ul>
 </div>
 </details>
@@ -5530,7 +6028,7 @@ document.addEventListener('DOMContentLoaded', () => {
 </div>
 
 <div class="footer">
-Generated 2026-01-19 11:56:13
+Generated 2026-01-27 09:50:44
 </div>
 </div>
 </body>

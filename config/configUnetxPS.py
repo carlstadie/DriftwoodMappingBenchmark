@@ -46,7 +46,7 @@ class Configuration:
         )
         # Keep explicit override exactly as provided
         self.preprocessed_dir = (
-            "/isipd/projects/p_planetdw/data/methods_test/training_data/"
+            "/isipd/projects/p_planetdw/data/methods_test/preprocessed/"
             "20260109-1434_UNETxPS"
         )
 

@@ -1,0 +1,5516 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bayesian Benchmark Statistics Report</title>
+<style>
+:root{
+  --bg0:#070A14;
+  --bg1:#0B1230;
+  --card:rgba(255,255,255,.06);
+  --card2:rgba(255,255,255,.04);
+  --text:#ECF0FF;
+  --muted:#B7C0EE;
+  --border:rgba(255,255,255,.12);
+  --accent:#8CC2FF;
+  --accent2:#D2A6FF;
+  --good:#76D7C4;
+  --warn:#F4D06F;
+  --bad:#FF7A7A;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0;
+  font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+  color:var(--text);
+  background:
+    radial-gradient(1100px 700px at 15% 5%, rgba(140,194,255,.22), transparent 60%),
+    radial-gradient(900px 600px at 85% 20%, rgba(210,166,255,.20), transparent 60%),
+    linear-gradient(180deg, var(--bg1), var(--bg0));
+}
+
+.container{
+  max-width:1280px;
+  margin:0 auto;
+  padding:22px 16px 80px;
+}
+
+h1{font-size:26px;margin:0 0 10px;letter-spacing:.2px}
+h2{font-size:20px;margin:18px 0 10px}
+h3{font-size:15px;margin:16px 0 10px;color:var(--text)}
+p{line-height:1.55;color:var(--muted);margin:8px 0}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+
+.topbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px}
+.badge{
+  display:inline-block;
+  padding:3px 10px;
+  border-radius:999px;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,.03);
+  color:var(--muted);
+  font-size:12px;
+}
+
+.tabbar{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 14px}
+.tabbtn{
+  background:rgba(255,255,255,.04);
+  border:1px solid var(--border);
+  color:var(--text);
+  padding:8px 12px;
+  border-radius:999px;
+  cursor:pointer;
+  font-size:13px;
+  transition:transform .04s ease, border-color .12s ease, background .12s ease;
+}
+.tabbtn:hover{border-color:rgba(255,255,255,.22);background:rgba(255,255,255,.06)}
+.tabbtn:active{transform:translateY(1px)}
+.tabbtn.active{
+  background:rgba(140,194,255,.18);
+  border-color:rgba(140,194,255,.45);
+}
+
+.tabcontent{display:none}
+.tabcontent.active{display:block}
+
+.card{
+  background:linear-gradient(180deg, var(--card), var(--card2));
+  border:1px solid var(--border);
+  border-radius:16px;
+  padding:16px 16px;
+  box-shadow:0 18px 40px rgba(0,0,0,.28);
+  margin:12px 0;
+  backdrop-filter: blur(6px);
+}
+
+.grid{display:grid;grid-template-columns:1fr;gap:12px}
+@media(min-width:980px){
+  .grid-2{
+    display:grid;
+    grid-template-columns:1.05fr .95fr;
+    gap:12px;
+    align-items:start;
+  }
+}
+
+img.figure{
+  width:100%;
+  height:auto;
+  border-radius:14px;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,.02);
+}
+
+table.tbl{
+  width:100%;
+  border-collapse:collapse;
+  overflow:hidden;
+  border-radius:14px;
+  border:1px solid var(--border);
+  background:rgba(0,0,0,.12);
+}
+.tbl th,.tbl td{
+  padding:9px 10px;
+  border-bottom:1px solid var(--border);
+  vertical-align:top;
+}
+.tbl th{
+  text-align:left;
+  font-weight:600;
+  color:var(--text);
+  background:rgba(255,255,255,.06);
+}
+.tbl tr:nth-child(even) td{background:rgba(255,255,255,.03)}
+
+details.footnote{
+  margin-top:10px;
+  padding:10px 12px;
+  border-radius:14px;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,.04);
+}
+details.footnote summary{
+  cursor:pointer;
+  color:var(--text);
+  font-size:13px;
+}
+.small{font-size:12px;color:var(--muted)}
+.footer{margin-top:18px;font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="container">
+<h1>Bayesian Benchmark Statistics Report</h1>
+<div class="topbar">
+<span class="badge">PyMC 5.27.0</span>
+<span class="badge">Draws 2000 | Tune 2000 | Chains 4</span>
+<span class="badge">Target accept 0.9 | HDI 95%</span>
+<span class="badge">Hierarchical Variance | Multiple BF Bandwidths</span>
+</div>
+<div class="card">
+<p>This report includes: (1) Hierarchical variance structure for better regularization, (2) All outputs transformed to natural, interpretable scales, (3) Multiple bandwidth sensitivity analysis for Bayes factors, (4) Posterior and prior predictive checks, (5) ROPE applied on transformed scale for consistency with the model, (6) Visualizations with actual values.</p>
+</div>
+<div class="tabbar">
+<button class="tabbtn" data-tab="tab-overview">Overview</button>
+<button class="tabbtn" data-tab="tab-iou">IoU</button>
+<button class="tabbtn" data-tab="tab-dice-coef">dice_coef</button>
+<button class="tabbtn" data-tab="tab-normalized-surface-distance">normalized_surface_distance</button>
+<button class="tabbtn" data-tab="tab-mean-epistemic-uncertainty">mean_epistemic_uncertainty</button>
+<button class="tabbtn" data-tab="tab-mean-aleatoric-uncertainty">mean_aleatoric_uncertainty</button>
+<button class="tabbtn" data-tab="tab-overall">Overall</button>
+</div>
+
+<script>
+function openTab(tabId) {
+  const tabs = document.querySelectorAll('.tabcontent');
+  const btns = document.querySelectorAll('.tabbtn');
+  tabs.forEach(t => t.classList.remove('active'));
+  btns.forEach(b => b.classList.remove('active'));
+  const t = document.getElementById(tabId);
+  if (t) t.classList.add('active');
+  const b = document.querySelector(`.tabbtn[data-tab="${tabId}"]`);
+  if (b) b.classList.add('active');
+}
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.tabbtn');
+  if (!btn) return;
+  openTab(btn.getAttribute('data-tab'));
+});
+document.addEventListener('DOMContentLoaded', () => {
+    // Adjust container width based on widest table
+    const tables = document.querySelectorAll('table.tbl');
+    let maxWidth = 800;
+    tables.forEach(tbl => {
+        const rect = tbl.getBoundingClientRect();
+        if (rect.width > maxWidth) {
+            maxWidth = rect.width;
+        }
+    });
+    const container = document.querySelector('.container');
+    if (container && maxWidth > 800) {
+        container.style.maxWidth = Math.min(maxWidth + 64, window.innerWidth - 32) + 'px';
+    }
+    // Open default tab
+  let tab = "tab-overview";
+  openTab(tab);
+});
+</script>
+<div class="tabcontent" id="tab-overview">
+<div class="card">
+<h2>Data summary</h2>
+<h3>Rows per dataset / arch / group</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>dataset</th>
+      <th>arch</th>
+      <th>group</th>
+      <th>n_rows</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>AE</td>
+      <td>Swin</td>
+      <td>Swin U-Net | AE</td>
+      <td>10</td>
+    </tr>
+    <tr>
+      <td>AE</td>
+      <td>Terramind</td>
+      <td>Terramind | AE</td>
+      <td>10</td>
+    </tr>
+    <tr>
+      <td>AE</td>
+      <td>U-Net</td>
+      <td>U-Net | AE</td>
+      <td>10</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Swin</td>
+      <td>Swin U-Net | PS</td>
+      <td>10</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Terramind</td>
+      <td>Terramind | PS</td>
+      <td>10</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>U-Net</td>
+      <td>U-Net | PS</td>
+      <td>10</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Swin</td>
+      <td>Swin U-Net | S2</td>
+      <td>10</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Terramind</td>
+      <td>Terramind | S2</td>
+      <td>10</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>U-Net</td>
+      <td>U-Net | S2</td>
+      <td>10</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>dataset</b>: Dataset label (AE/PS/S2).</li><li><b>arch</b>: Architecture label (U-Net/Swin/Terramind).</li><li><b>group</b>: Combined group name used in the group model.</li><li><b>n_rows</b>: Number of runs/rows in this cell.</li>
+  </ul>
+</div>
+
+</div>
+<div class="card">
+<h2>Statistical Improvements in This Report</h2>
+<p><strong>1. Hierarchical Variance:</strong> All models now use hierarchical priors for sigma, improving regularization even with equal sample sizes (n=10).</p>
+<p><strong>2. Natural Scale Outputs:</strong> All effects are reported on both transformed and natural/interpretable scales (e.g., absolute changes, percentage changes, probability changes).</p>
+<p><strong>3. BF Sensitivity Analysis:</strong> Bayes factors computed with multiple KDE bandwidths (0.1, 0.3, 0.5, scott, silverman) to assess robustness.</p>
+<p><strong>4. ROPE Consistency:</strong> Region of Practical Equivalence (ROPE) is now applied on the transformed scale where the model lives, ensuring statistical consistency.</p>
+<p><strong>5. Predictive Checks:</strong> Prior and posterior predictive checks included to validate model assumptions and fit.</p>
+</div>
+<div class="card">
+<h2>Interpretation Guidelines</h2>
+
+<details class="footnote">
+  <summary>Bayes Factors (BF10)</summary>
+  <div class="small">
+<ul>
+  <li>BF10 &gt; 1 supports H1 (effect exists); BF10 &lt; 1 supports H0 (no effect).</li>
+  <li>Thresholds: 1–3 anecdotal, 3–10 moderate, 10–30 strong, 30–100 very strong, &gt;100 extreme.</li>
+  <li><strong>Sensitivity:</strong> Multiple bandwidths show robustness. Consistent BF across bandwidths = stronger evidence.</li>
+  <li>BF is NOT a p-value; it's an evidence ratio comparing hypotheses.</li>
+</ul>
+</div>
+</details>
+
+<details class="footnote">
+  <summary>ROPE (Region of Practical Equivalence)</summary>
+  <div class="small">
+<ul>
+  <li><strong>ROPE is on transformed scale</strong> for consistency with model parameter space.</li>
+  <li><b>Pr(|Δ|&lt;ROPE)</b> = probability the effect is practically negligible.</li>
+  <li>High Pr(>0) with low Pr(|Δ|&lt;ROPE) → meaningful improvement.</li>
+  <li>High Pr(|Δ|&lt;ROPE) → differences are negligible.</li>
+</ul>
+</div>
+</details>
+
+<details class="footnote">
+  <summary>Interpretable Effect Sizes</summary>
+  <div class="small">
+<ul>
+  <li><strong>For log-scale metrics:</strong> 
+    <ul>
+      <li><b>% Change:</b> derived from exp(Δ_log) - 1</li>
+      <li><b>Absolute Change:</b> computed via contrasts on predicted means (original scale)</li>
+    </ul>
+  </li>
+  <li><strong>For logit-scale metrics:</strong>
+    <ul>
+      <li><b>Odds Ratio:</b> exp(Δ_logit)</li>
+      <li><b>Δp:</b> difference in predicted metric (original scale) via contrasts</li>
+    </ul>
+  </li>
+</ul>
+</div>
+</details>
+</div>
+</div>
+<div class="tabcontent" id="tab-iou">
+<div class="card">
+<h2>Metric: IoU</h2>
+</div>
+<div class="card">
+<h3>Observed results across runs</h3>
+<img class="figure" src="stats_report_assets/observed_box_iou.png" alt="Observed boxplot for IoU">
+</div>
+<div class="card">
+<h3>Hierarchical group model (with hierarchical variance)</h3>
+<p>Modelled on <span class='badge'>logit</span> scale; reporting mu_orig on original scale. Hierarchical variance improves regularization.</p>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>group</th>
+      <th>mean</th>
+      <th>sd</th>
+      <th>hdi_2.5%</th>
+      <th>hdi_97.5%</th>
+      <th>Pr(rank=1)</th>
+      <th>Pr(rank=2)</th>
+      <th>Pr(rank=3)</th>
+      <th>Pr(rank=4)</th>
+      <th>Pr(rank=5)</th>
+      <th>Pr(rank=6)</th>
+      <th>Pr(rank=7)</th>
+      <th>Pr(rank=8)</th>
+      <th>Pr(rank=9)</th>
+      <th>E[rank]</th>
+      <th>Pr(best)</th>
+      <th>Pr(best)_prior</th>
+      <th>BF_best</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>U-Net | AE</td>
+      <td>0.7810</td>
+      <td>0.007000</td>
+      <td>0.7660</td>
+      <td>0.7950</td>
+      <td>0.9791</td>
+      <td>0.02088</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1.021</td>
+      <td>0.9791</td>
+      <td>0.1060</td>
+      <td>395.59</td>
+    </tr>
+    <tr>
+      <td>Swin U-Net | AE</td>
+      <td>0.7490</td>
+      <td>0.01300</td>
+      <td>0.7280</td>
+      <td>0.7750</td>
+      <td>0.02088</td>
+      <td>0.9791</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1.979</td>
+      <td>0.02088</td>
+      <td>0.1260</td>
+      <td>0.1479</td>
+    </tr>
+    <tr>
+      <td>Swin U-Net | PS</td>
+      <td>0.5960</td>
+      <td>0.007000</td>
+      <td>0.5820</td>
+      <td>0.6110</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.9999</td>
+      <td>0.0001250</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>3.000</td>
+      <td>0</td>
+      <td>0.1080</td>
+      <td>8.26e-12</td>
+    </tr>
+    <tr>
+      <td>Terramind | PS</td>
+      <td>0.5550</td>
+      <td>0.006000</td>
+      <td>0.5440</td>
+      <td>0.5670</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.0001250</td>
+      <td>0.9991</td>
+      <td>0.0007500</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>4.001</td>
+      <td>0</td>
+      <td>0.09000</td>
+      <td>1.01e-11</td>
+    </tr>
+    <tr>
+      <td>Swin U-Net | S2</td>
+      <td>0.5250</td>
+      <td>0.007000</td>
+      <td>0.5120</td>
+      <td>0.5380</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.0007500</td>
+      <td>0.9992</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>4.999</td>
+      <td>0</td>
+      <td>0.1100</td>
+      <td>8.09e-12</td>
+    </tr>
+    <tr>
+      <td>U-Net | PS</td>
+      <td>0.4400</td>
+      <td>0.007000</td>
+      <td>0.4270</td>
+      <td>0.4550</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1.000</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>6.000</td>
+      <td>0</td>
+      <td>0.1180</td>
+      <td>7.47e-12</td>
+    </tr>
+    <tr>
+      <td>Terramind | S2</td>
+      <td>0.3930</td>
+      <td>0.008000</td>
+      <td>0.3760</td>
+      <td>0.4070</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1.000</td>
+      <td>0</td>
+      <td>0</td>
+      <td>7.000</td>
+      <td>0</td>
+      <td>0.1240</td>
+      <td>7.06e-12</td>
+    </tr>
+    <tr>
+      <td>Terramind | AE</td>
+      <td>0.3010</td>
+      <td>0.004000</td>
+      <td>0.2940</td>
+      <td>0.3080</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1.000</td>
+      <td>0</td>
+      <td>8.000</td>
+      <td>0</td>
+      <td>0.1160</td>
+      <td>7.62e-12</td>
+    </tr>
+    <tr>
+      <td>U-Net | S2</td>
+      <td>0.1220</td>
+      <td>0.004000</td>
+      <td>0.1150</td>
+      <td>0.1300</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1.000</td>
+      <td>9.000</td>
+      <td>0</td>
+      <td>0.1020</td>
+      <td>8.80e-12</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>group</b>: Group name (dataset×arch).</li><li><b>mean</b>: Posterior mean of group mean on the ORIGINAL metric scale.</li><li><b>sd</b>: Posterior SD of the group mean.</li><li><b>hdi_2.5%</b>: Lower bound of the 95% HDI for the group mean.</li><li><b>hdi_97.5%</b>: Upper bound of the 95% HDI for the group mean.</li><li><b>E[rank]</b>: Expected rank (1=best).</li><li><b>Pr(best)</b>: Posterior probability the group is the best.</li><li><b>Pr(best)_prior</b>: Prior probability the group is best (before seeing data).</li><li><b>BF_best</b>: Bayes factor for 'this group is best' vs 'not best' (via odds update).</li><li><b>Pr(rank=1)</b>: Posterior probability this group is rank 1 (1=best).</li><li><b>Pr(rank=2)</b>: Posterior probability this group is rank 2 (1=best).</li><li><b>Pr(rank=3)</b>: Posterior probability this group is rank 3 (1=best).</li><li><b>Pr(rank=4)</b>: Posterior probability this group is rank 4 (1=best).</li><li><b>Pr(rank=5)</b>: Posterior probability this group is rank 5 (1=best).</li><li><b>Pr(rank=6)</b>: Posterior probability this group is rank 6 (1=best).</li><li><b>Pr(rank=7)</b>: Posterior probability this group is rank 7 (1=best).</li><li><b>Pr(rank=8)</b>: Posterior probability this group is rank 8 (1=best).</li><li><b>Pr(rank=9)</b>: Posterior probability this group is rank 9 (1=best).</li>
+  </ul>
+</div>
+
+<h3>Model Validation Plots</h3>
+<div class="grid-2">
+<div class="card" style="margin:0">
+<h3>Prior Predictive Check</h3>
+<img class="figure" src="stats_report_assets/prior_pred_iou.png" alt="Prior predictive check for IoU">
+<p>Check if priors are reasonable on original scale.</p>
+</div>
+<div class="card" style="margin:0">
+<h3>Posterior Predictive Check</h3>
+<img class="figure" src="stats_report_assets/post_pred_iou.png" alt="Posterior predictive check for IoU">
+<p>Red overlay shows model predictions; blue shows observed data.</p>
+</div>
+</div>
+<h3>Group Comparison Plots</h3>
+<div class="grid-2">
+<div class="card" style="margin:0">
+<h3>Group means (with HDI)</h3>
+<img class="figure" src="stats_report_assets/posterior_box_iou.png" alt="Group means forest plot for IoU">
+</div>
+<div class="card" style="margin:0">
+<h3>Pr(best)</h3>
+<img class="figure" src="stats_report_assets/prbest_iou.png" alt="Pr(best) plot for IoU">
+</div>
+</div>
+</div>
+<h3>Consecutive ranking comparisons</h3>
+<p>Bayes factors for each group being better than the next lower-ranked group. This shows the strength of evidence for the ranking order.</p>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>rank</th>
+      <th>group</th>
+      <th>next_rank_group</th>
+      <th>Pr(better)</th>
+      <th>BF10_bw_0.1</th>
+      <th>BF10_bw_0.3</th>
+      <th>BF10_bw_0.5</th>
+      <th>BF10_bw_scott</th>
+      <th>BF10_bw_silverman</th>
+      <th>BF10_interpretation</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td>U-Net | AE</td>
+      <td>Swin U-Net | AE</td>
+      <td>0.9791</td>
+      <td>0.5377</td>
+      <td>0.5262</td>
+      <td>0.4258</td>
+      <td>0.5467</td>
+      <td>0.5690</td>
+      <td>anecdotal evidence for H0</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>Swin U-Net | AE</td>
+      <td>Swin U-Net | PS</td>
+      <td>1.000</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>extreme evidence for H1</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>Swin U-Net | PS</td>
+      <td>Terramind | PS</td>
+      <td>0.9999</td>
+      <td>118.62</td>
+      <td>54.77</td>
+      <td>30.76</td>
+      <td>81.09</td>
+      <td>77.24</td>
+      <td>very strong evidence for H1</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>Terramind | PS</td>
+      <td>Swin U-Net | S2</td>
+      <td>0.9992</td>
+      <td>13.25</td>
+      <td>9.573</td>
+      <td>5.792</td>
+      <td>11.38</td>
+      <td>11.59</td>
+      <td>strong evidence for H1</td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td>Swin U-Net | S2</td>
+      <td>U-Net | PS</td>
+      <td>1.000</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>extreme evidence for H1</td>
+    </tr>
+    <tr>
+      <td>6</td>
+      <td>U-Net | PS</td>
+      <td>Terramind | S2</td>
+      <td>1.000</td>
+      <td>∞</td>
+      <td>533376.43</td>
+      <td>1728.74</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>extreme evidence for H1</td>
+    </tr>
+    <tr>
+      <td>7</td>
+      <td>Terramind | S2</td>
+      <td>Terramind | AE</td>
+      <td>1.000</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>extreme evidence for H1</td>
+    </tr>
+    <tr>
+      <td>8</td>
+      <td>Terramind | AE</td>
+      <td>U-Net | S2</td>
+      <td>1.000</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>extreme evidence for H1</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>rank</b>: Expected rank of this group.</li><li><b>group</b>: Group name.</li><li><b>next_rank_group</b>: Next lower-ranked group.</li><li><b>Pr(better)</b>: Posterior probability this group is better than the next-ranked group.</li><li><b>BF10_interpretation</b>: Qualitative interpretation of BF10.</li>
+  </ul>
+</div>
+
+<img class="figure" src="stats_report_assets/consecutive_bf_iou.png" alt="Consecutive BF plot for IoU">
+
+<details class="footnote">
+  <summary>Interpreting consecutive comparisons</summary>
+  <div class="small">
+<ul>
+  <li><b>Pr(better)</b> close to 1.0 → strong confidence in ranking order</li>
+  <li><b>Pr(better)</b> near 0.5 → ranking is uncertain, groups may be equivalent</li>
+  <li><b>BF10 > 10</b> → strong evidence for ranking difference</li>
+  <li><b>BF10 < 1</b> → evidence against ranking difference (groups may be equivalent)</li>
+  <li>Multiple bandwidths show robustness of conclusions</li>
+</ul>
+</div>
+</details>
+<div class="card">
+<h3>Factorial effects (Natural Scale with BF Sensitivity)</h3>
+<p>All effects shown on natural, interpretable scales. Multiple BF bandwidths show robustness of evidence. Consistent BF across bandwidths = stronger conclusion.</p>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>param</th>
+      <th>Pr(&gt;0)</th>
+      <th>BF10_interpretation</th>
+      <th>BF10_bw_scott</th>
+      <th>BF10_bw_0.1</th>
+      <th>BF10_bw_0.3</th>
+      <th>BF10_bw_0.5</th>
+      <th>BF10_bw_silverman</th>
+      <th>OR</th>
+      <th>Δp_mean</th>
+      <th>Δp_lo</th>
+      <th>Δp_hi</th>
+      <th>baseline</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>beta_dataset[AE]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>1.744</td>
+      <td>0.1149</td>
+      <td>0.1079</td>
+      <td>0.1227</td>
+      <td>0.4957</td>
+    </tr>
+    <tr>
+      <td>beta_dataset[PS]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>1.185</td>
+      <td>0.03465</td>
+      <td>0.02819</td>
+      <td>0.04110</td>
+      <td>0.4957</td>
+    </tr>
+    <tr>
+      <td>beta_arch[U-Net]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.7639</td>
+      <td>-0.04825</td>
+      <td>-0.05439</td>
+      <td>-0.04165</td>
+      <td>0.4957</td>
+    </tr>
+    <tr>
+      <td>beta_arch[Swin]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>1.779</td>
+      <td>0.1278</td>
+      <td>0.1204</td>
+      <td>0.1357</td>
+      <td>0.4957</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[AE×U-Net]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>2.804</td>
+      <td>0.2184</td>
+      <td>0.2082</td>
+      <td>0.2283</td>
+      <td>0.4957</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[AE×Swin]</td>
+      <td>0.6389</td>
+      <td>strong evidence for H0 (no effect)</td>
+      <td>0.06715</td>
+      <td>0.07265</td>
+      <td>0.07004</td>
+      <td>0.07211</td>
+      <td>0.06705</td>
+      <td>1.016</td>
+      <td>0.01172</td>
+      <td>0.0002623</td>
+      <td>0.02576</td>
+      <td>0.4957</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[PS×U-Net]</td>
+      <td>0.0001250</td>
+      <td>very strong evidence for H1</td>
+      <td>34.46</td>
+      <td>47.38</td>
+      <td>37.79</td>
+      <td>28.86</td>
+      <td>34.10</td>
+      <td>0.9103</td>
+      <td>-0.04199</td>
+      <td>-0.05067</td>
+      <td>-0.03267</td>
+      <td>0.4957</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[PS×Swin]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.7338</td>
+      <td>-0.06216</td>
+      <td>-0.07263</td>
+      <td>-0.05241</td>
+      <td>0.4957</td>
+    </tr>
+    <tr>
+      <td>beta_dataset[S2]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.4841</td>
+      <td>-0.1495</td>
+      <td>-0.1565</td>
+      <td>-0.1434</td>
+      <td>0.4957</td>
+    </tr>
+    <tr>
+      <td>beta_arch[Terramind]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.7364</td>
+      <td>-0.07953</td>
+      <td>-0.08611</td>
+      <td>-0.07353</td>
+      <td>0.4957</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[AE×Terramind]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.3515</td>
+      <td>-0.2301</td>
+      <td>-0.2392</td>
+      <td>-0.2213</td>
+      <td>0.4957</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[PS×Terramind]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>1.498</td>
+      <td>0.1042</td>
+      <td>0.09576</td>
+      <td>0.1130</td>
+      <td>0.4957</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[S2×U-Net]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.3922</td>
+      <td>-0.1764</td>
+      <td>-0.1842</td>
+      <td>-0.1682</td>
+      <td>0.4957</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[S2×Swin]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>1.343</td>
+      <td>0.05043</td>
+      <td>0.04011</td>
+      <td>0.06024</td>
+      <td>0.4957</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[S2×Terramind]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>1.901</td>
+      <td>0.1259</td>
+      <td>0.1159</td>
+      <td>0.1348</td>
+      <td>0.4957</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>param</b>: Model term (dataset/arch/interaction coefficient).</li><li><b>Pr(>0)</b>: Posterior probability the term's effect is positive (on transformed scale).</li><li><b>BF10_interpretation</b>: Qualitative interpretation of BF10 (H1: effect ≠ 0 vs H0: effect = 0).</li><li><b>BF10_bw_scott</b>: Savage–Dickey BF10 using KDE bandwidth='scott'.</li><li><b>BF10_bw_0.1</b>: Savage–Dickey BF10 using KDE bandwidth=0.1.</li><li><b>BF10_bw_0.3</b>: Savage–Dickey BF10 using KDE bandwidth=0.3.</li><li><b>BF10_bw_0.5</b>: Savage–Dickey BF10 using KDE bandwidth=0.5.</li><li><b>BF10_bw_silverman</b>: Savage–Dickey BF10 using KDE bandwidth='silverman'.</li><li><b>OR</b>: Odds ratio implied by the contrast on logit scale (exp(Δ_logit)).</li><li><b>Δp_mean</b>: Mean difference in predicted metric on ORIGINAL scale for the contrast.</li><li><b>Δp_lo</b>: Lower 95% HDI for Δp (original scale).</li><li><b>Δp_hi</b>: Upper 95% HDI for Δp (original scale).</li><li><b>baseline</b>: Baseline level used for the contrast (original scale; depends on term type).</li>
+  </ul>
+</div>
+
+<h3>Factorial effects plot</h3>
+<img class="figure" src="stats_report_assets/effects_iou.png" alt="Factorial effects plot for IoU">
+<h3>Predicted means per dataset×arch</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>dataset</th>
+      <th>arch</th>
+      <th>mean</th>
+      <th>hdi_lo</th>
+      <th>hdi_hi</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>AE</td>
+      <td>U-Net</td>
+      <td>0.7807</td>
+      <td>0.7673</td>
+      <td>0.7961</td>
+    </tr>
+    <tr>
+      <td>AE</td>
+      <td>Swin</td>
+      <td>0.7501</td>
+      <td>0.7299</td>
+      <td>0.7779</td>
+    </tr>
+    <tr>
+      <td>AE</td>
+      <td>Terramind</td>
+      <td>0.3010</td>
+      <td>0.2937</td>
+      <td>0.3087</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>U-Net</td>
+      <td>0.4401</td>
+      <td>0.4278</td>
+      <td>0.4555</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Swin</td>
+      <td>0.5960</td>
+      <td>0.5802</td>
+      <td>0.6094</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Terramind</td>
+      <td>0.5550</td>
+      <td>0.5426</td>
+      <td>0.5663</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>U-Net</td>
+      <td>0.1216</td>
+      <td>0.1143</td>
+      <td>0.1304</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Swin</td>
+      <td>0.5244</td>
+      <td>0.5100</td>
+      <td>0.5371</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Terramind</td>
+      <td>0.3926</td>
+      <td>0.3739</td>
+      <td>0.4063</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>dataset</b>: Dataset for this cell.</li><li><b>arch</b>: Architecture for this cell.</li><li><b>mean</b>: Posterior mean predicted performance (original scale).</li><li><b>hdi_lo</b>: Lower 95% HDI for the predicted mean.</li><li><b>hdi_hi</b>: Upper 95% HDI for the predicted mean.</li>
+  </ul>
+</div>
+
+<h3>Heatmap of posterior mean (Original Scale)</h3>
+<img class="figure" src="stats_report_assets/heat_iou.png" alt="Heatmap for IoU">
+<h3>Key architecture contrasts (within each dataset, baseline arch=U-Net; ROPE=0.05 on transformed scale)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>dataset</th>
+      <th>contrast</th>
+      <th>Δ_mean</th>
+      <th>Δ_lo</th>
+      <th>Δ_hi</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>AE</td>
+      <td>Swin − U-Net</td>
+      <td>-0.03062</td>
+      <td>-0.05731</td>
+      <td>6.73e-05</td>
+      <td>0.02538</td>
+      <td>0.07800</td>
+    </tr>
+    <tr>
+      <td>AE</td>
+      <td>Terramind − U-Net</td>
+      <td>-0.4797</td>
+      <td>-0.4970</td>
+      <td>-0.4643</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Swin − U-Net</td>
+      <td>0.1559</td>
+      <td>0.1349</td>
+      <td>0.1745</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Terramind − U-Net</td>
+      <td>0.1149</td>
+      <td>0.09567</td>
+      <td>0.1319</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Swin − U-Net</td>
+      <td>0.4028</td>
+      <td>0.3866</td>
+      <td>0.4173</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Terramind − U-Net</td>
+      <td>0.2710</td>
+      <td>0.2507</td>
+      <td>0.2864</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>dataset</b>: Dataset scope for this set of architecture comparisons.</li><li><b>contrast</b>: Which architecture is compared against the baseline architecture.</li><li><b>Δ_mean</b>: Mean difference on original scale.</li><li><b>Δ_lo</b>: Lower 95% HDI for the difference.</li><li><b>Δ_hi</b>: Upper 95% HDI for the difference.</li><li><b>Pr(>0)</b>: Probability the difference is > 0 on transformed scale.</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the difference is practically negligible (ROPE) on transformed scale.</li>
+  </ul>
+</div>
+
+<h3>Contrast plot</h3>
+<img class="figure" src="stats_report_assets/contrasts_iou.png" alt="Contrast plot for IoU">
+<h3>Key dataset contrasts (within each architecture, baseline dataset=AE; ROPE=0.05 on transformed scale)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>arch</th>
+      <th>contrast</th>
+      <th>Δ_mean</th>
+      <th>Δ_lo</th>
+      <th>Δ_hi</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>U-Net</td>
+      <td>PS − AE</td>
+      <td>-0.3406</td>
+      <td>-0.3605</td>
+      <td>-0.3202</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>U-Net</td>
+      <td>S2 − AE</td>
+      <td>-0.6591</td>
+      <td>-0.6765</td>
+      <td>-0.6429</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Swin</td>
+      <td>PS − AE</td>
+      <td>-0.1541</td>
+      <td>-0.1852</td>
+      <td>-0.1287</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Swin</td>
+      <td>S2 − AE</td>
+      <td>-0.2257</td>
+      <td>-0.2568</td>
+      <td>-0.2004</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Terramind</td>
+      <td>PS − AE</td>
+      <td>0.2540</td>
+      <td>0.2396</td>
+      <td>0.2673</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Terramind</td>
+      <td>S2 − AE</td>
+      <td>0.09166</td>
+      <td>0.07163</td>
+      <td>0.1072</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>arch</b>: Architecture scope for this set of dataset comparisons.</li><li><b>contrast</b>: Which dataset is compared against the baseline dataset.</li><li><b>Δ_mean</b>: Mean difference on original scale.</li><li><b>Δ_lo</b>: Lower 95% HDI for the difference.</li><li><b>Δ_hi</b>: Upper 95% HDI for the difference.</li><li><b>Pr(>0)</b>: Probability the difference is > 0 on transformed scale.</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the difference is practically negligible (ROPE) on transformed scale.</li>
+  </ul>
+</div>
+
+<h3>Overall architecture contrasts (marginal over datasets, baseline arch=U-Net)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>scope</th>
+      <th>contrast</th>
+      <th>mean_original</th>
+      <th>hdi_lo_original</th>
+      <th>hdi_hi_original</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Overall (avg over datasets)</td>
+      <td>Swin − U-Net</td>
+      <td>0.1760</td>
+      <td>0.1633</td>
+      <td>0.1888</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Overall (avg over datasets)</td>
+      <td>Terramind − U-Net</td>
+      <td>-0.03129</td>
+      <td>-0.04186</td>
+      <td>-0.02199</td>
+      <td>0.06463</td>
+      <td>0.7129</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>scope</b>: What was averaged over to form the marginal comparison.</li><li><b>contrast</b>: Comparison (A − baseline).</li><li><b>mean_original</b>: Mean difference on original scale.</li><li><b>hdi_lo_original</b>: Lower 95% HDI of difference.</li><li><b>hdi_hi_original</b>: Upper 95% HDI of difference.</li><li><b>Pr(>0)</b>: Probability the contrast > 0 (transformed scale).</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the effect is practically negligible (transformed scale ROPE).</li>
+  </ul>
+</div>
+
+<img class="figure" src="stats_report_assets/arch_overall_iou.png" alt="Overall architecture contrasts for IoU">
+<h3>Overall dataset contrasts (marginal over architectures, baseline dataset=AE)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>scope</th>
+      <th>contrast</th>
+      <th>mean_original</th>
+      <th>hdi_lo_original</th>
+      <th>hdi_hi_original</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Overall (avg over arch)</td>
+      <td>PS − AE</td>
+      <td>-0.08022</td>
+      <td>-0.09295</td>
+      <td>-0.06835</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Overall (avg over arch)</td>
+      <td>S2 − AE</td>
+      <td>-0.2644</td>
+      <td>-0.2776</td>
+      <td>-0.2528</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>scope</b>: What was averaged over to form the marginal comparison.</li><li><b>contrast</b>: Comparison (A − baseline).</li><li><b>mean_original</b>: Mean difference on original scale.</li><li><b>hdi_lo_original</b>: Lower 95% HDI of difference.</li><li><b>hdi_hi_original</b>: Upper 95% HDI of difference.</li><li><b>Pr(>0)</b>: Probability the contrast > 0 (transformed scale).</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the effect is practically negligible (transformed scale ROPE).</li>
+  </ul>
+</div>
+
+<img class="figure" src="stats_report_assets/dataset_overall_iou.png" alt="Overall dataset contrasts for IoU">
+
+<details class="footnote">
+  <summary>Understanding the factorial section</summary>
+  <div class="small">
+<ul>
+  <li><b>Effects coding:</b> Coefficients are not simple “add to intercept” baselines.</li>
+  <li><b>Interpretable effects:</b> We compute OR/Δp (or absolute change) from <b>contrasts on predicted means</b>, which is correct under effects coding.</li>
+  <li><b>BF sensitivity:</b> If BF values are similar across bandwidths, the evidence is robust.</li>
+  <li><b>ROPE on transformed scale:</b> For consistency with the model parameter space where effects are estimated.</li>
+</ul>
+</div>
+</details>
+</div>
+</div>
+<div class="tabcontent" id="tab-dice-coef">
+<div class="card">
+<h2>Metric: dice_coef</h2>
+</div>
+<div class="card">
+<h3>Observed results across runs</h3>
+<img class="figure" src="stats_report_assets/observed_box_dice-coef.png" alt="Observed boxplot for dice_coef">
+</div>
+<div class="card">
+<h3>Hierarchical group model (with hierarchical variance)</h3>
+<p>Modelled on <span class='badge'>logit</span> scale; reporting mu_orig on original scale. Hierarchical variance improves regularization.</p>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>group</th>
+      <th>mean</th>
+      <th>sd</th>
+      <th>hdi_2.5%</th>
+      <th>hdi_97.5%</th>
+      <th>Pr(rank=1)</th>
+      <th>Pr(rank=2)</th>
+      <th>Pr(rank=3)</th>
+      <th>Pr(rank=4)</th>
+      <th>Pr(rank=5)</th>
+      <th>Pr(rank=6)</th>
+      <th>Pr(rank=7)</th>
+      <th>Pr(rank=8)</th>
+      <th>Pr(rank=9)</th>
+      <th>E[rank]</th>
+      <th>Pr(best)</th>
+      <th>Pr(best)_prior</th>
+      <th>BF_best</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>U-Net | AE</td>
+      <td>0.8770</td>
+      <td>0.005000</td>
+      <td>0.8680</td>
+      <td>0.8860</td>
+      <td>0.9746</td>
+      <td>0.02538</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1.025</td>
+      <td>0.9746</td>
+      <td>0.1060</td>
+      <td>323.94</td>
+    </tr>
+    <tr>
+      <td>Swin U-Net | AE</td>
+      <td>0.8570</td>
+      <td>0.008000</td>
+      <td>0.8420</td>
+      <td>0.8740</td>
+      <td>0.02538</td>
+      <td>0.9746</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1.975</td>
+      <td>0.02538</td>
+      <td>0.1260</td>
+      <td>0.1806</td>
+    </tr>
+    <tr>
+      <td>Swin U-Net | PS</td>
+      <td>0.7470</td>
+      <td>0.006000</td>
+      <td>0.7360</td>
+      <td>0.7590</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.9998</td>
+      <td>0.0002500</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>3.000</td>
+      <td>0</td>
+      <td>0.1080</td>
+      <td>8.26e-12</td>
+    </tr>
+    <tr>
+      <td>Terramind | PS</td>
+      <td>0.7140</td>
+      <td>0.005000</td>
+      <td>0.7040</td>
+      <td>0.7240</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.0002500</td>
+      <td>0.9988</td>
+      <td>0.001000</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>4.001</td>
+      <td>0</td>
+      <td>0.09000</td>
+      <td>1.01e-11</td>
+    </tr>
+    <tr>
+      <td>Swin U-Net | S2</td>
+      <td>0.6880</td>
+      <td>0.006000</td>
+      <td>0.6770</td>
+      <td>0.6990</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.001000</td>
+      <td>0.9990</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>4.999</td>
+      <td>0</td>
+      <td>0.1100</td>
+      <td>8.09e-12</td>
+    </tr>
+    <tr>
+      <td>U-Net | PS</td>
+      <td>0.6110</td>
+      <td>0.007000</td>
+      <td>0.5980</td>
+      <td>0.6250</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1.000</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>6.000</td>
+      <td>0</td>
+      <td>0.1180</td>
+      <td>7.47e-12</td>
+    </tr>
+    <tr>
+      <td>Terramind | S2</td>
+      <td>0.5640</td>
+      <td>0.009000</td>
+      <td>0.5460</td>
+      <td>0.5790</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1.000</td>
+      <td>0</td>
+      <td>0</td>
+      <td>7.000</td>
+      <td>0</td>
+      <td>0.1240</td>
+      <td>7.06e-12</td>
+    </tr>
+    <tr>
+      <td>Terramind | AE</td>
+      <td>0.4630</td>
+      <td>0.004000</td>
+      <td>0.4540</td>
+      <td>0.4710</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1.000</td>
+      <td>0</td>
+      <td>8.000</td>
+      <td>0</td>
+      <td>0.1160</td>
+      <td>7.62e-12</td>
+    </tr>
+    <tr>
+      <td>U-Net | S2</td>
+      <td>0.2170</td>
+      <td>0.006000</td>
+      <td>0.2050</td>
+      <td>0.2300</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1.000</td>
+      <td>9.000</td>
+      <td>0</td>
+      <td>0.1020</td>
+      <td>8.80e-12</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>group</b>: Group name (dataset×arch).</li><li><b>mean</b>: Posterior mean of group mean on the ORIGINAL metric scale.</li><li><b>sd</b>: Posterior SD of the group mean.</li><li><b>hdi_2.5%</b>: Lower bound of the 95% HDI for the group mean.</li><li><b>hdi_97.5%</b>: Upper bound of the 95% HDI for the group mean.</li><li><b>E[rank]</b>: Expected rank (1=best).</li><li><b>Pr(best)</b>: Posterior probability the group is the best.</li><li><b>Pr(best)_prior</b>: Prior probability the group is best (before seeing data).</li><li><b>BF_best</b>: Bayes factor for 'this group is best' vs 'not best' (via odds update).</li><li><b>Pr(rank=1)</b>: Posterior probability this group is rank 1 (1=best).</li><li><b>Pr(rank=2)</b>: Posterior probability this group is rank 2 (1=best).</li><li><b>Pr(rank=3)</b>: Posterior probability this group is rank 3 (1=best).</li><li><b>Pr(rank=4)</b>: Posterior probability this group is rank 4 (1=best).</li><li><b>Pr(rank=5)</b>: Posterior probability this group is rank 5 (1=best).</li><li><b>Pr(rank=6)</b>: Posterior probability this group is rank 6 (1=best).</li><li><b>Pr(rank=7)</b>: Posterior probability this group is rank 7 (1=best).</li><li><b>Pr(rank=8)</b>: Posterior probability this group is rank 8 (1=best).</li><li><b>Pr(rank=9)</b>: Posterior probability this group is rank 9 (1=best).</li>
+  </ul>
+</div>
+
+<h3>Model Validation Plots</h3>
+<div class="grid-2">
+<div class="card" style="margin:0">
+<h3>Prior Predictive Check</h3>
+<img class="figure" src="stats_report_assets/prior_pred_dice-coef.png" alt="Prior predictive check for dice_coef">
+<p>Check if priors are reasonable on original scale.</p>
+</div>
+<div class="card" style="margin:0">
+<h3>Posterior Predictive Check</h3>
+<img class="figure" src="stats_report_assets/post_pred_dice-coef.png" alt="Posterior predictive check for dice_coef">
+<p>Red overlay shows model predictions; blue shows observed data.</p>
+</div>
+</div>
+<h3>Group Comparison Plots</h3>
+<div class="grid-2">
+<div class="card" style="margin:0">
+<h3>Group means (with HDI)</h3>
+<img class="figure" src="stats_report_assets/posterior_box_dice-coef.png" alt="Group means forest plot for dice_coef">
+</div>
+<div class="card" style="margin:0">
+<h3>Pr(best)</h3>
+<img class="figure" src="stats_report_assets/prbest_dice-coef.png" alt="Pr(best) plot for dice_coef">
+</div>
+</div>
+</div>
+<h3>Consecutive ranking comparisons</h3>
+<p>Bayes factors for each group being better than the next lower-ranked group. This shows the strength of evidence for the ranking order.</p>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>rank</th>
+      <th>group</th>
+      <th>next_rank_group</th>
+      <th>Pr(better)</th>
+      <th>BF10_bw_0.1</th>
+      <th>BF10_bw_0.3</th>
+      <th>BF10_bw_0.5</th>
+      <th>BF10_bw_scott</th>
+      <th>BF10_bw_silverman</th>
+      <th>BF10_interpretation</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td>U-Net | AE</td>
+      <td>Swin U-Net | AE</td>
+      <td>0.9746</td>
+      <td>0.3393</td>
+      <td>0.3348</td>
+      <td>0.2730</td>
+      <td>0.3522</td>
+      <td>0.3596</td>
+      <td>anecdotal evidence for H0</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>Swin U-Net | AE</td>
+      <td>Swin U-Net | PS</td>
+      <td>1.000</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>extreme evidence for H1</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>Swin U-Net | PS</td>
+      <td>Terramind | PS</td>
+      <td>0.9998</td>
+      <td>56.67</td>
+      <td>45.11</td>
+      <td>24.96</td>
+      <td>54.41</td>
+      <td>56.28</td>
+      <td>very strong evidence for H1</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>Terramind | PS</td>
+      <td>Swin U-Net | S2</td>
+      <td>0.9990</td>
+      <td>10.10</td>
+      <td>5.423</td>
+      <td>3.999</td>
+      <td>7.681</td>
+      <td>7.336</td>
+      <td>moderate evidence for H1</td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td>Swin U-Net | S2</td>
+      <td>U-Net | PS</td>
+      <td>1.000</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>extreme evidence for H1</td>
+    </tr>
+    <tr>
+      <td>6</td>
+      <td>U-Net | PS</td>
+      <td>Terramind | S2</td>
+      <td>1.000</td>
+      <td>∞</td>
+      <td>13553.03</td>
+      <td>637.05</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>extreme evidence for H1</td>
+    </tr>
+    <tr>
+      <td>7</td>
+      <td>Terramind | S2</td>
+      <td>Terramind | AE</td>
+      <td>1.000</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>extreme evidence for H1</td>
+    </tr>
+    <tr>
+      <td>8</td>
+      <td>Terramind | AE</td>
+      <td>U-Net | S2</td>
+      <td>1.000</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>extreme evidence for H1</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>rank</b>: Expected rank of this group.</li><li><b>group</b>: Group name.</li><li><b>next_rank_group</b>: Next lower-ranked group.</li><li><b>Pr(better)</b>: Posterior probability this group is better than the next-ranked group.</li><li><b>BF10_interpretation</b>: Qualitative interpretation of BF10.</li>
+  </ul>
+</div>
+
+<img class="figure" src="stats_report_assets/consecutive_bf_dice-coef.png" alt="Consecutive BF plot for dice_coef">
+
+<details class="footnote">
+  <summary>Interpreting consecutive comparisons</summary>
+  <div class="small">
+<ul>
+  <li><b>Pr(better)</b> close to 1.0 → strong confidence in ranking order</li>
+  <li><b>Pr(better)</b> near 0.5 → ranking is uncertain, groups may be equivalent</li>
+  <li><b>BF10 > 10</b> → strong evidence for ranking difference</li>
+  <li><b>BF10 < 1</b> → evidence against ranking difference (groups may be equivalent)</li>
+  <li>Multiple bandwidths show robustness of conclusions</li>
+</ul>
+</div>
+</details>
+<div class="card">
+<h3>Factorial effects (Natural Scale with BF Sensitivity)</h3>
+<p>All effects shown on natural, interpretable scales. Multiple BF bandwidths show robustness of evidence. Consistent BF across bandwidths = stronger conclusion.</p>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>param</th>
+      <th>Pr(&gt;0)</th>
+      <th>BF10_interpretation</th>
+      <th>BF10_bw_scott</th>
+      <th>BF10_bw_0.1</th>
+      <th>BF10_bw_0.3</th>
+      <th>BF10_bw_0.5</th>
+      <th>BF10_bw_silverman</th>
+      <th>OR</th>
+      <th>Δp_mean</th>
+      <th>Δp_lo</th>
+      <th>Δp_hi</th>
+      <th>baseline</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>beta_dataset[AE]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>1.744</td>
+      <td>0.09477</td>
+      <td>0.08933</td>
+      <td>0.1009</td>
+      <td>0.6374</td>
+    </tr>
+    <tr>
+      <td>beta_dataset[PS]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>1.185</td>
+      <td>0.05318</td>
+      <td>0.04763</td>
+      <td>0.05873</td>
+      <td>0.6374</td>
+    </tr>
+    <tr>
+      <td>beta_arch[U-Net]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.7640</td>
+      <td>-0.06918</td>
+      <td>-0.07449</td>
+      <td>-0.06305</td>
+      <td>0.6374</td>
+    </tr>
+    <tr>
+      <td>beta_arch[Swin]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>1.778</td>
+      <td>0.1265</td>
+      <td>0.1207</td>
+      <td>0.1327</td>
+      <td>0.6374</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[AE×U-Net]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>2.805</td>
+      <td>0.2139</td>
+      <td>0.2059</td>
+      <td>0.2213</td>
+      <td>0.6374</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[AE×Swin]</td>
+      <td>0.6329</td>
+      <td>strong evidence for H0 (no effect)</td>
+      <td>0.06622</td>
+      <td>0.07281</td>
+      <td>0.06865</td>
+      <td>0.07059</td>
+      <td>0.06605</td>
+      <td>1.016</td>
+      <td>-0.001656</td>
+      <td>-0.009906</td>
+      <td>0.007663</td>
+      <td>0.6374</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[PS×U-Net]</td>
+      <td>0.0001250</td>
+      <td>very strong evidence for H1</td>
+      <td>38.69</td>
+      <td>53.15</td>
+      <td>29.03</td>
+      <td>19.43</td>
+      <td>37.46</td>
+      <td>0.9102</td>
+      <td>-0.01024</td>
+      <td>-0.01816</td>
+      <td>-0.002041</td>
+      <td>0.6374</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[PS×Swin]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.7340</td>
+      <td>-0.07027</td>
+      <td>-0.07872</td>
+      <td>-0.06262</td>
+      <td>0.6374</td>
+    </tr>
+    <tr>
+      <td>beta_dataset[S2]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.4840</td>
+      <td>-0.1479</td>
+      <td>-0.1547</td>
+      <td>-0.1420</td>
+      <td>0.6374</td>
+    </tr>
+    <tr>
+      <td>beta_arch[Terramind]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.7365</td>
+      <td>-0.05733</td>
+      <td>-0.06360</td>
+      <td>-0.05177</td>
+      <td>0.6374</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[AE×Terramind]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.3514</td>
+      <td>-0.2122</td>
+      <td>-0.2195</td>
+      <td>-0.2043</td>
+      <td>0.6374</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[PS×Terramind]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>1.498</td>
+      <td>0.08051</td>
+      <td>0.07321</td>
+      <td>0.08807</td>
+      <td>0.6374</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[S2×U-Net]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.3920</td>
+      <td>-0.2036</td>
+      <td>-0.2116</td>
+      <td>-0.1948</td>
+      <td>0.6374</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[S2×Swin]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>1.343</td>
+      <td>0.07193</td>
+      <td>0.06369</td>
+      <td>0.07995</td>
+      <td>0.6374</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[S2×Terramind]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>1.901</td>
+      <td>0.1317</td>
+      <td>0.1219</td>
+      <td>0.1401</td>
+      <td>0.6374</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>param</b>: Model term (dataset/arch/interaction coefficient).</li><li><b>Pr(>0)</b>: Posterior probability the term's effect is positive (on transformed scale).</li><li><b>BF10_interpretation</b>: Qualitative interpretation of BF10 (H1: effect ≠ 0 vs H0: effect = 0).</li><li><b>BF10_bw_scott</b>: Savage–Dickey BF10 using KDE bandwidth='scott'.</li><li><b>BF10_bw_0.1</b>: Savage–Dickey BF10 using KDE bandwidth=0.1.</li><li><b>BF10_bw_0.3</b>: Savage–Dickey BF10 using KDE bandwidth=0.3.</li><li><b>BF10_bw_0.5</b>: Savage–Dickey BF10 using KDE bandwidth=0.5.</li><li><b>BF10_bw_silverman</b>: Savage–Dickey BF10 using KDE bandwidth='silverman'.</li><li><b>OR</b>: Odds ratio implied by the contrast on logit scale (exp(Δ_logit)).</li><li><b>Δp_mean</b>: Mean difference in predicted metric on ORIGINAL scale for the contrast.</li><li><b>Δp_lo</b>: Lower 95% HDI for Δp (original scale).</li><li><b>Δp_hi</b>: Upper 95% HDI for Δp (original scale).</li><li><b>baseline</b>: Baseline level used for the contrast (original scale; depends on term type).</li>
+  </ul>
+</div>
+
+<h3>Factorial effects plot</h3>
+<img class="figure" src="stats_report_assets/effects_dice-coef.png" alt="Factorial effects plot for dice_coef">
+<h3>Predicted means per dataset×arch</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>dataset</th>
+      <th>arch</th>
+      <th>mean</th>
+      <th>hdi_lo</th>
+      <th>hdi_hi</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>AE</td>
+      <td>U-Net</td>
+      <td>0.8769</td>
+      <td>0.8683</td>
+      <td>0.8867</td>
+    </tr>
+    <tr>
+      <td>AE</td>
+      <td>Swin</td>
+      <td>0.8571</td>
+      <td>0.8439</td>
+      <td>0.8749</td>
+    </tr>
+    <tr>
+      <td>AE</td>
+      <td>Terramind</td>
+      <td>0.4627</td>
+      <td>0.4539</td>
+      <td>0.4718</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>U-Net</td>
+      <td>0.6112</td>
+      <td>0.5990</td>
+      <td>0.6258</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Swin</td>
+      <td>0.7468</td>
+      <td>0.7346</td>
+      <td>0.7575</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Terramind</td>
+      <td>0.7138</td>
+      <td>0.7037</td>
+      <td>0.7230</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>U-Net</td>
+      <td>0.2167</td>
+      <td>0.2051</td>
+      <td>0.2306</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Swin</td>
+      <td>0.6879</td>
+      <td>0.6758</td>
+      <td>0.6983</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Terramind</td>
+      <td>0.5639</td>
+      <td>0.5436</td>
+      <td>0.5779</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>dataset</b>: Dataset for this cell.</li><li><b>arch</b>: Architecture for this cell.</li><li><b>mean</b>: Posterior mean predicted performance (original scale).</li><li><b>hdi_lo</b>: Lower 95% HDI for the predicted mean.</li><li><b>hdi_hi</b>: Upper 95% HDI for the predicted mean.</li>
+  </ul>
+</div>
+
+<h3>Heatmap of posterior mean (Original Scale)</h3>
+<img class="figure" src="stats_report_assets/heat_dice-coef.png" alt="Heatmap for dice_coef">
+<h3>Key architecture contrasts (within each dataset, baseline arch=U-Net; ROPE=0.05 on transformed scale)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>dataset</th>
+      <th>contrast</th>
+      <th>Δ_mean</th>
+      <th>Δ_lo</th>
+      <th>Δ_hi</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>AE</td>
+      <td>Swin − U-Net</td>
+      <td>-0.01985</td>
+      <td>-0.03676</td>
+      <td>0.0001155</td>
+      <td>0.02600</td>
+      <td>0.07500</td>
+    </tr>
+    <tr>
+      <td>AE</td>
+      <td>Terramind − U-Net</td>
+      <td>-0.4142</td>
+      <td>-0.4272</td>
+      <td>-0.4019</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Swin − U-Net</td>
+      <td>0.1356</td>
+      <td>0.1167</td>
+      <td>0.1523</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Terramind − U-Net</td>
+      <td>0.1026</td>
+      <td>0.08537</td>
+      <td>0.1176</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Swin − U-Net</td>
+      <td>0.4712</td>
+      <td>0.4531</td>
+      <td>0.4868</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Terramind − U-Net</td>
+      <td>0.3472</td>
+      <td>0.3235</td>
+      <td>0.3658</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>dataset</b>: Dataset scope for this set of architecture comparisons.</li><li><b>contrast</b>: Which architecture is compared against the baseline architecture.</li><li><b>Δ_mean</b>: Mean difference on original scale.</li><li><b>Δ_lo</b>: Lower 95% HDI for the difference.</li><li><b>Δ_hi</b>: Upper 95% HDI for the difference.</li><li><b>Pr(>0)</b>: Probability the difference is > 0 on transformed scale.</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the difference is practically negligible (ROPE) on transformed scale.</li>
+  </ul>
+</div>
+
+<h3>Contrast plot</h3>
+<img class="figure" src="stats_report_assets/contrasts_dice-coef.png" alt="Contrast plot for dice_coef">
+<h3>Key dataset contrasts (within each architecture, baseline dataset=AE; ROPE=0.05 on transformed scale)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>arch</th>
+      <th>contrast</th>
+      <th>Δ_mean</th>
+      <th>Δ_lo</th>
+      <th>Δ_hi</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>U-Net</td>
+      <td>PS − AE</td>
+      <td>-0.2657</td>
+      <td>-0.2815</td>
+      <td>-0.2491</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>U-Net</td>
+      <td>S2 − AE</td>
+      <td>-0.6602</td>
+      <td>-0.6751</td>
+      <td>-0.6441</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Swin</td>
+      <td>PS − AE</td>
+      <td>-0.1102</td>
+      <td>-0.1314</td>
+      <td>-0.09263</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Swin</td>
+      <td>S2 − AE</td>
+      <td>-0.1691</td>
+      <td>-0.1905</td>
+      <td>-0.1518</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Terramind</td>
+      <td>PS − AE</td>
+      <td>0.2511</td>
+      <td>0.2376</td>
+      <td>0.2637</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Terramind</td>
+      <td>S2 − AE</td>
+      <td>0.1012</td>
+      <td>0.07916</td>
+      <td>0.1176</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>arch</b>: Architecture scope for this set of dataset comparisons.</li><li><b>contrast</b>: Which dataset is compared against the baseline dataset.</li><li><b>Δ_mean</b>: Mean difference on original scale.</li><li><b>Δ_lo</b>: Lower 95% HDI for the difference.</li><li><b>Δ_hi</b>: Upper 95% HDI for the difference.</li><li><b>Pr(>0)</b>: Probability the difference is > 0 on transformed scale.</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the difference is practically negligible (ROPE) on transformed scale.</li>
+  </ul>
+</div>
+
+<h3>Overall architecture contrasts (marginal over datasets, baseline arch=U-Net)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>scope</th>
+      <th>contrast</th>
+      <th>mean_original</th>
+      <th>hdi_lo_original</th>
+      <th>hdi_hi_original</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Overall (avg over datasets)</td>
+      <td>Swin − U-Net</td>
+      <td>0.1957</td>
+      <td>0.1854</td>
+      <td>0.2057</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Overall (avg over datasets)</td>
+      <td>Terramind − U-Net</td>
+      <td>0.01185</td>
+      <td>0.001210</td>
+      <td>0.02092</td>
+      <td>0.07550</td>
+      <td>0.7113</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>scope</b>: What was averaged over to form the marginal comparison.</li><li><b>contrast</b>: Comparison (A − baseline).</li><li><b>mean_original</b>: Mean difference on original scale.</li><li><b>hdi_lo_original</b>: Lower 95% HDI of difference.</li><li><b>hdi_hi_original</b>: Upper 95% HDI of difference.</li><li><b>Pr(>0)</b>: Probability the contrast > 0 (transformed scale).</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the effect is practically negligible (transformed scale ROPE).</li>
+  </ul>
+</div>
+
+<img class="figure" src="stats_report_assets/arch_overall_dice-coef.png" alt="Overall architecture contrasts for dice_coef">
+<h3>Overall dataset contrasts (marginal over architectures, baseline dataset=AE)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>scope</th>
+      <th>contrast</th>
+      <th>mean_original</th>
+      <th>hdi_lo_original</th>
+      <th>hdi_hi_original</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Overall (avg over arch)</td>
+      <td>PS − AE</td>
+      <td>-0.04159</td>
+      <td>-0.05151</td>
+      <td>-0.03256</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Overall (avg over arch)</td>
+      <td>S2 − AE</td>
+      <td>-0.2427</td>
+      <td>-0.2542</td>
+      <td>-0.2325</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>scope</b>: What was averaged over to form the marginal comparison.</li><li><b>contrast</b>: Comparison (A − baseline).</li><li><b>mean_original</b>: Mean difference on original scale.</li><li><b>hdi_lo_original</b>: Lower 95% HDI of difference.</li><li><b>hdi_hi_original</b>: Upper 95% HDI of difference.</li><li><b>Pr(>0)</b>: Probability the contrast > 0 (transformed scale).</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the effect is practically negligible (transformed scale ROPE).</li>
+  </ul>
+</div>
+
+<img class="figure" src="stats_report_assets/dataset_overall_dice-coef.png" alt="Overall dataset contrasts for dice_coef">
+
+<details class="footnote">
+  <summary>Understanding the factorial section</summary>
+  <div class="small">
+<ul>
+  <li><b>Effects coding:</b> Coefficients are not simple “add to intercept” baselines.</li>
+  <li><b>Interpretable effects:</b> We compute OR/Δp (or absolute change) from <b>contrasts on predicted means</b>, which is correct under effects coding.</li>
+  <li><b>BF sensitivity:</b> If BF values are similar across bandwidths, the evidence is robust.</li>
+  <li><b>ROPE on transformed scale:</b> For consistency with the model parameter space where effects are estimated.</li>
+</ul>
+</div>
+</details>
+</div>
+</div>
+<div class="tabcontent" id="tab-normalized-surface-distance">
+<div class="card">
+<h2>Metric: normalized_surface_distance</h2>
+</div>
+<div class="card">
+<h3>Observed results across runs</h3>
+<img class="figure" src="stats_report_assets/observed_box_normalized-surface-distance.png" alt="Observed boxplot for normalized_surface_distance">
+</div>
+<div class="card">
+<h3>Hierarchical group model (with hierarchical variance)</h3>
+<p>Modelled on <span class='badge'>logit</span> scale; reporting mu_orig on original scale. Hierarchical variance improves regularization.</p>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>group</th>
+      <th>mean</th>
+      <th>sd</th>
+      <th>hdi_2.5%</th>
+      <th>hdi_97.5%</th>
+      <th>Pr(rank=1)</th>
+      <th>Pr(rank=2)</th>
+      <th>Pr(rank=3)</th>
+      <th>Pr(rank=4)</th>
+      <th>Pr(rank=5)</th>
+      <th>Pr(rank=6)</th>
+      <th>Pr(rank=7)</th>
+      <th>Pr(rank=8)</th>
+      <th>Pr(rank=9)</th>
+      <th>E[rank]</th>
+      <th>Pr(best)</th>
+      <th>Pr(best)_prior</th>
+      <th>BF_best</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>U-Net | S2</td>
+      <td>0.6100</td>
+      <td>0.008000</td>
+      <td>0.5940</td>
+      <td>0.6270</td>
+      <td>0.9968</td>
+      <td>0.003250</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1.003</td>
+      <td>0.9968</td>
+      <td>0.1020</td>
+      <td>2700.10</td>
+    </tr>
+    <tr>
+      <td>Swin U-Net | PS</td>
+      <td>0.5690</td>
+      <td>0.01000</td>
+      <td>0.5480</td>
+      <td>0.5880</td>
+      <td>0.0007500</td>
+      <td>0.6609</td>
+      <td>0.3131</td>
+      <td>0.02525</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>2.363</td>
+      <td>0.0007500</td>
+      <td>0.1080</td>
+      <td>0.006199</td>
+    </tr>
+    <tr>
+      <td>Swin U-Net | S2</td>
+      <td>0.5590</td>
+      <td>0.01700</td>
+      <td>0.5280</td>
+      <td>0.5920</td>
+      <td>0.002500</td>
+      <td>0.3180</td>
+      <td>0.4253</td>
+      <td>0.2542</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>2.931</td>
+      <td>0.002500</td>
+      <td>0.1100</td>
+      <td>0.02028</td>
+    </tr>
+    <tr>
+      <td>Terramind | S2</td>
+      <td>0.5450</td>
+      <td>0.01100</td>
+      <td>0.5210</td>
+      <td>0.5660</td>
+      <td>0</td>
+      <td>0.01787</td>
+      <td>0.2616</td>
+      <td>0.7205</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>3.703</td>
+      <td>0</td>
+      <td>0.1240</td>
+      <td>7.06e-12</td>
+    </tr>
+    <tr>
+      <td>U-Net | PS</td>
+      <td>0.4490</td>
+      <td>0.01300</td>
+      <td>0.4250</td>
+      <td>0.4780</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1.000</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>5.000</td>
+      <td>0</td>
+      <td>0.1180</td>
+      <td>7.47e-12</td>
+    </tr>
+    <tr>
+      <td>Terramind | PS</td>
+      <td>0.3770</td>
+      <td>0.008000</td>
+      <td>0.3620</td>
+      <td>0.3920</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.8213</td>
+      <td>0.1545</td>
+      <td>0.02425</td>
+      <td>0</td>
+      <td>6.203</td>
+      <td>0</td>
+      <td>0.09000</td>
+      <td>1.01e-11</td>
+    </tr>
+    <tr>
+      <td>U-Net | AE</td>
+      <td>0.3680</td>
+      <td>0.007000</td>
+      <td>0.3540</td>
+      <td>0.3810</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.1550</td>
+      <td>0.6944</td>
+      <td>0.1506</td>
+      <td>0</td>
+      <td>6.996</td>
+      <td>0</td>
+      <td>0.1060</td>
+      <td>8.43e-12</td>
+    </tr>
+    <tr>
+      <td>Swin U-Net | AE</td>
+      <td>0.3580</td>
+      <td>0.008000</td>
+      <td>0.3420</td>
+      <td>0.3730</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.02375</td>
+      <td>0.1511</td>
+      <td>0.8251</td>
+      <td>0</td>
+      <td>7.801</td>
+      <td>0</td>
+      <td>0.1260</td>
+      <td>6.94e-12</td>
+    </tr>
+    <tr>
+      <td>Terramind | AE</td>
+      <td>0.2190</td>
+      <td>0.005000</td>
+      <td>0.2100</td>
+      <td>0.2290</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1.000</td>
+      <td>9.000</td>
+      <td>0</td>
+      <td>0.1160</td>
+      <td>7.62e-12</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>group</b>: Group name (dataset×arch).</li><li><b>mean</b>: Posterior mean of group mean on the ORIGINAL metric scale.</li><li><b>sd</b>: Posterior SD of the group mean.</li><li><b>hdi_2.5%</b>: Lower bound of the 95% HDI for the group mean.</li><li><b>hdi_97.5%</b>: Upper bound of the 95% HDI for the group mean.</li><li><b>E[rank]</b>: Expected rank (1=best).</li><li><b>Pr(best)</b>: Posterior probability the group is the best.</li><li><b>Pr(best)_prior</b>: Prior probability the group is best (before seeing data).</li><li><b>BF_best</b>: Bayes factor for 'this group is best' vs 'not best' (via odds update).</li><li><b>Pr(rank=1)</b>: Posterior probability this group is rank 1 (1=best).</li><li><b>Pr(rank=2)</b>: Posterior probability this group is rank 2 (1=best).</li><li><b>Pr(rank=3)</b>: Posterior probability this group is rank 3 (1=best).</li><li><b>Pr(rank=4)</b>: Posterior probability this group is rank 4 (1=best).</li><li><b>Pr(rank=5)</b>: Posterior probability this group is rank 5 (1=best).</li><li><b>Pr(rank=6)</b>: Posterior probability this group is rank 6 (1=best).</li><li><b>Pr(rank=7)</b>: Posterior probability this group is rank 7 (1=best).</li><li><b>Pr(rank=8)</b>: Posterior probability this group is rank 8 (1=best).</li><li><b>Pr(rank=9)</b>: Posterior probability this group is rank 9 (1=best).</li>
+  </ul>
+</div>
+
+<h3>Model Validation Plots</h3>
+<div class="grid-2">
+<div class="card" style="margin:0">
+<h3>Prior Predictive Check</h3>
+<img class="figure" src="stats_report_assets/prior_pred_normalized-surface-distance.png" alt="Prior predictive check for normalized_surface_distance">
+<p>Check if priors are reasonable on original scale.</p>
+</div>
+<div class="card" style="margin:0">
+<h3>Posterior Predictive Check</h3>
+<img class="figure" src="stats_report_assets/post_pred_normalized-surface-distance.png" alt="Posterior predictive check for normalized_surface_distance">
+<p>Red overlay shows model predictions; blue shows observed data.</p>
+</div>
+</div>
+<h3>Group Comparison Plots</h3>
+<div class="grid-2">
+<div class="card" style="margin:0">
+<h3>Group means (with HDI)</h3>
+<img class="figure" src="stats_report_assets/posterior_box_normalized-surface-distance.png" alt="Group means forest plot for normalized_surface_distance">
+</div>
+<div class="card" style="margin:0">
+<h3>Pr(best)</h3>
+<img class="figure" src="stats_report_assets/prbest_normalized-surface-distance.png" alt="Pr(best) plot for normalized_surface_distance">
+</div>
+</div>
+</div>
+<h3>Consecutive ranking comparisons</h3>
+<p>Bayes factors for each group being better than the next lower-ranked group. This shows the strength of evidence for the ranking order.</p>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>rank</th>
+      <th>group</th>
+      <th>next_rank_group</th>
+      <th>Pr(better)</th>
+      <th>BF10_bw_0.1</th>
+      <th>BF10_bw_0.3</th>
+      <th>BF10_bw_0.5</th>
+      <th>BF10_bw_scott</th>
+      <th>BF10_bw_silverman</th>
+      <th>BF10_interpretation</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td>U-Net | S2</td>
+      <td>Swin U-Net | PS</td>
+      <td>0.9992</td>
+      <td>32.01</td>
+      <td>14.66</td>
+      <td>7.596</td>
+      <td>24.95</td>
+      <td>23.66</td>
+      <td>strong evidence for H1</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>Swin U-Net | PS</td>
+      <td>Swin U-Net | S2</td>
+      <td>0.6746</td>
+      <td>0.1826</td>
+      <td>0.1860</td>
+      <td>0.1784</td>
+      <td>0.1807</td>
+      <td>0.1837</td>
+      <td>moderate evidence for H0</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>Swin U-Net | S2</td>
+      <td>Terramind | S2</td>
+      <td>0.7409</td>
+      <td>0.2092</td>
+      <td>0.2127</td>
+      <td>0.2050</td>
+      <td>0.2100</td>
+      <td>0.2194</td>
+      <td>moderate evidence for H0</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>Terramind | S2</td>
+      <td>U-Net | PS</td>
+      <td>1.000</td>
+      <td>∞</td>
+      <td>11429.76</td>
+      <td>794.44</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>extreme evidence for H1</td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td>U-Net | PS</td>
+      <td>Terramind | PS</td>
+      <td>1.000</td>
+      <td>330252.14</td>
+      <td>292.31</td>
+      <td>153.55</td>
+      <td>2661.37</td>
+      <td>1893.17</td>
+      <td>extreme evidence for H1</td>
+    </tr>
+    <tr>
+      <td>6</td>
+      <td>Terramind | PS</td>
+      <td>U-Net | AE</td>
+      <td>0.8359</td>
+      <td>0.1240</td>
+      <td>0.1234</td>
+      <td>0.1147</td>
+      <td>0.1337</td>
+      <td>0.1395</td>
+      <td>moderate evidence for H0</td>
+    </tr>
+    <tr>
+      <td>7</td>
+      <td>U-Net | AE</td>
+      <td>Swin U-Net | AE</td>
+      <td>0.8403</td>
+      <td>0.1250</td>
+      <td>0.1188</td>
+      <td>0.1126</td>
+      <td>0.1204</td>
+      <td>0.1203</td>
+      <td>moderate evidence for H0</td>
+    </tr>
+    <tr>
+      <td>8</td>
+      <td>Swin U-Net | AE</td>
+      <td>Terramind | AE</td>
+      <td>1.000</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>extreme evidence for H1</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>rank</b>: Expected rank of this group.</li><li><b>group</b>: Group name.</li><li><b>next_rank_group</b>: Next lower-ranked group.</li><li><b>Pr(better)</b>: Posterior probability this group is better than the next-ranked group.</li><li><b>BF10_interpretation</b>: Qualitative interpretation of BF10.</li>
+  </ul>
+</div>
+
+<img class="figure" src="stats_report_assets/consecutive_bf_normalized-surface-distance.png" alt="Consecutive BF plot for normalized_surface_distance">
+
+<details class="footnote">
+  <summary>Interpreting consecutive comparisons</summary>
+  <div class="small">
+<ul>
+  <li><b>Pr(better)</b> close to 1.0 → strong confidence in ranking order</li>
+  <li><b>Pr(better)</b> near 0.5 → ranking is uncertain, groups may be equivalent</li>
+  <li><b>BF10 > 10</b> → strong evidence for ranking difference</li>
+  <li><b>BF10 < 1</b> → evidence against ranking difference (groups may be equivalent)</li>
+  <li>Multiple bandwidths show robustness of conclusions</li>
+</ul>
+</div>
+</details>
+<div class="card">
+<h3>Factorial effects (Natural Scale with BF Sensitivity)</h3>
+<p>All effects shown on natural, interpretable scales. Multiple BF bandwidths show robustness of evidence. Consistent BF across bandwidths = stronger conclusion.</p>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>param</th>
+      <th>Pr(&gt;0)</th>
+      <th>BF10_interpretation</th>
+      <th>BF10_bw_scott</th>
+      <th>BF10_bw_0.1</th>
+      <th>BF10_bw_0.3</th>
+      <th>BF10_bw_0.5</th>
+      <th>BF10_bw_silverman</th>
+      <th>OR</th>
+      <th>Δp_mean</th>
+      <th>Δp_lo</th>
+      <th>Δp_hi</th>
+      <th>baseline</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>beta_dataset[AE]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.5582</td>
+      <td>-0.1360</td>
+      <td>-0.1435</td>
+      <td>-0.1281</td>
+      <td>0.4509</td>
+    </tr>
+    <tr>
+      <td>beta_dataset[PS]</td>
+      <td>0.9999</td>
+      <td>strong evidence for H1</td>
+      <td>13.92</td>
+      <td>11.40</td>
+      <td>14.06</td>
+      <td>9.345</td>
+      <td>14.12</td>
+      <td>1.077</td>
+      <td>0.01432</td>
+      <td>0.005169</td>
+      <td>0.02386</td>
+      <td>0.4509</td>
+    </tr>
+    <tr>
+      <td>beta_arch[U-Net]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>1.126</td>
+      <td>0.02512</td>
+      <td>0.01596</td>
+      <td>0.03496</td>
+      <td>0.4509</td>
+    </tr>
+    <tr>
+      <td>beta_arch[Swin]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>1.218</td>
+      <td>0.04534</td>
+      <td>0.03522</td>
+      <td>0.05536</td>
+      <td>0.4509</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[AE×U-Net]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>77750.19</td>
+      <td>1812.06</td>
+      <td>∞</td>
+      <td>1.150</td>
+      <td>0.02773</td>
+      <td>0.01633</td>
+      <td>0.03901</td>
+      <td>0.4509</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[AE×Swin]</td>
+      <td>0.7724</td>
+      <td>strong evidence for H0 (no effect)</td>
+      <td>0.07011</td>
+      <td>0.07988</td>
+      <td>0.06993</td>
+      <td>0.06902</td>
+      <td>0.06963</td>
+      <td>1.020</td>
+      <td>-0.001916</td>
+      <td>-0.01423</td>
+      <td>0.009959</td>
+      <td>0.4509</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[PS×U-Net]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.8360</td>
+      <td>-0.04107</td>
+      <td>-0.05490</td>
+      <td>-0.02605</td>
+      <td>0.4509</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[PS×Swin]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>1.253</td>
+      <td>0.05883</td>
+      <td>0.04401</td>
+      <td>0.07269</td>
+      <td>0.4509</td>
+    </tr>
+    <tr>
+      <td>beta_dataset[S2]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>1.665</td>
+      <td>0.1216</td>
+      <td>0.1112</td>
+      <td>0.1318</td>
+      <td>0.4509</td>
+    </tr>
+    <tr>
+      <td>beta_arch[Terramind]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.7300</td>
+      <td>-0.07046</td>
+      <td>-0.07882</td>
+      <td>-0.06218</td>
+      <td>0.4509</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[AE×Terramind]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>262635.21</td>
+      <td>2226.72</td>
+      <td>∞</td>
+      <td>0.8529</td>
+      <td>-0.02581</td>
+      <td>-0.03566</td>
+      <td>-0.01431</td>
+      <td>0.4509</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[PS×Terramind]</td>
+      <td>0.04487</td>
+      <td>moderate evidence for H0</td>
+      <td>0.1882</td>
+      <td>0.1962</td>
+      <td>0.1678</td>
+      <td>0.1368</td>
+      <td>0.1861</td>
+      <td>0.9560</td>
+      <td>-0.01777</td>
+      <td>-0.02985</td>
+      <td>-0.005021</td>
+      <td>0.4509</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[S2×U-Net]</td>
+      <td>0.9197</td>
+      <td>moderate evidence for H0</td>
+      <td>0.1008</td>
+      <td>0.1004</td>
+      <td>0.09577</td>
+      <td>0.08646</td>
+      <td>0.1003</td>
+      <td>1.041</td>
+      <td>0.01334</td>
+      <td>-0.0002248</td>
+      <td>0.02662</td>
+      <td>0.4509</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[S2×Swin]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.7834</td>
+      <td>-0.05692</td>
+      <td>-0.07459</td>
+      <td>-0.03995</td>
+      <td>0.4509</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[S2×Terramind]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>1.228</td>
+      <td>0.04358</td>
+      <td>0.02874</td>
+      <td>0.05744</td>
+      <td>0.4509</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>param</b>: Model term (dataset/arch/interaction coefficient).</li><li><b>Pr(>0)</b>: Posterior probability the term's effect is positive (on transformed scale).</li><li><b>BF10_interpretation</b>: Qualitative interpretation of BF10 (H1: effect ≠ 0 vs H0: effect = 0).</li><li><b>BF10_bw_scott</b>: Savage–Dickey BF10 using KDE bandwidth='scott'.</li><li><b>BF10_bw_0.1</b>: Savage–Dickey BF10 using KDE bandwidth=0.1.</li><li><b>BF10_bw_0.3</b>: Savage–Dickey BF10 using KDE bandwidth=0.3.</li><li><b>BF10_bw_0.5</b>: Savage–Dickey BF10 using KDE bandwidth=0.5.</li><li><b>BF10_bw_silverman</b>: Savage–Dickey BF10 using KDE bandwidth='silverman'.</li><li><b>OR</b>: Odds ratio implied by the contrast on logit scale (exp(Δ_logit)).</li><li><b>Δp_mean</b>: Mean difference in predicted metric on ORIGINAL scale for the contrast.</li><li><b>Δp_lo</b>: Lower 95% HDI for Δp (original scale).</li><li><b>Δp_hi</b>: Upper 95% HDI for Δp (original scale).</li><li><b>baseline</b>: Baseline level used for the contrast (original scale; depends on term type).</li>
+  </ul>
+</div>
+
+<h3>Factorial effects plot</h3>
+<img class="figure" src="stats_report_assets/effects_normalized-surface-distance.png" alt="Factorial effects plot for normalized_surface_distance">
+<h3>Predicted means per dataset×arch</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>dataset</th>
+      <th>arch</th>
+      <th>mean</th>
+      <th>hdi_lo</th>
+      <th>hdi_hi</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>AE</td>
+      <td>U-Net</td>
+      <td>0.3678</td>
+      <td>0.3536</td>
+      <td>0.3820</td>
+    </tr>
+    <tr>
+      <td>AE</td>
+      <td>Swin</td>
+      <td>0.3584</td>
+      <td>0.3410</td>
+      <td>0.3729</td>
+    </tr>
+    <tr>
+      <td>AE</td>
+      <td>Terramind</td>
+      <td>0.2187</td>
+      <td>0.2085</td>
+      <td>0.2293</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>U-Net</td>
+      <td>0.4493</td>
+      <td>0.4253</td>
+      <td>0.4762</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Swin</td>
+      <td>0.5694</td>
+      <td>0.5466</td>
+      <td>0.5869</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Terramind</td>
+      <td>0.3770</td>
+      <td>0.3614</td>
+      <td>0.3927</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>U-Net</td>
+      <td>0.6110</td>
+      <td>0.5934</td>
+      <td>0.6267</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Swin</td>
+      <td>0.5610</td>
+      <td>0.5298</td>
+      <td>0.5923</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Terramind</td>
+      <td>0.5457</td>
+      <td>0.5201</td>
+      <td>0.5658</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>dataset</b>: Dataset for this cell.</li><li><b>arch</b>: Architecture for this cell.</li><li><b>mean</b>: Posterior mean predicted performance (original scale).</li><li><b>hdi_lo</b>: Lower 95% HDI for the predicted mean.</li><li><b>hdi_hi</b>: Upper 95% HDI for the predicted mean.</li>
+  </ul>
+</div>
+
+<h3>Heatmap of posterior mean (Original Scale)</h3>
+<img class="figure" src="stats_report_assets/heat_normalized-surface-distance.png" alt="Heatmap for normalized_surface_distance">
+<h3>Key architecture contrasts (within each dataset, baseline arch=U-Net; ROPE=0.05 on transformed scale)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>dataset</th>
+      <th>contrast</th>
+      <th>Δ_mean</th>
+      <th>Δ_lo</th>
+      <th>Δ_hi</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>AE</td>
+      <td>Swin − U-Net</td>
+      <td>-0.009422</td>
+      <td>-0.03200</td>
+      <td>0.01031</td>
+      <td>0.1649</td>
+      <td>0.5880</td>
+    </tr>
+    <tr>
+      <td>AE</td>
+      <td>Terramind − U-Net</td>
+      <td>-0.1491</td>
+      <td>-0.1658</td>
+      <td>-0.1311</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Swin − U-Net</td>
+      <td>0.1201</td>
+      <td>0.08561</td>
+      <td>0.1510</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Terramind − U-Net</td>
+      <td>-0.07229</td>
+      <td>-0.1043</td>
+      <td>-0.04279</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Swin − U-Net</td>
+      <td>-0.05003</td>
+      <td>-0.08555</td>
+      <td>-0.01464</td>
+      <td>0.001750</td>
+      <td>0.01625</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Terramind − U-Net</td>
+      <td>-0.06534</td>
+      <td>-0.09410</td>
+      <td>-0.03919</td>
+      <td>0</td>
+      <td>0.0001250</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>dataset</b>: Dataset scope for this set of architecture comparisons.</li><li><b>contrast</b>: Which architecture is compared against the baseline architecture.</li><li><b>Δ_mean</b>: Mean difference on original scale.</li><li><b>Δ_lo</b>: Lower 95% HDI for the difference.</li><li><b>Δ_hi</b>: Upper 95% HDI for the difference.</li><li><b>Pr(>0)</b>: Probability the difference is > 0 on transformed scale.</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the difference is practically negligible (ROPE) on transformed scale.</li>
+  </ul>
+</div>
+
+<h3>Contrast plot</h3>
+<img class="figure" src="stats_report_assets/contrasts_normalized-surface-distance.png" alt="Contrast plot for normalized_surface_distance">
+<h3>Key dataset contrasts (within each architecture, baseline dataset=AE; ROPE=0.05 on transformed scale)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>arch</th>
+      <th>contrast</th>
+      <th>Δ_mean</th>
+      <th>Δ_lo</th>
+      <th>Δ_hi</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>U-Net</td>
+      <td>PS − AE</td>
+      <td>0.08148</td>
+      <td>0.05408</td>
+      <td>0.1115</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>U-Net</td>
+      <td>S2 − AE</td>
+      <td>0.2432</td>
+      <td>0.2201</td>
+      <td>0.2637</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Swin</td>
+      <td>PS − AE</td>
+      <td>0.2110</td>
+      <td>0.1856</td>
+      <td>0.2342</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Swin</td>
+      <td>S2 − AE</td>
+      <td>0.2026</td>
+      <td>0.1667</td>
+      <td>0.2368</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Terramind</td>
+      <td>PS − AE</td>
+      <td>0.1583</td>
+      <td>0.1398</td>
+      <td>0.1761</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Terramind</td>
+      <td>S2 − AE</td>
+      <td>0.3270</td>
+      <td>0.2987</td>
+      <td>0.3493</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>arch</b>: Architecture scope for this set of dataset comparisons.</li><li><b>contrast</b>: Which dataset is compared against the baseline dataset.</li><li><b>Δ_mean</b>: Mean difference on original scale.</li><li><b>Δ_lo</b>: Lower 95% HDI for the difference.</li><li><b>Δ_hi</b>: Upper 95% HDI for the difference.</li><li><b>Pr(>0)</b>: Probability the difference is > 0 on transformed scale.</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the difference is practically negligible (ROPE) on transformed scale.</li>
+  </ul>
+</div>
+
+<h3>Overall architecture contrasts (marginal over datasets, baseline arch=U-Net)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>scope</th>
+      <th>contrast</th>
+      <th>mean_original</th>
+      <th>hdi_lo_original</th>
+      <th>hdi_hi_original</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Overall (avg over datasets)</td>
+      <td>Swin − U-Net</td>
+      <td>0.02022</td>
+      <td>0.002357</td>
+      <td>0.03779</td>
+      <td>0.9836</td>
+      <td>0.2140</td>
+    </tr>
+    <tr>
+      <td>Overall (avg over datasets)</td>
+      <td>Terramind − U-Net</td>
+      <td>-0.09558</td>
+      <td>-0.1113</td>
+      <td>-0.08148</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>scope</b>: What was averaged over to form the marginal comparison.</li><li><b>contrast</b>: Comparison (A − baseline).</li><li><b>mean_original</b>: Mean difference on original scale.</li><li><b>hdi_lo_original</b>: Lower 95% HDI of difference.</li><li><b>hdi_hi_original</b>: Upper 95% HDI of difference.</li><li><b>Pr(>0)</b>: Probability the contrast > 0 (transformed scale).</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the effect is practically negligible (transformed scale ROPE).</li>
+  </ul>
+</div>
+
+<img class="figure" src="stats_report_assets/arch_overall_normalized-surface-distance.png" alt="Overall architecture contrasts for normalized_surface_distance">
+<h3>Overall dataset contrasts (marginal over architectures, baseline dataset=AE)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>scope</th>
+      <th>contrast</th>
+      <th>mean_original</th>
+      <th>hdi_lo_original</th>
+      <th>hdi_hi_original</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Overall (avg over arch)</td>
+      <td>PS − AE</td>
+      <td>0.1503</td>
+      <td>0.1367</td>
+      <td>0.1638</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Overall (avg over arch)</td>
+      <td>S2 − AE</td>
+      <td>0.2576</td>
+      <td>0.2419</td>
+      <td>0.2729</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>scope</b>: What was averaged over to form the marginal comparison.</li><li><b>contrast</b>: Comparison (A − baseline).</li><li><b>mean_original</b>: Mean difference on original scale.</li><li><b>hdi_lo_original</b>: Lower 95% HDI of difference.</li><li><b>hdi_hi_original</b>: Upper 95% HDI of difference.</li><li><b>Pr(>0)</b>: Probability the contrast > 0 (transformed scale).</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the effect is practically negligible (transformed scale ROPE).</li>
+  </ul>
+</div>
+
+<img class="figure" src="stats_report_assets/dataset_overall_normalized-surface-distance.png" alt="Overall dataset contrasts for normalized_surface_distance">
+
+<details class="footnote">
+  <summary>Understanding the factorial section</summary>
+  <div class="small">
+<ul>
+  <li><b>Effects coding:</b> Coefficients are not simple “add to intercept” baselines.</li>
+  <li><b>Interpretable effects:</b> We compute OR/Δp (or absolute change) from <b>contrasts on predicted means</b>, which is correct under effects coding.</li>
+  <li><b>BF sensitivity:</b> If BF values are similar across bandwidths, the evidence is robust.</li>
+  <li><b>ROPE on transformed scale:</b> For consistency with the model parameter space where effects are estimated.</li>
+</ul>
+</div>
+</details>
+</div>
+</div>
+<div class="tabcontent" id="tab-mean-epistemic-uncertainty">
+<div class="card">
+<h2>Metric: mean_epistemic_uncertainty</h2>
+</div>
+<div class="card">
+<h3>Observed results across runs</h3>
+<img class="figure" src="stats_report_assets/observed_box_mean-epistemic-uncertainty.png" alt="Observed boxplot for mean_epistemic_uncertainty">
+</div>
+<div class="card">
+<h3>Hierarchical group model (with hierarchical variance)</h3>
+<p>Modelled on <span class='badge'>log</span> scale; reporting mu_orig on original scale. Hierarchical variance improves regularization.</p>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>group</th>
+      <th>mean</th>
+      <th>sd</th>
+      <th>hdi_2.5%</th>
+      <th>hdi_97.5%</th>
+      <th>Pr(rank=1)</th>
+      <th>Pr(rank=2)</th>
+      <th>Pr(rank=3)</th>
+      <th>Pr(rank=4)</th>
+      <th>Pr(rank=5)</th>
+      <th>Pr(rank=6)</th>
+      <th>Pr(rank=7)</th>
+      <th>Pr(rank=8)</th>
+      <th>Pr(rank=9)</th>
+      <th>E[rank]</th>
+      <th>Pr(best)</th>
+      <th>Pr(best)_prior</th>
+      <th>BF_best</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Terramind | AE</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.3349</td>
+      <td>0.3379</td>
+      <td>0.3272</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1.992</td>
+      <td>0.3349</td>
+      <td>0.1140</td>
+      <td>3.913</td>
+    </tr>
+    <tr>
+      <td>Terramind | S2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.3312</td>
+      <td>0.3356</td>
+      <td>0.3331</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>2.002</td>
+      <td>0.3312</td>
+      <td>0.1040</td>
+      <td>4.267</td>
+    </tr>
+    <tr>
+      <td>Terramind | PS</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.3339</td>
+      <td>0.3265</td>
+      <td>0.3396</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>2.006</td>
+      <td>0.3339</td>
+      <td>0.09800</td>
+      <td>4.613</td>
+    </tr>
+    <tr>
+      <td>U-Net | AE</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1.000</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>4.000</td>
+      <td>0</td>
+      <td>0.1100</td>
+      <td>8.09e-12</td>
+    </tr>
+    <tr>
+      <td>U-Net | S2</td>
+      <td>0.001000</td>
+      <td>0</td>
+      <td>0.001000</td>
+      <td>0.001000</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.9968</td>
+      <td>0.003250</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>5.003</td>
+      <td>0</td>
+      <td>0.1000</td>
+      <td>9.00e-12</td>
+    </tr>
+    <tr>
+      <td>U-Net | PS</td>
+      <td>0.001000</td>
+      <td>0</td>
+      <td>0.001000</td>
+      <td>0.001000</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.003250</td>
+      <td>0.9968</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>5.997</td>
+      <td>0</td>
+      <td>0.1180</td>
+      <td>7.47e-12</td>
+    </tr>
+    <tr>
+      <td>Swin U-Net | S2</td>
+      <td>0.001000</td>
+      <td>0</td>
+      <td>0.001000</td>
+      <td>0.001000</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.8875</td>
+      <td>0.1125</td>
+      <td>0</td>
+      <td>7.112</td>
+      <td>0</td>
+      <td>0.1180</td>
+      <td>7.47e-12</td>
+    </tr>
+    <tr>
+      <td>Swin U-Net | PS</td>
+      <td>0.001000</td>
+      <td>0</td>
+      <td>0.001000</td>
+      <td>0.001000</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.1125</td>
+      <td>0.8871</td>
+      <td>0.0003750</td>
+      <td>7.888</td>
+      <td>0</td>
+      <td>0.1100</td>
+      <td>8.09e-12</td>
+    </tr>
+    <tr>
+      <td>Swin U-Net | AE</td>
+      <td>0.001000</td>
+      <td>0</td>
+      <td>0.001000</td>
+      <td>0.002000</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.0003750</td>
+      <td>0.9996</td>
+      <td>9.000</td>
+      <td>0</td>
+      <td>0.1280</td>
+      <td>6.81e-12</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>group</b>: Group name (dataset×arch).</li><li><b>mean</b>: Posterior mean of group mean on the ORIGINAL metric scale.</li><li><b>sd</b>: Posterior SD of the group mean.</li><li><b>hdi_2.5%</b>: Lower bound of the 95% HDI for the group mean.</li><li><b>hdi_97.5%</b>: Upper bound of the 95% HDI for the group mean.</li><li><b>E[rank]</b>: Expected rank (1=best).</li><li><b>Pr(best)</b>: Posterior probability the group is the best.</li><li><b>Pr(best)_prior</b>: Prior probability the group is best (before seeing data).</li><li><b>BF_best</b>: Bayes factor for 'this group is best' vs 'not best' (via odds update).</li><li><b>Pr(rank=1)</b>: Posterior probability this group is rank 1 (1=best).</li><li><b>Pr(rank=2)</b>: Posterior probability this group is rank 2 (1=best).</li><li><b>Pr(rank=3)</b>: Posterior probability this group is rank 3 (1=best).</li><li><b>Pr(rank=4)</b>: Posterior probability this group is rank 4 (1=best).</li><li><b>Pr(rank=5)</b>: Posterior probability this group is rank 5 (1=best).</li><li><b>Pr(rank=6)</b>: Posterior probability this group is rank 6 (1=best).</li><li><b>Pr(rank=7)</b>: Posterior probability this group is rank 7 (1=best).</li><li><b>Pr(rank=8)</b>: Posterior probability this group is rank 8 (1=best).</li><li><b>Pr(rank=9)</b>: Posterior probability this group is rank 9 (1=best).</li>
+  </ul>
+</div>
+
+<h3>Model Validation Plots</h3>
+<div class="grid-2">
+<div class="card" style="margin:0">
+<h3>Prior Predictive Check</h3>
+<img class="figure" src="stats_report_assets/prior_pred_mean-epistemic-uncertainty.png" alt="Prior predictive check for mean_epistemic_uncertainty">
+<p>Check if priors are reasonable on original scale.</p>
+</div>
+<div class="card" style="margin:0">
+<h3>Posterior Predictive Check</h3>
+<img class="figure" src="stats_report_assets/post_pred_mean-epistemic-uncertainty.png" alt="Posterior predictive check for mean_epistemic_uncertainty">
+<p>Red overlay shows model predictions; blue shows observed data.</p>
+</div>
+</div>
+<h3>Group Comparison Plots</h3>
+<div class="grid-2">
+<div class="card" style="margin:0">
+<h3>Group means (with HDI)</h3>
+<img class="figure" src="stats_report_assets/posterior_box_mean-epistemic-uncertainty.png" alt="Group means forest plot for mean_epistemic_uncertainty">
+</div>
+<div class="card" style="margin:0">
+<h3>Pr(best)</h3>
+<img class="figure" src="stats_report_assets/prbest_mean-epistemic-uncertainty.png" alt="Pr(best) plot for mean_epistemic_uncertainty">
+</div>
+</div>
+</div>
+<h3>Consecutive ranking comparisons</h3>
+<p>Bayes factors for each group being better than the next lower-ranked group. This shows the strength of evidence for the ranking order.</p>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>rank</th>
+      <th>group</th>
+      <th>next_rank_group</th>
+      <th>Pr(better)</th>
+      <th>BF10_bw_0.1</th>
+      <th>BF10_bw_0.3</th>
+      <th>BF10_bw_0.5</th>
+      <th>BF10_bw_scott</th>
+      <th>BF10_bw_silverman</th>
+      <th>BF10_interpretation</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td>Terramind | AE</td>
+      <td>Terramind | S2</td>
+      <td>0.5039</td>
+      <td>3.28e-05</td>
+      <td>3.30e-05</td>
+      <td>3.48e-05</td>
+      <td>3.28e-05</td>
+      <td>3.24e-05</td>
+      <td>strong evidence for H0 (no effect)</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>Terramind | S2</td>
+      <td>Terramind | PS</td>
+      <td>0.5020</td>
+      <td>3.38e-05</td>
+      <td>3.41e-05</td>
+      <td>3.51e-05</td>
+      <td>3.51e-05</td>
+      <td>3.40e-05</td>
+      <td>strong evidence for H0 (no effect)</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>Terramind | PS</td>
+      <td>U-Net | AE</td>
+      <td>1.000</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>extreme evidence for H1</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>U-Net | AE</td>
+      <td>U-Net | S2</td>
+      <td>1.000</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>extreme evidence for H1</td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td>U-Net | S2</td>
+      <td>U-Net | PS</td>
+      <td>0.9968</td>
+      <td>4.160</td>
+      <td>4.098</td>
+      <td>3.116</td>
+      <td>4.445</td>
+      <td>4.406</td>
+      <td>moderate evidence for H1</td>
+    </tr>
+    <tr>
+      <td>6</td>
+      <td>U-Net | PS</td>
+      <td>Swin U-Net | S2</td>
+      <td>1.000</td>
+      <td>∞</td>
+      <td>85157.23</td>
+      <td>2410.35</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>extreme evidence for H1</td>
+    </tr>
+    <tr>
+      <td>7</td>
+      <td>Swin U-Net | S2</td>
+      <td>Swin U-Net | PS</td>
+      <td>0.8875</td>
+      <td>0.3417</td>
+      <td>0.3251</td>
+      <td>0.2945</td>
+      <td>0.3373</td>
+      <td>0.3236</td>
+      <td>anecdotal evidence for H0</td>
+    </tr>
+    <tr>
+      <td>8</td>
+      <td>Swin U-Net | PS</td>
+      <td>Swin U-Net | AE</td>
+      <td>0.9996</td>
+      <td>26.48</td>
+      <td>35.62</td>
+      <td>19.21</td>
+      <td>32.45</td>
+      <td>35.29</td>
+      <td>very strong evidence for H1</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>rank</b>: Expected rank of this group.</li><li><b>group</b>: Group name.</li><li><b>next_rank_group</b>: Next lower-ranked group.</li><li><b>Pr(better)</b>: Posterior probability this group is better than the next-ranked group.</li><li><b>BF10_interpretation</b>: Qualitative interpretation of BF10.</li>
+  </ul>
+</div>
+
+<img class="figure" src="stats_report_assets/consecutive_bf_mean-epistemic-uncertainty.png" alt="Consecutive BF plot for mean_epistemic_uncertainty">
+
+<details class="footnote">
+  <summary>Interpreting consecutive comparisons</summary>
+  <div class="small">
+<ul>
+  <li><b>Pr(better)</b> close to 1.0 → strong confidence in ranking order</li>
+  <li><b>Pr(better)</b> near 0.5 → ranking is uncertain, groups may be equivalent</li>
+  <li><b>BF10 > 10</b> → strong evidence for ranking difference</li>
+  <li><b>BF10 < 1</b> → evidence against ranking difference (groups may be equivalent)</li>
+  <li>Multiple bandwidths show robustness of conclusions</li>
+</ul>
+</div>
+</details>
+<div class="card">
+<h3>Factorial effects (Natural Scale with BF Sensitivity)</h3>
+<p>All effects shown on natural, interpretable scales. Multiple BF bandwidths show robustness of evidence. Consistent BF across bandwidths = stronger conclusion.</p>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>param</th>
+      <th>Pr(&gt;0)</th>
+      <th>BF10_interpretation</th>
+      <th>BF10_bw_scott</th>
+      <th>BF10_bw_0.1</th>
+      <th>BF10_bw_0.3</th>
+      <th>BF10_bw_0.5</th>
+      <th>BF10_bw_silverman</th>
+      <th>Abs_Δ_mean</th>
+      <th>Abs_Δ_lo</th>
+      <th>Abs_Δ_hi</th>
+      <th>%_change</th>
+      <th>baseline</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>beta_dataset[AE]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>-2.75e-05</td>
+      <td>-6.45e-05</td>
+      <td>7.71e-06</td>
+      <td>-17.22</td>
+      <td>0.0005763</td>
+    </tr>
+    <tr>
+      <td>beta_dataset[PS]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>5.59e-05</td>
+      <td>2.29e-05</td>
+      <td>8.85e-05</td>
+      <td>15.68</td>
+      <td>0.0005763</td>
+    </tr>
+    <tr>
+      <td>beta_arch[U-Net]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>-7.07e-05</td>
+      <td>-9.98e-05</td>
+      <td>-4.12e-05</td>
+      <td>449.48</td>
+      <td>0.0005763</td>
+    </tr>
+    <tr>
+      <td>beta_arch[Swin]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.0006461</td>
+      <td>0.0005986</td>
+      <td>0.0006929</td>
+      <td>1383.23</td>
+      <td>0.0005763</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[AE×U-Net]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>-0.0002622</td>
+      <td>-0.0003007</td>
+      <td>-0.0002231</td>
+      <td>-41.89</td>
+      <td>0.0005763</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[AE×Swin]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.0002346</td>
+      <td>0.0001632</td>
+      <td>0.0003027</td>
+      <td>42.52</td>
+      <td>0.0005763</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[PS×U-Net]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.0001494</td>
+      <td>0.0001107</td>
+      <td>0.0001892</td>
+      <td>36.94</td>
+      <td>0.0005763</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[PS×Swin]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>-9.36e-05</td>
+      <td>-0.0001556</td>
+      <td>-3.34e-05</td>
+      <td>-15.47</td>
+      <td>0.0005763</td>
+    </tr>
+    <tr>
+      <td>beta_dataset[S2]</td>
+      <td>0.9796</td>
+      <td>anecdotal evidence for H0</td>
+      <td>0.6357</td>
+      <td>0.6468</td>
+      <td>0.5662</td>
+      <td>0.4324</td>
+      <td>0.6275</td>
+      <td>-2.83e-05</td>
+      <td>-6.60e-05</td>
+      <td>9.60e-06</td>
+      <td>4.480</td>
+      <td>0.0005763</td>
+    </tr>
+    <tr>
+      <td>beta_arch[Terramind]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>-0.0005753</td>
+      <td>-0.0005998</td>
+      <td>-0.0005503</td>
+      <td>-98.77</td>
+      <td>0.0005763</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[AE×Terramind]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>2.75e-05</td>
+      <td>-7.71e-06</td>
+      <td>6.45e-05</td>
+      <td>20.85</td>
+      <td>0.0005763</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[PS×Terramind]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>-5.59e-05</td>
+      <td>-8.85e-05</td>
+      <td>-2.29e-05</td>
+      <td>-13.53</td>
+      <td>0.0005763</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[S2×U-Net]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.0001127</td>
+      <td>7.00e-05</td>
+      <td>0.0001562</td>
+      <td>25.80</td>
+      <td>0.0005763</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[S2×Swin]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>204024.72</td>
+      <td>∞</td>
+      <td>-0.0001411</td>
+      <td>-0.0002133</td>
+      <td>-7.26e-05</td>
+      <td>-16.88</td>
+      <td>0.0005763</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[S2×Terramind]</td>
+      <td>0.02562</td>
+      <td>anecdotal evidence for H0</td>
+      <td>0.3746</td>
+      <td>0.3942</td>
+      <td>0.3525</td>
+      <td>0.2785</td>
+      <td>0.3715</td>
+      <td>2.83e-05</td>
+      <td>-9.60e-06</td>
+      <td>6.60e-05</td>
+      <td>-4.245</td>
+      <td>0.0005763</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>param</b>: Model term (dataset/arch/interaction coefficient).</li><li><b>Pr(>0)</b>: Posterior probability the term's effect is positive (on transformed scale).</li><li><b>BF10_interpretation</b>: Qualitative interpretation of BF10 (H1: effect ≠ 0 vs H0: effect = 0).</li><li><b>BF10_bw_scott</b>: Savage–Dickey BF10 using KDE bandwidth='scott'.</li><li><b>BF10_bw_0.1</b>: Savage–Dickey BF10 using KDE bandwidth=0.1.</li><li><b>BF10_bw_0.3</b>: Savage–Dickey BF10 using KDE bandwidth=0.3.</li><li><b>BF10_bw_0.5</b>: Savage–Dickey BF10 using KDE bandwidth=0.5.</li><li><b>BF10_bw_silverman</b>: Savage–Dickey BF10 using KDE bandwidth='silverman'.</li><li><b>Abs_Δ_mean</b>: Mean absolute change on original scale for the contrast.</li><li><b>Abs_Δ_lo</b>: Lower 95% HDI of absolute change.</li><li><b>Abs_Δ_hi</b>: Upper 95% HDI of absolute change.</li><li><b>%_change</b>: Mean percent change implied by the effect (computed on transformed scale).</li><li><b>baseline</b>: Baseline level used for the contrast (original scale; depends on term type).</li>
+  </ul>
+</div>
+
+<h3>Factorial effects plot</h3>
+<img class="figure" src="stats_report_assets/effects_mean-epistemic-uncertainty.png" alt="Factorial effects plot for mean_epistemic_uncertainty">
+<h3>Predicted means per dataset×arch</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>dataset</th>
+      <th>arch</th>
+      <th>mean</th>
+      <th>hdi_lo</th>
+      <th>hdi_hi</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>AE</td>
+      <td>U-Net</td>
+      <td>0.0002159</td>
+      <td>0.0002004</td>
+      <td>0.0002322</td>
+    </tr>
+    <tr>
+      <td>AE</td>
+      <td>Swin</td>
+      <td>0.001430</td>
+      <td>0.001289</td>
+      <td>0.001562</td>
+    </tr>
+    <tr>
+      <td>AE</td>
+      <td>Terramind</td>
+      <td>1.00e-06</td>
+      <td>9.75e-07</td>
+      <td>1.03e-06</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>U-Net</td>
+      <td>0.0007109</td>
+      <td>0.0006598</td>
+      <td>0.0007657</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Swin</td>
+      <td>0.001185</td>
+      <td>0.001085</td>
+      <td>0.001278</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Terramind</td>
+      <td>1.00e-06</td>
+      <td>9.75e-07</td>
+      <td>1.03e-06</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>U-Net</td>
+      <td>0.0005900</td>
+      <td>0.0005354</td>
+      <td>0.0006479</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Swin</td>
+      <td>0.001053</td>
+      <td>0.0009019</td>
+      <td>0.001185</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Terramind</td>
+      <td>1.00e-06</td>
+      <td>9.75e-07</td>
+      <td>1.03e-06</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>dataset</b>: Dataset for this cell.</li><li><b>arch</b>: Architecture for this cell.</li><li><b>mean</b>: Posterior mean predicted performance (original scale).</li><li><b>hdi_lo</b>: Lower 95% HDI for the predicted mean.</li><li><b>hdi_hi</b>: Upper 95% HDI for the predicted mean.</li>
+  </ul>
+</div>
+
+<h3>Heatmap of posterior mean (Original Scale)</h3>
+<img class="figure" src="stats_report_assets/heat_mean-epistemic-uncertainty.png" alt="Heatmap for mean_epistemic_uncertainty">
+<h3>Key architecture contrasts (within each dataset, baseline arch=U-Net; ROPE=0.05 on transformed scale)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>dataset</th>
+      <th>contrast</th>
+      <th>Δ_mean</th>
+      <th>Δ_lo</th>
+      <th>Δ_hi</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>AE</td>
+      <td>Swin − U-Net</td>
+      <td>0.001214</td>
+      <td>0.001073</td>
+      <td>0.001347</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>AE</td>
+      <td>Terramind − U-Net</td>
+      <td>-0.0002149</td>
+      <td>-0.0002312</td>
+      <td>-0.0001994</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Swin − U-Net</td>
+      <td>0.0004738</td>
+      <td>0.0003610</td>
+      <td>0.0005796</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Terramind − U-Net</td>
+      <td>-0.0007099</td>
+      <td>-0.0007647</td>
+      <td>-0.0006588</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Swin − U-Net</td>
+      <td>0.0004630</td>
+      <td>0.0003057</td>
+      <td>0.0006061</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Terramind − U-Net</td>
+      <td>-0.0005890</td>
+      <td>-0.0006469</td>
+      <td>-0.0005344</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>dataset</b>: Dataset scope for this set of architecture comparisons.</li><li><b>contrast</b>: Which architecture is compared against the baseline architecture.</li><li><b>Δ_mean</b>: Mean difference on original scale.</li><li><b>Δ_lo</b>: Lower 95% HDI for the difference.</li><li><b>Δ_hi</b>: Upper 95% HDI for the difference.</li><li><b>Pr(>0)</b>: Probability the difference is > 0 on transformed scale.</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the difference is practically negligible (ROPE) on transformed scale.</li>
+  </ul>
+</div>
+
+<h3>Contrast plot</h3>
+<img class="figure" src="stats_report_assets/contrasts_mean-epistemic-uncertainty.png" alt="Contrast plot for mean_epistemic_uncertainty">
+<h3>Key dataset contrasts (within each architecture, baseline dataset=AE; ROPE=0.05 on transformed scale)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>arch</th>
+      <th>contrast</th>
+      <th>Δ_mean</th>
+      <th>Δ_lo</th>
+      <th>Δ_hi</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>U-Net</td>
+      <td>PS − AE</td>
+      <td>0.0004950</td>
+      <td>0.0004421</td>
+      <td>0.0005509</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>U-Net</td>
+      <td>S2 − AE</td>
+      <td>0.0003741</td>
+      <td>0.0003174</td>
+      <td>0.0004340</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Swin</td>
+      <td>PS − AE</td>
+      <td>-0.0002448</td>
+      <td>-0.0004120</td>
+      <td>-7.87e-05</td>
+      <td>0.002125</td>
+      <td>0.01675</td>
+    </tr>
+    <tr>
+      <td>Swin</td>
+      <td>S2 − AE</td>
+      <td>-0.0003765</td>
+      <td>-0.0005669</td>
+      <td>-0.0001858</td>
+      <td>0.0001250</td>
+      <td>0.0007500</td>
+    </tr>
+    <tr>
+      <td>Terramind</td>
+      <td>PS − AE</td>
+      <td>-1.24e-10</td>
+      <td>-3.96e-08</td>
+      <td>3.93e-08</td>
+      <td>0.4974</td>
+      <td>0.9824</td>
+    </tr>
+    <tr>
+      <td>Terramind</td>
+      <td>S2 − AE</td>
+      <td>-7.12e-11</td>
+      <td>-4.00e-08</td>
+      <td>4.04e-08</td>
+      <td>0.5011</td>
+      <td>0.9812</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>arch</b>: Architecture scope for this set of dataset comparisons.</li><li><b>contrast</b>: Which dataset is compared against the baseline dataset.</li><li><b>Δ_mean</b>: Mean difference on original scale.</li><li><b>Δ_lo</b>: Lower 95% HDI for the difference.</li><li><b>Δ_hi</b>: Upper 95% HDI for the difference.</li><li><b>Pr(>0)</b>: Probability the difference is > 0 on transformed scale.</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the difference is practically negligible (ROPE) on transformed scale.</li>
+  </ul>
+</div>
+
+<h3>Overall architecture contrasts (marginal over datasets, baseline arch=U-Net)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>scope</th>
+      <th>contrast</th>
+      <th>mean_original</th>
+      <th>hdi_lo_original</th>
+      <th>hdi_hi_original</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Overall (avg over datasets)</td>
+      <td>Swin − U-Net</td>
+      <td>0.0007168</td>
+      <td>0.0006421</td>
+      <td>0.0007910</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Overall (avg over datasets)</td>
+      <td>Terramind − U-Net</td>
+      <td>-0.0005046</td>
+      <td>-0.0005306</td>
+      <td>-0.0004788</td>
+      <td>0</td>
+      <td>0</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>scope</b>: What was averaged over to form the marginal comparison.</li><li><b>contrast</b>: Comparison (A − baseline).</li><li><b>mean_original</b>: Mean difference on original scale.</li><li><b>hdi_lo_original</b>: Lower 95% HDI of difference.</li><li><b>hdi_hi_original</b>: Upper 95% HDI of difference.</li><li><b>Pr(>0)</b>: Probability the contrast > 0 (transformed scale).</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the effect is practically negligible (transformed scale ROPE).</li>
+  </ul>
+</div>
+
+<img class="figure" src="stats_report_assets/arch_overall_mean-epistemic-uncertainty.png" alt="Overall architecture contrasts for mean_epistemic_uncertainty">
+<h3>Overall dataset contrasts (marginal over architectures, baseline dataset=AE)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>scope</th>
+      <th>contrast</th>
+      <th>mean_original</th>
+      <th>hdi_lo_original</th>
+      <th>hdi_hi_original</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Overall (avg over arch)</td>
+      <td>PS − AE</td>
+      <td>8.34e-05</td>
+      <td>2.49e-05</td>
+      <td>0.0001412</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Overall (avg over arch)</td>
+      <td>S2 − AE</td>
+      <td>-7.82e-07</td>
+      <td>-6.67e-05</td>
+      <td>6.68e-05</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>scope</b>: What was averaged over to form the marginal comparison.</li><li><b>contrast</b>: Comparison (A − baseline).</li><li><b>mean_original</b>: Mean difference on original scale.</li><li><b>hdi_lo_original</b>: Lower 95% HDI of difference.</li><li><b>hdi_hi_original</b>: Upper 95% HDI of difference.</li><li><b>Pr(>0)</b>: Probability the contrast > 0 (transformed scale).</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the effect is practically negligible (transformed scale ROPE).</li>
+  </ul>
+</div>
+
+<img class="figure" src="stats_report_assets/dataset_overall_mean-epistemic-uncertainty.png" alt="Overall dataset contrasts for mean_epistemic_uncertainty">
+
+<details class="footnote">
+  <summary>Understanding the factorial section</summary>
+  <div class="small">
+<ul>
+  <li><b>Effects coding:</b> Coefficients are not simple “add to intercept” baselines.</li>
+  <li><b>Interpretable effects:</b> We compute OR/Δp (or absolute change) from <b>contrasts on predicted means</b>, which is correct under effects coding.</li>
+  <li><b>BF sensitivity:</b> If BF values are similar across bandwidths, the evidence is robust.</li>
+  <li><b>ROPE on transformed scale:</b> For consistency with the model parameter space where effects are estimated.</li>
+</ul>
+</div>
+</details>
+</div>
+</div>
+<div class="tabcontent" id="tab-mean-aleatoric-uncertainty">
+<div class="card">
+<h2>Metric: mean_aleatoric_uncertainty</h2>
+</div>
+<div class="card">
+<h3>Observed results across runs</h3>
+<img class="figure" src="stats_report_assets/observed_box_mean-aleatoric-uncertainty.png" alt="Observed boxplot for mean_aleatoric_uncertainty">
+</div>
+<div class="card">
+<h3>Hierarchical group model (with hierarchical variance)</h3>
+<p>Modelled on <span class='badge'>log</span> scale; reporting mu_orig on original scale. Hierarchical variance improves regularization.</p>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>group</th>
+      <th>mean</th>
+      <th>sd</th>
+      <th>hdi_2.5%</th>
+      <th>hdi_97.5%</th>
+      <th>Pr(rank=1)</th>
+      <th>Pr(rank=2)</th>
+      <th>Pr(rank=3)</th>
+      <th>Pr(rank=4)</th>
+      <th>Pr(rank=5)</th>
+      <th>Pr(rank=6)</th>
+      <th>Pr(rank=7)</th>
+      <th>Pr(rank=8)</th>
+      <th>Pr(rank=9)</th>
+      <th>E[rank]</th>
+      <th>Pr(best)</th>
+      <th>Pr(best)_prior</th>
+      <th>BF_best</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>U-Net | AE</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1.000</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1.000</td>
+      <td>1.000</td>
+      <td>0.1100</td>
+      <td>8091088079686.98</td>
+    </tr>
+    <tr>
+      <td>Swin U-Net | AE</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.7827</td>
+      <td>0.1072</td>
+      <td>0.1034</td>
+      <td>0.006625</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>2.334</td>
+      <td>0</td>
+      <td>0.1280</td>
+      <td>6.81e-12</td>
+    </tr>
+    <tr>
+      <td>Swin U-Net | PS</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.1623</td>
+      <td>0.6195</td>
+      <td>0.2182</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>3.056</td>
+      <td>0</td>
+      <td>0.1100</td>
+      <td>8.09e-12</td>
+    </tr>
+    <tr>
+      <td>U-Net | PS</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.05500</td>
+      <td>0.2732</td>
+      <td>0.6717</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>3.617</td>
+      <td>0</td>
+      <td>0.1180</td>
+      <td>7.47e-12</td>
+    </tr>
+    <tr>
+      <td>Swin U-Net | S2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.006625</td>
+      <td>0.9916</td>
+      <td>0.001750</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>4.995</td>
+      <td>0</td>
+      <td>0.1180</td>
+      <td>7.47e-12</td>
+    </tr>
+    <tr>
+      <td>U-Net | S2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.001750</td>
+      <td>0.9982</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>5.998</td>
+      <td>0</td>
+      <td>0.1000</td>
+      <td>9.00e-12</td>
+    </tr>
+    <tr>
+      <td>Terramind | PS</td>
+      <td>0.001000</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.001000</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.9405</td>
+      <td>0.05950</td>
+      <td>0</td>
+      <td>7.059</td>
+      <td>0</td>
+      <td>0.09800</td>
+      <td>9.20e-12</td>
+    </tr>
+    <tr>
+      <td>Terramind | AE</td>
+      <td>0.001000</td>
+      <td>0</td>
+      <td>0.001000</td>
+      <td>0.001000</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.05950</td>
+      <td>0.9405</td>
+      <td>0</td>
+      <td>7.941</td>
+      <td>0</td>
+      <td>0.1140</td>
+      <td>7.77e-12</td>
+    </tr>
+    <tr>
+      <td>Terramind | S2</td>
+      <td>0.002000</td>
+      <td>0</td>
+      <td>0.002000</td>
+      <td>0.002000</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1.000</td>
+      <td>9.000</td>
+      <td>0</td>
+      <td>0.1040</td>
+      <td>8.62e-12</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>group</b>: Group name (dataset×arch).</li><li><b>mean</b>: Posterior mean of group mean on the ORIGINAL metric scale.</li><li><b>sd</b>: Posterior SD of the group mean.</li><li><b>hdi_2.5%</b>: Lower bound of the 95% HDI for the group mean.</li><li><b>hdi_97.5%</b>: Upper bound of the 95% HDI for the group mean.</li><li><b>E[rank]</b>: Expected rank (1=best).</li><li><b>Pr(best)</b>: Posterior probability the group is the best.</li><li><b>Pr(best)_prior</b>: Prior probability the group is best (before seeing data).</li><li><b>BF_best</b>: Bayes factor for 'this group is best' vs 'not best' (via odds update).</li><li><b>Pr(rank=1)</b>: Posterior probability this group is rank 1 (1=best).</li><li><b>Pr(rank=2)</b>: Posterior probability this group is rank 2 (1=best).</li><li><b>Pr(rank=3)</b>: Posterior probability this group is rank 3 (1=best).</li><li><b>Pr(rank=4)</b>: Posterior probability this group is rank 4 (1=best).</li><li><b>Pr(rank=5)</b>: Posterior probability this group is rank 5 (1=best).</li><li><b>Pr(rank=6)</b>: Posterior probability this group is rank 6 (1=best).</li><li><b>Pr(rank=7)</b>: Posterior probability this group is rank 7 (1=best).</li><li><b>Pr(rank=8)</b>: Posterior probability this group is rank 8 (1=best).</li><li><b>Pr(rank=9)</b>: Posterior probability this group is rank 9 (1=best).</li>
+  </ul>
+</div>
+
+<h3>Model Validation Plots</h3>
+<div class="grid-2">
+<div class="card" style="margin:0">
+<h3>Prior Predictive Check</h3>
+<img class="figure" src="stats_report_assets/prior_pred_mean-aleatoric-uncertainty.png" alt="Prior predictive check for mean_aleatoric_uncertainty">
+<p>Check if priors are reasonable on original scale.</p>
+</div>
+<div class="card" style="margin:0">
+<h3>Posterior Predictive Check</h3>
+<img class="figure" src="stats_report_assets/post_pred_mean-aleatoric-uncertainty.png" alt="Posterior predictive check for mean_aleatoric_uncertainty">
+<p>Red overlay shows model predictions; blue shows observed data.</p>
+</div>
+</div>
+<h3>Group Comparison Plots</h3>
+<div class="grid-2">
+<div class="card" style="margin:0">
+<h3>Group means (with HDI)</h3>
+<img class="figure" src="stats_report_assets/posterior_box_mean-aleatoric-uncertainty.png" alt="Group means forest plot for mean_aleatoric_uncertainty">
+</div>
+<div class="card" style="margin:0">
+<h3>Pr(best)</h3>
+<img class="figure" src="stats_report_assets/prbest_mean-aleatoric-uncertainty.png" alt="Pr(best) plot for mean_aleatoric_uncertainty">
+</div>
+</div>
+</div>
+<h3>Consecutive ranking comparisons</h3>
+<p>Bayes factors for each group being better than the next lower-ranked group. This shows the strength of evidence for the ranking order.</p>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>rank</th>
+      <th>group</th>
+      <th>next_rank_group</th>
+      <th>Pr(better)</th>
+      <th>BF10_bw_0.1</th>
+      <th>BF10_bw_0.3</th>
+      <th>BF10_bw_0.5</th>
+      <th>BF10_bw_scott</th>
+      <th>BF10_bw_silverman</th>
+      <th>BF10_interpretation</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td>U-Net | AE</td>
+      <td>Swin U-Net | AE</td>
+      <td>1.000</td>
+      <td>29.95</td>
+      <td>2.604</td>
+      <td>0.4502</td>
+      <td>13.91</td>
+      <td>12.50</td>
+      <td>strong evidence for H1</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>Swin U-Net | AE</td>
+      <td>Swin U-Net | PS</td>
+      <td>0.8036</td>
+      <td>0.03573</td>
+      <td>0.03389</td>
+      <td>0.03134</td>
+      <td>0.03524</td>
+      <td>0.03421</td>
+      <td>strong evidence for H0 (no effect)</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>Swin U-Net | PS</td>
+      <td>U-Net | PS</td>
+      <td>0.7476</td>
+      <td>0.01580</td>
+      <td>0.01577</td>
+      <td>0.01490</td>
+      <td>0.01585</td>
+      <td>0.01578</td>
+      <td>strong evidence for H0 (no effect)</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>U-Net | PS</td>
+      <td>Swin U-Net | S2</td>
+      <td>1.000</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>extreme evidence for H1</td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td>Swin U-Net | S2</td>
+      <td>U-Net | S2</td>
+      <td>0.9982</td>
+      <td>3.889</td>
+      <td>2.926</td>
+      <td>1.804</td>
+      <td>3.400</td>
+      <td>3.573</td>
+      <td>moderate evidence for H1</td>
+    </tr>
+    <tr>
+      <td>6</td>
+      <td>U-Net | S2</td>
+      <td>Terramind | PS</td>
+      <td>1.000</td>
+      <td>∞</td>
+      <td>2881.54</td>
+      <td>734.47</td>
+      <td>∞</td>
+      <td>416312.46</td>
+      <td>extreme evidence for H1</td>
+    </tr>
+    <tr>
+      <td>7</td>
+      <td>Terramind | PS</td>
+      <td>Terramind | AE</td>
+      <td>0.9405</td>
+      <td>0.2694</td>
+      <td>0.2412</td>
+      <td>0.2091</td>
+      <td>0.2600</td>
+      <td>0.2505</td>
+      <td>moderate evidence for H0</td>
+    </tr>
+    <tr>
+      <td>8</td>
+      <td>Terramind | AE</td>
+      <td>Terramind | S2</td>
+      <td>1.000</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>extreme evidence for H1</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>rank</b>: Expected rank of this group.</li><li><b>group</b>: Group name.</li><li><b>next_rank_group</b>: Next lower-ranked group.</li><li><b>Pr(better)</b>: Posterior probability this group is better than the next-ranked group.</li><li><b>BF10_interpretation</b>: Qualitative interpretation of BF10.</li>
+  </ul>
+</div>
+
+<img class="figure" src="stats_report_assets/consecutive_bf_mean-aleatoric-uncertainty.png" alt="Consecutive BF plot for mean_aleatoric_uncertainty">
+
+<details class="footnote">
+  <summary>Interpreting consecutive comparisons</summary>
+  <div class="small">
+<ul>
+  <li><b>Pr(better)</b> close to 1.0 → strong confidence in ranking order</li>
+  <li><b>Pr(better)</b> near 0.5 → ranking is uncertain, groups may be equivalent</li>
+  <li><b>BF10 > 10</b> → strong evidence for ranking difference</li>
+  <li><b>BF10 < 1</b> → evidence against ranking difference (groups may be equivalent)</li>
+  <li>Multiple bandwidths show robustness of conclusions</li>
+</ul>
+</div>
+</details>
+<div class="card">
+<h3>Factorial effects (Natural Scale with BF Sensitivity)</h3>
+<p>All effects shown on natural, interpretable scales. Multiple BF bandwidths show robustness of evidence. Consistent BF across bandwidths = stronger conclusion.</p>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>param</th>
+      <th>Pr(&gt;0)</th>
+      <th>BF10_interpretation</th>
+      <th>BF10_bw_scott</th>
+      <th>BF10_bw_0.1</th>
+      <th>BF10_bw_0.3</th>
+      <th>BF10_bw_0.5</th>
+      <th>BF10_bw_silverman</th>
+      <th>Abs_Δ_mean</th>
+      <th>Abs_Δ_lo</th>
+      <th>Abs_Δ_hi</th>
+      <th>%_change</th>
+      <th>baseline</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>beta_dataset[AE]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>-0.0001723</td>
+      <td>-0.0002266</td>
+      <td>-0.0001142</td>
+      <td>-41.09</td>
+      <td>0.0003983</td>
+    </tr>
+    <tr>
+      <td>beta_dataset[PS]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>-0.0001764</td>
+      <td>-0.0002301</td>
+      <td>-0.0001183</td>
+      <td>-22.77</td>
+      <td>0.0003983</td>
+    </tr>
+    <tr>
+      <td>beta_arch[U-Net]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>-0.0002764</td>
+      <td>-0.0003289</td>
+      <td>-0.0002191</td>
+      <td>-52.45</td>
+      <td>0.0003983</td>
+    </tr>
+    <tr>
+      <td>beta_arch[Swin]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>-0.0002949</td>
+      <td>-0.0003477</td>
+      <td>-0.0002369</td>
+      <td>-50.27</td>
+      <td>0.0003983</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[AE×U-Net]</td>
+      <td>0</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>8.78e-05</td>
+      <td>2.96e-05</td>
+      <td>0.0001417</td>
+      <td>-29.76</td>
+      <td>0.0003983</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[AE×Swin]</td>
+      <td>0.9946</td>
+      <td>moderate evidence for H1</td>
+      <td>7.281</td>
+      <td>8.141</td>
+      <td>6.087</td>
+      <td>3.997</td>
+      <td>7.191</td>
+      <td>0.0001354</td>
+      <td>7.73e-05</td>
+      <td>0.0001890</td>
+      <td>18.44</td>
+      <td>0.0003983</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[PS×U-Net]</td>
+      <td>0.9955</td>
+      <td>strong evidence for H1</td>
+      <td>10.26</td>
+      <td>14.65</td>
+      <td>7.756</td>
+      <td>4.751</td>
+      <td>9.936</td>
+      <td>0.0001353</td>
+      <td>7.68e-05</td>
+      <td>0.0001894</td>
+      <td>15.66</td>
+      <td>0.0003983</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[PS×Swin]</td>
+      <td>0.8916</td>
+      <td>anecdotal evidence for H0</td>
+      <td>0.5206</td>
+      <td>0.5315</td>
+      <td>0.5111</td>
+      <td>0.4795</td>
+      <td>0.5194</td>
+      <td>0.0001509</td>
+      <td>9.26e-05</td>
+      <td>0.0002054</td>
+      <td>6.695</td>
+      <td>0.0003983</td>
+    </tr>
+    <tr>
+      <td>beta_dataset[S2]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.0003487</td>
+      <td>0.0002368</td>
+      <td>0.0004521</td>
+      <td>120.45</td>
+      <td>0.0003983</td>
+    </tr>
+    <tr>
+      <td>beta_arch[Terramind]</td>
+      <td>1.000</td>
+      <td>extreme evidence for H1</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>∞</td>
+      <td>0.0005713</td>
+      <td>0.0004590</td>
+      <td>0.0006738</td>
+      <td>324.18</td>
+      <td>0.0003983</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[AE×Terramind]</td>
+      <td>0.9988</td>
+      <td>strong evidence for H1</td>
+      <td>17.49</td>
+      <td>19.73</td>
+      <td>15.55</td>
+      <td>10.44</td>
+      <td>17.24</td>
+      <td>-0.0002232</td>
+      <td>-0.0003285</td>
+      <td>-0.0001083</td>
+      <td>20.92</td>
+      <td>0.0003983</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[PS×Terramind]</td>
+      <td>0.0002500</td>
+      <td>very strong evidence for H1</td>
+      <td>96.89</td>
+      <td>296.97</td>
+      <td>57.25</td>
+      <td>34.13</td>
+      <td>89.47</td>
+      <td>-0.0002863</td>
+      <td>-0.0003946</td>
+      <td>-0.0001721</td>
+      <td>-18.62</td>
+      <td>0.0003983</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[S2×U-Net]</td>
+      <td>0.9980</td>
+      <td>strong evidence for H1</td>
+      <td>14.44</td>
+      <td>12.73</td>
+      <td>13.68</td>
+      <td>9.448</td>
+      <td>14.52</td>
+      <td>-0.0002232</td>
+      <td>-0.0003266</td>
+      <td>-0.0001109</td>
+      <td>23.77</td>
+      <td>0.0003983</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[S2×Swin]</td>
+      <td>0.0002500</td>
+      <td>extreme evidence for H1</td>
+      <td>158.27</td>
+      <td>222.54</td>
+      <td>100.84</td>
+      <td>49.86</td>
+      <td>153.98</td>
+      <td>-0.0002863</td>
+      <td>-0.0003898</td>
+      <td>-0.0001739</td>
+      <td>-20.42</td>
+      <td>0.0003983</td>
+    </tr>
+    <tr>
+      <td>beta_interaction[S2×Terramind]</td>
+      <td>0.6221</td>
+      <td>moderate evidence for H0</td>
+      <td>0.1862</td>
+      <td>0.1947</td>
+      <td>0.1909</td>
+      <td>0.1881</td>
+      <td>0.1852</td>
+      <td>0.0005095</td>
+      <td>0.0002886</td>
+      <td>0.0007139</td>
+      <td>2.220</td>
+      <td>0.0003983</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>param</b>: Model term (dataset/arch/interaction coefficient).</li><li><b>Pr(>0)</b>: Posterior probability the term's effect is positive (on transformed scale).</li><li><b>BF10_interpretation</b>: Qualitative interpretation of BF10 (H1: effect ≠ 0 vs H0: effect = 0).</li><li><b>BF10_bw_scott</b>: Savage–Dickey BF10 using KDE bandwidth='scott'.</li><li><b>BF10_bw_0.1</b>: Savage–Dickey BF10 using KDE bandwidth=0.1.</li><li><b>BF10_bw_0.3</b>: Savage–Dickey BF10 using KDE bandwidth=0.3.</li><li><b>BF10_bw_0.5</b>: Savage–Dickey BF10 using KDE bandwidth=0.5.</li><li><b>BF10_bw_silverman</b>: Savage–Dickey BF10 using KDE bandwidth='silverman'.</li><li><b>Abs_Δ_mean</b>: Mean absolute change on original scale for the contrast.</li><li><b>Abs_Δ_lo</b>: Lower 95% HDI of absolute change.</li><li><b>Abs_Δ_hi</b>: Upper 95% HDI of absolute change.</li><li><b>%_change</b>: Mean percent change implied by the effect (computed on transformed scale).</li><li><b>baseline</b>: Baseline level used for the contrast (original scale; depends on term type).</li>
+  </ul>
+</div>
+
+<h3>Factorial effects plot</h3>
+<img class="figure" src="stats_report_assets/effects_mean-aleatoric-uncertainty.png" alt="Factorial effects plot for mean_aleatoric_uncertainty">
+<h3>Predicted means per dataset×arch</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>dataset</th>
+      <th>arch</th>
+      <th>mean</th>
+      <th>hdi_lo</th>
+      <th>hdi_hi</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>AE</td>
+      <td>U-Net</td>
+      <td>3.74e-05</td>
+      <td>3.20e-05</td>
+      <td>4.41e-05</td>
+    </tr>
+    <tr>
+      <td>AE</td>
+      <td>Swin</td>
+      <td>6.64e-05</td>
+      <td>5.16e-05</td>
+      <td>8.78e-05</td>
+    </tr>
+    <tr>
+      <td>AE</td>
+      <td>Terramind</td>
+      <td>0.0005740</td>
+      <td>0.0005102</td>
+      <td>0.0006449</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>U-Net</td>
+      <td>8.08e-05</td>
+      <td>6.92e-05</td>
+      <td>9.25e-05</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Swin</td>
+      <td>7.79e-05</td>
+      <td>6.96e-05</td>
+      <td>8.75e-05</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Terramind</td>
+      <td>0.0005069</td>
+      <td>0.0004512</td>
+      <td>0.0005773</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>U-Net</td>
+      <td>0.0002474</td>
+      <td>0.0001927</td>
+      <td>0.0003050</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Swin</td>
+      <td>0.0001658</td>
+      <td>0.0001464</td>
+      <td>0.0001890</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Terramind</td>
+      <td>0.001828</td>
+      <td>0.001327</td>
+      <td>0.002279</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>dataset</b>: Dataset for this cell.</li><li><b>arch</b>: Architecture for this cell.</li><li><b>mean</b>: Posterior mean predicted performance (original scale).</li><li><b>hdi_lo</b>: Lower 95% HDI for the predicted mean.</li><li><b>hdi_hi</b>: Upper 95% HDI for the predicted mean.</li>
+  </ul>
+</div>
+
+<h3>Heatmap of posterior mean (Original Scale)</h3>
+<img class="figure" src="stats_report_assets/heat_mean-aleatoric-uncertainty.png" alt="Heatmap for mean_aleatoric_uncertainty">
+<h3>Key architecture contrasts (within each dataset, baseline arch=U-Net; ROPE=0.05 on transformed scale)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>dataset</th>
+      <th>contrast</th>
+      <th>Δ_mean</th>
+      <th>Δ_lo</th>
+      <th>Δ_hi</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>AE</td>
+      <td>Swin − U-Net</td>
+      <td>2.90e-05</td>
+      <td>1.29e-05</td>
+      <td>5.04e-05</td>
+      <td>0.9999</td>
+      <td>0.0003750</td>
+    </tr>
+    <tr>
+      <td>AE</td>
+      <td>Terramind − U-Net</td>
+      <td>0.0005366</td>
+      <td>0.0004722</td>
+      <td>0.0006070</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Swin − U-Net</td>
+      <td>-2.92e-06</td>
+      <td>-1.71e-05</td>
+      <td>1.20e-05</td>
+      <td>0.3357</td>
+      <td>0.3805</td>
+    </tr>
+    <tr>
+      <td>PS</td>
+      <td>Terramind − U-Net</td>
+      <td>0.0004261</td>
+      <td>0.0003697</td>
+      <td>0.0004971</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Swin − U-Net</td>
+      <td>-8.17e-05</td>
+      <td>-0.0001422</td>
+      <td>-2.30e-05</td>
+      <td>0.004250</td>
+      <td>0.006500</td>
+    </tr>
+    <tr>
+      <td>S2</td>
+      <td>Terramind − U-Net</td>
+      <td>0.001580</td>
+      <td>0.001083</td>
+      <td>0.002037</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>dataset</b>: Dataset scope for this set of architecture comparisons.</li><li><b>contrast</b>: Which architecture is compared against the baseline architecture.</li><li><b>Δ_mean</b>: Mean difference on original scale.</li><li><b>Δ_lo</b>: Lower 95% HDI for the difference.</li><li><b>Δ_hi</b>: Upper 95% HDI for the difference.</li><li><b>Pr(>0)</b>: Probability the difference is > 0 on transformed scale.</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the difference is practically negligible (ROPE) on transformed scale.</li>
+  </ul>
+</div>
+
+<h3>Contrast plot</h3>
+<img class="figure" src="stats_report_assets/contrasts_mean-aleatoric-uncertainty.png" alt="Contrast plot for mean_aleatoric_uncertainty">
+<h3>Key dataset contrasts (within each architecture, baseline dataset=AE; ROPE=0.05 on transformed scale)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>arch</th>
+      <th>contrast</th>
+      <th>Δ_mean</th>
+      <th>Δ_lo</th>
+      <th>Δ_hi</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>U-Net</td>
+      <td>PS − AE</td>
+      <td>4.34e-05</td>
+      <td>3.01e-05</td>
+      <td>5.62e-05</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>U-Net</td>
+      <td>S2 − AE</td>
+      <td>0.0002100</td>
+      <td>0.0001545</td>
+      <td>0.0002686</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Swin</td>
+      <td>PS − AE</td>
+      <td>1.15e-05</td>
+      <td>-1.08e-05</td>
+      <td>2.90e-05</td>
+      <td>0.8708</td>
+      <td>0.1316</td>
+    </tr>
+    <tr>
+      <td>Swin</td>
+      <td>S2 − AE</td>
+      <td>9.93e-05</td>
+      <td>7.03e-05</td>
+      <td>0.0001265</td>
+      <td>1.000</td>
+      <td>0.0003750</td>
+    </tr>
+    <tr>
+      <td>Terramind</td>
+      <td>PS − AE</td>
+      <td>-6.72e-05</td>
+      <td>-0.0001546</td>
+      <td>2.63e-05</td>
+      <td>0.07500</td>
+      <td>0.1616</td>
+    </tr>
+    <tr>
+      <td>Terramind</td>
+      <td>S2 − AE</td>
+      <td>0.001254</td>
+      <td>0.0007552</td>
+      <td>0.001709</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>arch</b>: Architecture scope for this set of dataset comparisons.</li><li><b>contrast</b>: Which dataset is compared against the baseline dataset.</li><li><b>Δ_mean</b>: Mean difference on original scale.</li><li><b>Δ_lo</b>: Lower 95% HDI for the difference.</li><li><b>Δ_hi</b>: Upper 95% HDI for the difference.</li><li><b>Pr(>0)</b>: Probability the difference is > 0 on transformed scale.</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the difference is practically negligible (ROPE) on transformed scale.</li>
+  </ul>
+</div>
+
+<h3>Overall architecture contrasts (marginal over datasets, baseline arch=U-Net)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>scope</th>
+      <th>contrast</th>
+      <th>mean_original</th>
+      <th>hdi_lo_original</th>
+      <th>hdi_hi_original</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Overall (avg over datasets)</td>
+      <td>Swin − U-Net</td>
+      <td>-1.85e-05</td>
+      <td>-3.96e-05</td>
+      <td>3.20e-06</td>
+      <td>0.7190</td>
+      <td>0.4325</td>
+    </tr>
+    <tr>
+      <td>Overall (avg over datasets)</td>
+      <td>Terramind − U-Net</td>
+      <td>0.0008477</td>
+      <td>0.0006791</td>
+      <td>0.001002</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>scope</b>: What was averaged over to form the marginal comparison.</li><li><b>contrast</b>: Comparison (A − baseline).</li><li><b>mean_original</b>: Mean difference on original scale.</li><li><b>hdi_lo_original</b>: Lower 95% HDI of difference.</li><li><b>hdi_hi_original</b>: Upper 95% HDI of difference.</li><li><b>Pr(>0)</b>: Probability the contrast > 0 (transformed scale).</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the effect is practically negligible (transformed scale ROPE).</li>
+  </ul>
+</div>
+
+<img class="figure" src="stats_report_assets/arch_overall_mean-aleatoric-uncertainty.png" alt="Overall architecture contrasts for mean_aleatoric_uncertainty">
+<h3>Overall dataset contrasts (marginal over architectures, baseline dataset=AE)</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>scope</th>
+      <th>contrast</th>
+      <th>mean_original</th>
+      <th>hdi_lo_original</th>
+      <th>hdi_hi_original</th>
+      <th>Pr(&gt;0)</th>
+      <th>Pr(|Δ|&lt;ROPE)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Overall (avg over arch)</td>
+      <td>PS − AE</td>
+      <td>-4.10e-06</td>
+      <td>-3.47e-05</td>
+      <td>2.74e-05</td>
+      <td>0.9994</td>
+      <td>0.002125</td>
+    </tr>
+    <tr>
+      <td>Overall (avg over arch)</td>
+      <td>S2 − AE</td>
+      <td>0.0005210</td>
+      <td>0.0003514</td>
+      <td>0.0006766</td>
+      <td>1.000</td>
+      <td>0</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>scope</b>: What was averaged over to form the marginal comparison.</li><li><b>contrast</b>: Comparison (A − baseline).</li><li><b>mean_original</b>: Mean difference on original scale.</li><li><b>hdi_lo_original</b>: Lower 95% HDI of difference.</li><li><b>hdi_hi_original</b>: Upper 95% HDI of difference.</li><li><b>Pr(>0)</b>: Probability the contrast > 0 (transformed scale).</li><li><b>Pr(|Δ|<ROPE)</b>: Probability the effect is practically negligible (transformed scale ROPE).</li>
+  </ul>
+</div>
+
+<img class="figure" src="stats_report_assets/dataset_overall_mean-aleatoric-uncertainty.png" alt="Overall dataset contrasts for mean_aleatoric_uncertainty">
+
+<details class="footnote">
+  <summary>Understanding the factorial section</summary>
+  <div class="small">
+<ul>
+  <li><b>Effects coding:</b> Coefficients are not simple “add to intercept” baselines.</li>
+  <li><b>Interpretable effects:</b> We compute OR/Δp (or absolute change) from <b>contrasts on predicted means</b>, which is correct under effects coding.</li>
+  <li><b>BF sensitivity:</b> If BF values are similar across bandwidths, the evidence is robust.</li>
+  <li><b>ROPE on transformed scale:</b> For consistency with the model parameter space where effects are estimated.</li>
+</ul>
+</div>
+</details>
+</div>
+</div>
+<div class="tabcontent" id="tab-overall">
+<div class="card">
+<h2>Overall multi-metric ranking</h2>
+<p>Composite ranking across all metrics using z-score standardization. This depends on your utility function (weights). Default: equal weights.</p>
+<h3>Ranking table</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>group</th>
+      <th>Pr(rank=1)</th>
+      <th>Pr(rank=2)</th>
+      <th>Pr(rank=3)</th>
+      <th>Pr(rank=4)</th>
+      <th>Pr(rank=5)</th>
+      <th>Pr(rank=6)</th>
+      <th>Pr(rank=7)</th>
+      <th>Pr(rank=8)</th>
+      <th>Pr(rank=9)</th>
+      <th>E[rank]</th>
+      <th>Pr(best)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>U-Net | AE</td>
+      <td>1.000</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1.000</td>
+      <td>1.000</td>
+    </tr>
+    <tr>
+      <td>Swin U-Net | PS</td>
+      <td>0</td>
+      <td>0.9934</td>
+      <td>0.006250</td>
+      <td>0.0003750</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>2.007</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Terramind | PS</td>
+      <td>0</td>
+      <td>0.003750</td>
+      <td>0.8456</td>
+      <td>0.1451</td>
+      <td>0.005500</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>3.152</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Swin U-Net | S2</td>
+      <td>0</td>
+      <td>0.002750</td>
+      <td>0.1373</td>
+      <td>0.6751</td>
+      <td>0.1849</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>4.042</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Swin U-Net | AE</td>
+      <td>0</td>
+      <td>0.0001250</td>
+      <td>0.01087</td>
+      <td>0.1794</td>
+      <td>0.8081</td>
+      <td>0.001500</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>4.800</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>U-Net | PS</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.001500</td>
+      <td>0.9985</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>5.998</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Terramind | S2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.9999</td>
+      <td>0.0001250</td>
+      <td>0</td>
+      <td>7.000</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>U-Net | S2</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.0001250</td>
+      <td>0.9988</td>
+      <td>0.001125</td>
+      <td>8.001</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <td>Terramind | AE</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0.001125</td>
+      <td>0.9989</td>
+      <td>8.999</td>
+      <td>0</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>group</b>: Group name.</li><li><b>E[rank]</b>: Expected rank under composite score (lower is better).</li><li><b>Pr(best)</b>: Probability the group is best under composite score.</li><li><b>Pr(rank=1)</b>: Probability this group is rank 1 under composite score.</li><li><b>Pr(rank=2)</b>: Probability this group is rank 2 under composite score.</li><li><b>Pr(rank=3)</b>: Probability this group is rank 3 under composite score.</li><li><b>Pr(rank=4)</b>: Probability this group is rank 4 under composite score.</li><li><b>Pr(rank=5)</b>: Probability this group is rank 5 under composite score.</li><li><b>Pr(rank=6)</b>: Probability this group is rank 6 under composite score.</li><li><b>Pr(rank=7)</b>: Probability this group is rank 7 under composite score.</li><li><b>Pr(rank=8)</b>: Probability this group is rank 8 under composite score.</li><li><b>Pr(rank=9)</b>: Probability this group is rank 9 under composite score.</li>
+  </ul>
+</div>
+
+<h3>Pr(best) plot</h3>
+<img class="figure" src="stats_report_assets/overall_prbest.png" alt="Overall Pr(best) plot">
+<h3>Weights used</h3>
+<table class="dataframe tbl">
+  <thead>
+    <tr style="text-align: right;">
+      <th>metric</th>
+      <th>weight</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>IoU</td>
+      <td>0.2000</td>
+    </tr>
+    <tr>
+      <td>dice_coef</td>
+      <td>0.2000</td>
+    </tr>
+    <tr>
+      <td>mean_aleatoric_uncertainty</td>
+      <td>0.2000</td>
+    </tr>
+    <tr>
+      <td>mean_epistemic_uncertainty</td>
+      <td>0.2000</td>
+    </tr>
+    <tr>
+      <td>normalized_surface_distance</td>
+      <td>0.2000</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="small" style="margin-top:8px">
+  <b>Column guide:</b>
+  <ul style="margin:6px 0 0 18px">
+    <li><b>metric</b>: Metric name.</li><li><b>weight</b>: Weight used in composite scoring.</li>
+  </ul>
+</div>
+
+
+<details class="footnote">
+  <summary>Overall ranking interpretation</summary>
+  <div class="small">
+<ul>
+  <li><b>Pr(rank=1)</b> = probability a group is best overall under this utility.</li>
+  <li><b>E[rank]</b> = expected rank (lower = better).</li>
+  <li>If probabilities are spread, the winner is uncertain—consider individual metrics.</li>
+  <li><b>Important:</b> This is a composite score. Always check individual metrics for full picture.</li>
+</ul>
+</div>
+</details>
+</div>
+</div>
+
+<div class="footer">
+Generated 2026-01-27 17:19:08
+</div>
+</div>
+</body>
+</html>

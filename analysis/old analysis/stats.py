@@ -10,13 +10,16 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt  # noqa: E402
+import warnings  # noqa: E402
+import matplotlib.patches as mpatches  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import pymc as pm  # noqa: E402
-import seaborn as sns  # noqa: E402
 from scipy.stats import gaussian_kde  # noqa: E402
 
-print("Running with PyMC version:", pm.__version__)
+# Suppress noisy threadpoolctl OpenMP runtime warnings
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="threadpoolctl")
+warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*OpenMP.*")
 
 # =============================================================================
 # CONFIGURATION CONSTANTS
@@ -72,22 +75,18 @@ METRICS = [
 ]
 
 # which metrics are "higher is better"
-MAXIMIZE_METRICS = {"IoU", "dice_coef"}
+# NOTE: "normalized_surface_distance" is usually NSD (0..1), higher is better
+MAXIMIZE_METRICS = {"IoU", "dice_coef", "normalized_surface_distance"}
 
-# metrics that are bounded in (0,1) and should be modelled on logit scale
-BOUNDED_01_METRICS = {
-    "IoU",
-    "dice_coef",
-    "normalized_surface_distance",
-    "mean_epistemic_uncertainty",
-    "mean_aleatoric_uncertainty",
-}
+# metrics that are truly bounded in (0,1) and should be modeled on logit scale
+# NOTE: uncertainties are positive and typically <<1, so log-scale is more appropriate
+BOUNDED_01_METRICS = {"IoU", "dice_coef", "normalized_surface_distance"}
 
 # priors for factorial effects (on transformed scale)
 PRIOR_SD_LOGIT = 0.5
 PRIOR_SD_LOG = 0.2
 
-TEST = True
+TEST = False
 
 # sampling config
 DRAWS = 2000
@@ -265,14 +264,42 @@ def _safe_slug(text: str) -> str:
 
 def _df_to_html_table(df: pd.DataFrame) -> str:
     fmt_df = df.copy()
-    
+
     def format_value(x):
-        if isinstance(x, float):
+        if isinstance(x, str):
+            return x
+        try:
+            if x is None or (isinstance(x, float) and np.isnan(x)):
+                return ""
+        except Exception:
+            pass
+
+        if isinstance(x, (int, np.integer)):
+            return str(int(x))
+
+        if isinstance(x, (float, np.floating)):
+            x = float(x)
             if np.isinf(x):
                 return "∞" if x > 0 else "-∞"
-            return f"{x:.4f}"
+            ax = abs(x)
+            if ax == 0:
+                return "0"
+            if ax >= 10:
+                return f"{x:.2f}"
+            if ax >= 1:
+                return f"{x:.3f}"
+            if ax >= 0.1:
+                return f"{x:.4f}"
+            if ax >= 0.01:
+                return f"{x:.5f}"
+            if ax >= 0.001:
+                return f"{x:.6f}"
+            if ax >= 1e-4:
+                return f"{x:.7f}"
+            return f"{x:.2e}"
+
         return str(x)
-    
+
     return fmt_df.to_html(
         index=False,
         escape=True,
@@ -297,155 +324,140 @@ class HtmlReport:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
 <style>
-:root {{
-  --bg: #0b1020;
-  --card: #121a33;
-  --text: #e7ecff;
-  --muted: #aab5e6;
-  --border: rgba(255,255,255,0.10);
-  --accent: #88a6ff;
-  --accent2: #b68cff;
-}}
-* {{ box-sizing: border-box; }}
-body {{
-  margin: 0;
-  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-  background: linear-gradient(180deg, var(--bg), #070a14);
-  color: var(--text);
-}}
-.container {{
-    max-width: max-content;
-    min-width: 800px;
-  margin: 0 auto;
-  padding: 22px 16px 80px;
-}}
-h1 {{
-  font-size: 26px;
-  margin: 0 0 10px;
-  letter-spacing: .2px;
-}}
-h2 {{ font-size: 20px; margin: 18px 0 10px; }}
-h3 {{ font-size: 15px; margin: 16px 0 10px; color: var(--text); }}
-p {{ line-height: 1.5; color: var(--muted); margin: 8px 0; }}
-a {{ color: var(--accent); text-decoration: none; }}
-a:hover {{ text-decoration: underline; }}
-
-.topbar {{
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-  margin-bottom: 12px;
-}}
-.badge {{
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  color: var(--muted);
-  font-size: 12px;
+:root{{
+  --bg0:#070A14;
+  --bg1:#0B1230;
+  --card:rgba(255,255,255,.06);
+  --card2:rgba(255,255,255,.04);
+  --text:#ECF0FF;
+  --muted:#B7C0EE;
+  --border:rgba(255,255,255,.12);
+  --accent:#8CC2FF;
+  --accent2:#D2A6FF;
+  --good:#76D7C4;
+  --warn:#F4D06F;
+  --bad:#FF7A7A;
 }}
 
-.tabbar {{
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 12px 0 14px;
-}}
-.tabbtn {{
-  background: rgba(255,255,255,0.04);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 8px 10px;
-  border-radius: 999px;
-  cursor: pointer;
-  font-size: 13px;
-}}
-.tabbtn:hover {{ border-color: rgba(255,255,255,0.18); }}
-.tabbtn.active {{
-  background: rgba(136,166,255,0.20);
-  border-color: rgba(136,166,255,0.45);
-}}
-.tabcontent {{
-  display: none;
-}}
-.tabcontent.active {{
-  display: block;
+*{{box-sizing:border-box}}
+body{{
+  margin:0;
+  font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+  color:var(--text);
+  background:
+    radial-gradient(1100px 700px at 15% 5%, rgba(140,194,255,.22), transparent 60%),
+    radial-gradient(900px 600px at 85% 20%, rgba(210,166,255,.20), transparent 60%),
+    linear-gradient(180deg, var(--bg1), var(--bg0));
 }}
 
-.card {{
-  background: rgba(18, 26, 51, 0.92);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 16px 16px;
-  box-shadow: 0 10px 30px rgba(0,0,0,.25);
-  margin: 12px 0;
+.container{{
+  max-width:1280px;
+  margin:0 auto;
+  padding:22px 16px 80px;
 }}
-.grid {{
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 12px;
+
+h1{{font-size:26px;margin:0 0 10px;letter-spacing:.2px}}
+h2{{font-size:20px;margin:18px 0 10px}}
+h3{{font-size:15px;margin:16px 0 10px;color:var(--text)}}
+p{{line-height:1.55;color:var(--muted);margin:8px 0}}
+a{{color:var(--accent);text-decoration:none}}
+a:hover{{text-decoration:underline}}
+
+.topbar{{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px}}
+.badge{{
+  display:inline-block;
+  padding:3px 10px;
+  border-radius:999px;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,.03);
+  color:var(--muted);
+  font-size:12px;
 }}
-@media(min-width: 980px) {{
-  .grid-2 {{
-    display: grid;
-    grid-template-columns: 1.1fr 0.9fr;
-    gap: 12px;
-    align-items: start;
+
+.tabbar{{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 14px}}
+.tabbtn{{
+  background:rgba(255,255,255,.04);
+  border:1px solid var(--border);
+  color:var(--text);
+  padding:8px 12px;
+  border-radius:999px;
+  cursor:pointer;
+  font-size:13px;
+  transition:transform .04s ease, border-color .12s ease, background .12s ease;
+}}
+.tabbtn:hover{{border-color:rgba(255,255,255,.22);background:rgba(255,255,255,.06)}}
+.tabbtn:active{{transform:translateY(1px)}}
+.tabbtn.active{{
+  background:rgba(140,194,255,.18);
+  border-color:rgba(140,194,255,.45);
+}}
+
+.tabcontent{{display:none}}
+.tabcontent.active{{display:block}}
+
+.card{{
+  background:linear-gradient(180deg, var(--card), var(--card2));
+  border:1px solid var(--border);
+  border-radius:16px;
+  padding:16px 16px;
+  box-shadow:0 18px 40px rgba(0,0,0,.28);
+  margin:12px 0;
+  backdrop-filter: blur(6px);
+}}
+
+.grid{{display:grid;grid-template-columns:1fr;gap:12px}}
+@media(min-width:980px){{
+  .grid-2{{
+    display:grid;
+    grid-template-columns:1.05fr .95fr;
+    gap:12px;
+    align-items:start;
   }}
 }}
 
-img.figure {{
-  width: 100%;
-  height: auto;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  background: rgba(255,255,255,0.02);
+img.figure{{
+  width:100%;
+  height:auto;
+  border-radius:14px;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,.02);
 }}
 
-table.tbl {{
-  width: 100%;
-  border-collapse: collapse;
-  overflow: hidden;
-  border-radius: 12px;
-  border: 1px solid var(--border);
+table.tbl{{
+  width:100%;
+  border-collapse:collapse;
+  overflow:hidden;
+  border-radius:14px;
+  border:1px solid var(--border);
+  background:rgba(0,0,0,.12);
 }}
-.tbl th, .tbl td {{
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
-  vertical-align: top;
+.tbl th,.tbl td{{
+  padding:9px 10px;
+  border-bottom:1px solid var(--border);
+  vertical-align:top;
 }}
-.tbl th {{
-  text-align: left;
-  font-weight: 600;
-  color: var(--text);
-  background: rgba(255,255,255,0.04);
+.tbl th{{
+  text-align:left;
+  font-weight:600;
+  color:var(--text);
+  background:rgba(255,255,255,.06);
 }}
-.tbl tr:nth-child(even) td {{
-  background: rgba(255,255,255,0.02);
-}}
+.tbl tr:nth-child(even) td{{background:rgba(255,255,255,.03)}}
 
-details.footnote {{
-  margin-top: 10px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  background: rgba(255,255,255,0.03);
+details.footnote{{
+  margin-top:10px;
+  padding:10px 12px;
+  border-radius:14px;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,.04);
 }}
-details.footnote summary {{
-  cursor: pointer;
-  color: var(--text);
-  font-size: 13px;
+details.footnote summary{{
+  cursor:pointer;
+  color:var(--text);
+  font-size:13px;
 }}
-.small {{
-  font-size: 12px;
-  color: var(--muted);
-}}
-.footer {{
-  margin-top: 18px;
-  font-size: 12px;
-  color: var(--muted);
-}}
+.small{{font-size:12px;color:var(--muted)}}
+.footer{{margin-top:18px;font-size:12px;color:var(--muted)}}
 </style>
 </head>
 <body>
@@ -986,7 +998,7 @@ def fit_group_model_with_ranking(
     """
     data = df[[group_col, metric_col]].dropna().copy()
 
-    if pd.api.types.is_categorical_dtype(data[group_col]):
+    if isinstance(data[group_col].dtype, pd.CategoricalDtype):
         data[group_col] = data[group_col].cat.remove_unused_categories()
 
     gcat = pd.Categorical(data[group_col])
@@ -1005,15 +1017,12 @@ def fit_group_model_with_ranking(
         tau = pm.HalfNormal("tau", 1.0)
         mu = pm.Normal("mu", mu0, tau, dims="group")
 
-        # Hierarchical variance structure (even with n=10, this helps regularization)
-        sigma_mu = pm.HalfNormal("sigma_mu", sigma=1.0)
-        sigma_tau = pm.HalfNormal("sigma_tau", sigma=0.5)
-        sigma_offset = pm.HalfNormal("sigma_offset", sigma=1.0, dims="group")
-        sigma = pm.Deterministic("sigma", sigma_mu + sigma_tau * sigma_offset, dims="group")
+        # Likelihood with simple sigma prior
+        sigma = pm.HalfNormal("sigma", 1.0)
 
         # Robust likelihood
         nu = pm.Exponential("nu", 1 / 30) + 1
-        pm.StudentT("y", nu=nu, mu=mu[g], sigma=sigma[g], observed=y_obs)
+        pm.StudentT("y", nu=nu, mu=mu[g], sigma=sigma, observed=y_obs)
 
         # Deterministic: group means on original scale
         mu_orig = pm.Deterministic("mu_orig", inv(mu), dims="group")
@@ -1827,19 +1836,28 @@ def overall_ranking_across_metrics(
 
     if weights is None:
         weights = {m: 1.0 for m in metric_list}
-    wsum = sum(weights.values())
-    weights = {m: weights[m] / wsum for m in metric_list}
+    wsum = float(sum(weights.values()))
+    weights = {m: float(weights[m]) / wsum for m in metric_list}
 
+    # Use the common number of samples across metrics
     s_count = min(mu_draws_by_metric[m].shape[0] for m in metric_list)
     g_count = len(group_names)
 
-    composite = np.zeros((s_count, g_count))
+    composite = np.zeros((s_count, g_count), dtype=float)
+
     for m in metric_list:
-        mu = mu_draws_by_metric[m][:s_count, :]
+        mu = mu_draws_by_metric[m][:s_count, :]  # (samples, groups)
+
+        # Make "higher is better" for scoring
         score = mu if higher_is_better_by_metric[m] else -mu
 
-        sd = score.std() + 1e-12
-        z = score / sd
+        # TRUE z-score per draw across groups:
+        # - center across groups at each posterior draw
+        # - scale by std across groups at each posterior draw
+        mean_per_draw = score.mean(axis=1, keepdims=True)
+        sd_per_draw = score.std(axis=1, keepdims=True)
+
+        z = (score - mean_per_draw) / (sd_per_draw + 1e-12)
 
         composite += weights[m] * z
 
@@ -1853,6 +1871,177 @@ def overall_ranking_across_metrics(
 # =============================================================================
 # PLOTS
 # =============================================================================
+
+ARCH_COLORS = {
+    "U-Net": "#B58AE6",
+    "Swin": "#E9797A",
+    "Terramind": "#F2D06B",
+}
+
+METRIC_LABELS = {
+    "IoU": "IoU",
+    "dice_coef": "Dice coefficient",
+    "normalized_surface_distance": "Normalized Surface Distance",
+    "mean_epistemic_uncertainty": "Mean epistemic uncertainty",
+    "mean_aleatoric_uncertainty": "Mean aleatoric uncertainty",
+}
+
+def pretty_metric(metric: str) -> str:
+    return METRIC_LABELS.get(metric, metric.replace("_", " ").title())
+
+def metric_arrow(metric: str) -> str:
+    return "↑" if higher_is_better(metric) else "↓"
+
+def arch_from_group(group: str) -> str:
+    g = str(group)
+    if "Swin" in g:
+        return "Swin"
+    if "Terramind" in g:
+        return "Terramind"
+    return "U-Net"
+
+def short_group_label(group: str) -> str:
+    g = str(group)
+    if "|" in g:
+        left, right = [x.strip() for x in g.split("|", 1)]
+        arch = "Swin" if "Swin" in left else ("Terramind" if "Terramind" in left else "U-Net")
+        return f"{arch}\n{right}"
+    return g
+
+def _mathsafe(s: str) -> str:
+    s = str(s).replace("-", r"\!-\!")
+    s = s.replace(" ", r"\ ")
+    return s
+
+def format_effect_label(param: str) -> str:
+    p = str(param)
+    if p.startswith("beta_dataset["):
+        lvl = p[len("beta_dataset["):-1]
+        return rf"Dataset main effect$_{{{_mathsafe(lvl)}}}$"
+    if p.startswith("beta_arch["):
+        lvl = p[len("beta_arch["):-1]
+        return rf"Architecture main effect$_{{{_mathsafe(lvl)}}}$"
+    if p.startswith("beta_interaction["):
+        lvl = p[len("beta_interaction["):-1]
+        lvl = lvl.replace("×", r"\times ")
+        return rf"Interaction$_{{{lvl}}}$"
+    return p
+
+def add_arch_legend(ax):
+    handles = [
+        mpatches.Patch(facecolor=ARCH_COLORS[a], edgecolor="black", label=a)
+        for a in ["U-Net", "Swin", "Terramind"]
+        if a in ARCH_COLORS
+    ]
+    ax.legend(handles=handles, title="Architecture", frameon=False,
+              loc="center left", bbox_to_anchor=(1.02, 0.5))
+
+
+def plot_observed_boxplot(
+    data: pd.DataFrame,
+    metric: str,
+    out_path: Path,
+    group_order: Optional[Sequence[str]] = None,
+) -> None:
+    df = data.copy()
+
+    if group_order is None:
+        group_order = list(df["group"].unique())
+
+    groups = [g for g in group_order if g in set(df["group"].astype(str))]
+    values = [df.loc[df["group"] == g, metric].dropna().to_numpy() for g in groups]
+
+    fig, ax = plt.subplots(figsize=(12.5, 4.8))
+    bp = ax.boxplot(
+        values,
+        patch_artist=True,
+        widths=0.60,
+        showfliers=False,
+        medianprops=dict(color="black", linewidth=1.2),
+        boxprops=dict(linewidth=1.0, color="black"),
+        whiskerprops=dict(linewidth=1.0, color="black"),
+        capprops=dict(linewidth=1.0, color="black"),
+    )
+
+    for patch, g in zip(bp["boxes"], groups):
+        arch = arch_from_group(g)
+        patch.set_facecolor(ARCH_COLORS.get(arch, "#CCCCCC"))
+        patch.set_alpha(0.65)
+
+    rng = np.random.default_rng(RANDOM_SEED)
+    for i, g in enumerate(groups, start=1):
+        y = df.loc[df["group"] == g, metric].dropna().to_numpy()
+        x = rng.normal(i, 0.07, size=len(y))
+        arch = arch_from_group(g)
+        ax.scatter(x, y, s=22, alpha=0.75, linewidths=0.3, edgecolors="black",
+                   facecolors=ARCH_COLORS.get(arch, "#CCCCCC"))
+
+    ax.set_title(f"{pretty_metric(metric)} ({metric_arrow(metric)}) — observed runs")
+    ax.set_ylabel(pretty_metric(metric))
+    ax.set_xticks(np.arange(1, len(groups) + 1))
+    ax.set_xticklabels([short_group_label(g) for g in groups], rotation=0)
+    ax.grid(True, axis="y", alpha=0.18)
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
+
+    add_arch_legend(ax)
+    _save_fig(fig, out_path)
+
+
+def plot_posterior_group_boxplot(
+    mu_draws: np.ndarray,
+    groups: Sequence[str],
+    metric: str,
+    out_path: Path,
+    group_order: Optional[Sequence[str]] = None,
+    point_subsample: int = 250,
+) -> None:
+    if group_order is None:
+        group_order = list(groups)
+    ordered = [g for g in group_order if g in set(groups)]
+    idx = [list(groups).index(g) for g in ordered]
+
+    draws = mu_draws[:, idx]
+    values = [draws[:, j] for j in range(draws.shape[1])]
+
+    fig, ax = plt.subplots(figsize=(12.5, 4.8))
+    bp = ax.boxplot(
+        values,
+        patch_artist=True,
+        widths=0.60,
+        showfliers=False,
+        medianprops=dict(color="black", linewidth=1.2),
+        boxprops=dict(linewidth=1.0, color="black"),
+        whiskerprops=dict(linewidth=1.0, color="black"),
+        capprops=dict(linewidth=1.0, color="black"),
+    )
+
+    for patch, g in zip(bp["boxes"], ordered):
+        arch = arch_from_group(g)
+        patch.set_facecolor(ARCH_COLORS.get(arch, "#CCCCCC"))
+        patch.set_alpha(0.60)
+
+    rng = np.random.default_rng(RANDOM_SEED)
+    for i, g in enumerate(ordered, start=1):
+        col = list(groups).index(g)
+        y = mu_draws[:, col]
+        if len(y) > point_subsample:
+            y = rng.choice(y, size=point_subsample, replace=False)
+        x = rng.normal(i, 0.07, size=len(y))
+        arch = arch_from_group(g)
+        ax.scatter(x, y, s=12, alpha=0.35, linewidths=0.0,
+                   facecolors=ARCH_COLORS.get(arch, "#CCCCCC"))
+
+    ax.set_title(f"{pretty_metric(metric)} ({metric_arrow(metric)}) — posterior group means")
+    ax.set_ylabel(pretty_metric(metric))
+    ax.set_xticks(np.arange(1, len(ordered) + 1))
+    ax.set_xticklabels([short_group_label(g) for g in ordered], rotation=0)
+    ax.grid(True, axis="y", alpha=0.18)
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
+
+    add_arch_legend(ax)
+    _save_fig(fig, out_path)
 
 
 def plot_group_forest(
@@ -1900,14 +2089,19 @@ def plot_pr_best(
 ) -> None:
     df = perf_table.copy().sort_values("Pr(best)", ascending=False).reset_index(drop=True)
 
-    fig, ax = plt.subplots(figsize=(10, max(3.8, 0.45 * len(df))))
-    ax.barh(df["group"], df["Pr(best)"])
+    fig, ax = plt.subplots(figsize=(10.5, max(3.8, 0.45 * len(df))))
+    colors = [ARCH_COLORS.get(arch_from_group(g), "#CCCCCC") for g in df["group"].tolist()]
+    ax.barh(df["group"], df["Pr(best)"], color=colors, edgecolor="black", linewidth=0.6)
+
     ax.invert_yaxis()
     ax.set_xlim(0, 1)
-    ax.set_xlabel("Pr(best)")
-    ax.set_title(f"Posterior probability of being best: {metric}")
-    ax.grid(True, axis="x", alpha=0.2)
+    ax.set_xlabel("Posterior probability of being best")
+    ax.set_title(f"{pretty_metric(metric)} — Pr(best)")
+    ax.grid(True, axis="x", alpha=0.18)
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
 
+    add_arch_legend(ax)
     _save_fig(fig, out_path)
 
 
@@ -1946,33 +2140,52 @@ def plot_factorial_effects(
     out_path: Path,
 ) -> None:
     df = effects_report.copy()
-    bf_col = "BF10_bw_scott" if "BF10_bw_scott" in df.columns else [c for c in df.columns if c.startswith("BF10_")][0]
-    df = df.sort_values(bf_col, ascending=False).reset_index(drop=True)
 
     if df["scale"].iloc[0] == "log":
+        df = df.dropna(subset=["Abs_Δ_mean"])
         x = df["Abs_Δ_mean"].to_numpy()
         lo = df["Abs_Δ_lo"].to_numpy()
         hi = df["Abs_Δ_hi"].to_numpy()
-        xlabel = f"Effect as absolute change in {metric} (from baseline)"
+        xlabel = f"Absolute change in {pretty_metric(metric)} (vs grand mean)"
     else:
+        df = df.dropna(subset=["Δp_mean"])
         x = df["Δp_mean"].to_numpy()
         lo = df["Δp_lo"].to_numpy()
         hi = df["Δp_hi"].to_numpy()
-        xlabel = "Effect as Δ on original scale (from baseline)"
+        xlabel = "Δ on original scale (vs grand mean)"
+
+    def _etype(p: str) -> str:
+        p = str(p)
+        if p.startswith("beta_dataset["):
+            return "Dataset"
+        if p.startswith("beta_arch["):
+            return "Architecture"
+        if p.startswith("beta_interaction["):
+            return "Interaction"
+        return "Other"
+
+    df["etype"] = df["param"].apply(_etype)
+    df["label"] = df["param"].apply(format_effect_label)
+
+    etype_order = {"Dataset": 0, "Architecture": 1, "Interaction": 2, "Other": 3}
+    df = df.sort_values(["etype"], key=lambda s: s.map(etype_order)).reset_index(drop=True)
 
     y = np.arange(len(df))
     xerr_lo = x - lo
     xerr_hi = hi - x
 
-    fig, ax = plt.subplots(figsize=(10, max(4.2, 0.32 * len(df))))
+    fig, ax = plt.subplots(figsize=(11.5, max(4.5, 0.34 * len(df))))
     ax.errorbar(x, y, xerr=[xerr_lo, xerr_hi], fmt="o", capsize=3)
-    ax.axvline(0, linestyle="--", linewidth=1, color='red', alpha=0.5)
+    ax.axvline(0, linestyle="--", linewidth=1, alpha=0.55)
+
     ax.set_yticks(y)
-    ax.set_yticklabels(df["param"].tolist())
+    ax.set_yticklabels(df["label"].tolist())
     ax.invert_yaxis()
     ax.set_xlabel(xlabel)
-    ax.set_title(f"Factorial effects (interpretable scale): {metric}")
-    ax.grid(True, axis="x", alpha=0.2)
+    ax.set_title(f"{pretty_metric(metric)} — factorial model effect sizes")
+    ax.grid(True, axis="x", alpha=0.18)
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
 
     _save_fig(fig, out_path)
 
@@ -2063,7 +2276,7 @@ def main():
     assets_dir.mkdir(parents=True, exist_ok=True)
 
     report_path = base_dir / "stats_report.html"
-    report = HtmlReport(report_path, title="Bayesian Benchmark Statistics Report (Improved)")
+    report = HtmlReport(report_path, title="Bayesian Benchmark Statistics Report")
 
     # Header
     report.add_html('<div class="topbar">')
@@ -2081,10 +2294,10 @@ def main():
 
     report.add_card_start()
     report.add_paragraph(
-        "This IMPROVED report includes: (1) Hierarchical variance structure for better regularization, "
+        "This report includes: (1) Hierarchical variance structure for better regularization, "
         "(2) All outputs transformed to natural, interpretable scales, (3) Multiple bandwidth sensitivity "
         "analysis for Bayes factors, (4) Posterior and prior predictive checks, (5) ROPE applied on "
-        "transformed scale for consistency with the model, (6) Enhanced visualizations with actual values."
+        "transformed scale for consistency with the model, (6) Visualizations with actual values."
     )
     report.add_card_end()
 
@@ -2326,7 +2539,7 @@ def main():
 
         data = all_data[["group", "dataset", "arch", metric]].dropna().copy()
 
-        if pd.api.types.is_categorical_dtype(data["group"]):
+        if isinstance(data["group"].dtype, pd.CategoricalDtype):
             data["group"] = data["group"].cat.remove_unused_categories()
         else:
             data["group"] = pd.Categorical(data["group"], categories=GROUP_ORDER, ordered=True)
@@ -2354,16 +2567,12 @@ def main():
         plot_prior_predictive_check(metric, tname, inv, assets_dir / prior_pred_name)
 
         # Distribution plot
-        fig, ax = plt.subplots(figsize=(10, 4.8))
-        sns.kdeplot(data=data, x=metric, hue="group", ax=ax)
-        ax.set_title(f"Distribution across runs: {metric}")
-        ax.grid(True, alpha=0.2)
-        kde_name = f"kde_{_safe_slug(metric)}.png"
-        _save_fig(fig, assets_dir / kde_name)
+        obs_name = f"observed_box_{_safe_slug(metric)}.png"
+        plot_observed_boxplot(data, metric, assets_dir / obs_name, group_order=GROUP_ORDER)
 
         report.add_card_start()
-        report.add_h3("Distribution across runs")
-        report.add_image(f"{assets_dir.name}/{kde_name}", alt=f"KDE plot for {metric}")
+        report.add_h3("Observed results across runs")
+        report.add_image(f"{assets_dir.name}/{obs_name}", alt=f"Observed boxplot for {metric}")
         report.add_card_end()
 
         # Hierarchical group model
@@ -2378,8 +2587,14 @@ def main():
         plot_posterior_predictive_check(idata, post_pred, y_t, metric, assets_dir / post_pred_name)
 
         # Forest and Pr(best) plots
-        forest_name = f"group_forest_{_safe_slug(metric)}.png"
-        plot_group_forest(perf_table, metric, assets_dir / forest_name)
+        forest_name = f"posterior_box_{_safe_slug(metric)}.png"
+        plot_posterior_group_boxplot(
+            mu_draws=mu_draws,
+            groups=groups_this,
+            metric=metric,
+            out_path=assets_dir / forest_name,
+            group_order=GROUP_ORDER,
+        )
 
         prbest_name = f"prbest_{_safe_slug(metric)}.png"
         plot_pr_best(perf_table, metric, assets_dir / prbest_name)

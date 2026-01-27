@@ -27,10 +27,10 @@ if __name__ == "__main__":
     #best = tuning.tune_UNet(config)
 
     # TRAINING
-    for i in range(10):
+    #for i in range(10):
 
-        print(f"\n =========== Starting training iteration {i+1}/10 ===========\n")
-        training.train_UNet(config)
+#        print(f"\n =========== Starting training iteration {i+1}/10 ===========\n")
+#        training.train_UNet(config)
 
     # EVLAUATION
     evaluation.evaluate_unet(config)
