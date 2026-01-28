@@ -84,7 +84,7 @@ BOUNDED_01_METRICS = {"IoU", "dice_coef", "normalized_surface_distance"}
 
 # priors for factorial effects (on transformed scale)
 PRIOR_SD_LOGIT = 0.5
-PRIOR_SD_LOG = 0.2
+PRIOR_SD_LOG = 0.5
 
 TEST = False
 
@@ -100,7 +100,17 @@ RANDOM_SEED = 1701
 SD_KDE_BANDWIDTHS = [0.1, 0.3, 0.5, "scott", "silverman"]
 
 # overall ranking weights across metrics
-METRIC_WEIGHTS: Optional[Dict[str, float]] = None
+METRIC_WEIGHTS: Optional[Dict[str, float]] = {
+    "IoU": 0.35,
+    "dice_coef": 0.235,
+    "normalized_surface_distance": 0.2,
+    "mean_epistemic_uncertainty": 0.05,
+    "mean_aleatoric_uncertainty": 0.05,
+}
+
+# Overall multi-metric scoring mode
+# Options: "rank" (robust, rank-based utility), "robust_z" (MAD-based z-score), "z" (standard z-score)
+OVERALL_SCORING_MODE = "rank"
 
 # Stable ordering
 DATASET_ORDER = ["AE", "PS", "S2"]
@@ -119,8 +129,8 @@ ROPE_BY_METRIC_TRANSFORMED: Dict[str, float] = {
     "IoU": 0.05,  # on logit scale
     "dice_coef": 0.05,
     "normalized_surface_distance": 0.05,
-    "mean_epistemic_uncertainty": 0.05,
-    "mean_aleatoric_uncertainty": 0.05,
+    "mean_epistemic_uncertainty": np.log(1.05),  # 5% change on log scale
+    "mean_aleatoric_uncertainty": np.log(1.05),  # 5% change on log scale
 }
 
 CSV_SPECS = [
@@ -164,6 +174,10 @@ COLGUIDE_PERF = {
     "sd": "Posterior SD of the group mean.",
     "hdi_2.5%": "Lower bound of the 95% HDI for the group mean.",
     "hdi_97.5%": "Upper bound of the 95% HDI for the group mean.",
+    "sigma_mean": "Posterior mean of residual SD on the TRANSFORMED scale (group-specific). Higher = more variable runs.",
+    "sigma_sd": "Posterior SD of that group-specific residual SD.",
+    "sigma_hdi_lo": "Lower HDI bound of group residual SD (transformed scale).",
+    "sigma_hdi_hi": "Upper HDI bound of group residual SD (transformed scale).",
     "E[rank]": "Expected rank (1=best).",
     "Pr(best)": "Posterior probability the group is the best.",
     "Pr(best)_prior": "Prior probability the group is best (before seeing data).",
@@ -243,9 +257,17 @@ COLGUIDE_CONTRASTS_OVERALL = {
 }
 
 COLGUIDE_OVERALL_RANK = {
-    "group": "Group name.",
-    "E[rank]": "Expected rank under composite score (lower is better).",
-    "Pr(best)": "Probability the group is best under composite score.",
+    "group": "Group name (dataset×arch).",
+    "E[rank]": "Expected rank (1=best) across all metrics (weighted).",
+    "Pr(best)": "Posterior probability the group is the overall best.",
+    "Pr(top2)": "Posterior probability the group is in top 2.",
+    "rank_ci90": "90% credible interval for rank [q05, q95].",
+    "entropy_rank": "Entropy of rank distribution (higher = more uncertain).",
+    "N_eff_winners": "Effective number of winners (1/sum(Pr(best)^2)); higher = more competitive field.",
+    "runner_up": "Name of the runner-up group (only shown for top-ranked group).",
+    "Pr(win_vs_runnerup)": "Probability top group beats runner-up (only for top group).",
+    "Pr(tie_vs_runnerup)": "Probability of tie/draw vs runner-up (|delta| < tie_eps; only for top group).",
+    "draw_index": "Draw index = 1 - 2*|Pr(win)-0.5|, range [0,1]; 1=decisive, 0=coin flip (only for top group).",
 }
 for k in range(1, 10):
     COLGUIDE_OVERALL_RANK[f"Pr(rank={k})"] = f"Probability this group is rank {k} under composite score."
@@ -300,13 +322,16 @@ def _df_to_html_table(df: pd.DataFrame) -> str:
 
         return str(x)
 
-    return fmt_df.to_html(
+    table_html = fmt_df.to_html(
         index=False,
         escape=True,
         classes="tbl",
         border=0,
         formatters={col: format_value for col in fmt_df.columns},
     )
+    
+    # Wrap table in scrollable container
+    return f'<div class="table-wrapper">{table_html}</div>'
 
 
 class HtmlReport:
@@ -323,94 +348,144 @@ class HtmlReport:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
 <style>
 :root{{
-  --bg0:#070A14;
-  --bg1:#0B1230;
-  --card:rgba(255,255,255,.06);
-  --card2:rgba(255,255,255,.04);
-  --text:#ECF0FF;
-  --muted:#B7C0EE;
-  --border:rgba(255,255,255,.12);
-  --accent:#8CC2FF;
-  --accent2:#D2A6FF;
-  --good:#76D7C4;
-  --warn:#F4D06F;
-  --bad:#FF7A7A;
+  --bg0:#F8F9FA;
+  --bg1:#FFFFFF;
+  --card:#FFFFFF;
+  --text:#1A1A1A;
+  --muted:#5A5A5A;
+  --border:#E0E0E0;
+  --accent:#0066CC;
+  --accent-light:#E6F2FF;
+  --good:#059669;
+  --warn:#D97706;
+  --bad:#DC2626;
+  --shadow:rgba(0,0,0,.08);
+  font-family: Inter, sans-serif;
+  font-feature-settings: 'liga' 1, 'calt' 1;
+}}
+
+@supports (font-variation-settings: normal) {{
+  :root {{ font-family: InterVariable, sans-serif; }}
 }}
 
 *{{box-sizing:border-box}}
 body{{
   margin:0;
-  font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
   color:var(--text);
-  background:
-    radial-gradient(1100px 700px at 15% 5%, rgba(140,194,255,.22), transparent 60%),
-    radial-gradient(900px 600px at 85% 20%, rgba(210,166,255,.20), transparent 60%),
-    linear-gradient(180deg, var(--bg1), var(--bg0));
+  background:var(--bg0);
+  line-height:1.6;
 }}
 
 .container{{
   max-width:1280px;
   margin:0 auto;
-  padding:22px 16px 80px;
+  padding:24px 20px 80px;
 }}
 
-h1{{font-size:26px;margin:0 0 10px;letter-spacing:.2px}}
-h2{{font-size:20px;margin:18px 0 10px}}
-h3{{font-size:15px;margin:16px 0 10px;color:var(--text)}}
-p{{line-height:1.55;color:var(--muted);margin:8px 0}}
-a{{color:var(--accent);text-decoration:none}}
-a:hover{{text-decoration:underline}}
+h1{{
+  font-size:28px;
+  margin:0 0 12px;
+  font-weight:700;
+  color:var(--text);
+}}
+h2{{
+  font-size:22px;
+  margin:24px 0 12px;
+  font-weight:600;
+  color:var(--text);
+}}
+h3{{
+  font-size:17px;
+  margin:20px 0 10px;
+  font-weight:600;
+  color:var(--text);
+}}
+p{{
+  line-height:1.6;
+  color:var(--muted);
+  margin:10px 0;
+}}
+a{{
+  color:var(--accent);
+  text-decoration:none;
+}}
+a:hover{{
+  text-decoration:underline;
+}}
 
-.topbar{{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px}}
+.topbar{{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  align-items:center;
+  margin-bottom:16px;
+  padding-bottom:16px;
+  border-bottom:1px solid var(--border);
+}}
 .badge{{
   display:inline-block;
-  padding:3px 10px;
-  border-radius:999px;
+  padding:4px 12px;
+  border-radius:6px;
+  background:var(--bg0);
   border:1px solid var(--border);
-  background:rgba(255,255,255,.03);
   color:var(--muted);
-  font-size:12px;
+  font-size:13px;
+  font-weight:500;
 }}
 
-.tabbar{{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 14px}}
-.tabbtn{{
-  background:rgba(255,255,255,.04);
+.tabbar{{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin:16px 0;
+  padding:6px;
+  background:var(--bg0);
+  border-radius:10px;
   border:1px solid var(--border);
-  color:var(--text);
-  padding:8px 12px;
-  border-radius:999px;
-  cursor:pointer;
-  font-size:13px;
-  transition:transform .04s ease, border-color .12s ease, background .12s ease;
 }}
-.tabbtn:hover{{border-color:rgba(255,255,255,.22);background:rgba(255,255,255,.06)}}
-.tabbtn:active{{transform:translateY(1px)}}
+.tabbtn{{
+  background:transparent;
+  border:none;
+  color:var(--muted);
+  padding:8px 16px;
+  border-radius:6px;
+  cursor:pointer;
+  font-size:14px;
+  font-weight:500;
+  transition:all .15s ease;
+}}
+.tabbtn:hover{{
+  background:var(--card);
+  color:var(--text);
+}}
 .tabbtn.active{{
-  background:rgba(140,194,255,.18);
-  border-color:rgba(140,194,255,.45);
+  background:var(--accent);
+  color:#FFFFFF;
+  box-shadow:0 2px 8px rgba(0,102,204,.3);
 }}
 
 .tabcontent{{display:none}}
 .tabcontent.active{{display:block}}
 
 .card{{
-  background:linear-gradient(180deg, var(--card), var(--card2));
+  background:var(--card);
   border:1px solid var(--border);
-  border-radius:16px;
-  padding:16px 16px;
-  box-shadow:0 18px 40px rgba(0,0,0,.28);
-  margin:12px 0;
-  backdrop-filter: blur(6px);
+  border-radius:12px;
+  padding:20px;
+  box-shadow:0 2px 8px var(--shadow);
+  margin:16px 0;
 }}
 
-.grid{{display:grid;grid-template-columns:1fr;gap:12px}}
+.grid{{display:grid;grid-template-columns:1fr;gap:16px}}
 @media(min-width:980px){{
   .grid-2{{
     display:grid;
-    grid-template-columns:1.05fr .95fr;
-    gap:12px;
+    grid-template-columns:1fr 1fr;
+    gap:16px;
     align-items:start;
   }}
 }}
@@ -418,46 +493,73 @@ a:hover{{text-decoration:underline}}
 img.figure{{
   width:100%;
   height:auto;
-  border-radius:14px;
+  border-radius:8px;
   border:1px solid var(--border);
-  background:rgba(255,255,255,.02);
+  background:var(--bg0);
+}}
+
+.table-wrapper{{
+  overflow-x:auto;
+  margin:12px 0;
+  border-radius:8px;
+  border:1px solid var(--border);
 }}
 
 table.tbl{{
   width:100%;
+  min-width:600px;
   border-collapse:collapse;
-  overflow:hidden;
-  border-radius:14px;
-  border:1px solid var(--border);
-  background:rgba(0,0,0,.12);
+  background:var(--card);
+  font-size:14px;
 }}
 .tbl th,.tbl td{{
-  padding:9px 10px;
+  padding:12px 14px;
+  text-align:left;
   border-bottom:1px solid var(--border);
-  vertical-align:top;
 }}
 .tbl th{{
-  text-align:left;
   font-weight:600;
   color:var(--text);
-  background:rgba(255,255,255,.06);
+  background:var(--bg0);
+  white-space:nowrap;
 }}
-.tbl tr:nth-child(even) td{{background:rgba(255,255,255,.03)}}
+.tbl td{{
+  color:var(--text);
+}}
+.tbl tr:last-child td{{
+  border-bottom:none;
+}}
+.tbl tr:hover td{{
+  background:var(--bg0);
+}}
 
 details.footnote{{
-  margin-top:10px;
-  padding:10px 12px;
-  border-radius:14px;
+  margin-top:12px;
+  padding:12px 16px;
+  border-radius:8px;
   border:1px solid var(--border);
-  background:rgba(255,255,255,.04);
+  background:var(--bg0);
 }}
 details.footnote summary{{
   cursor:pointer;
   color:var(--text);
-  font-size:13px;
+  font-size:14px;
+  font-weight:500;
 }}
-.small{{font-size:12px;color:var(--muted)}}
-.footer{{margin-top:18px;font-size:12px;color:var(--muted)}}
+details.footnote[open] summary{{
+  margin-bottom:8px;
+}}
+.small{{
+  font-size:13px;
+  color:var(--muted);
+}}
+.footer{{
+  margin-top:24px;
+  padding-top:16px;
+  border-top:1px solid var(--border);
+  font-size:13px;
+  color:var(--muted);
+}}
 </style>
 </head>
 <body>
@@ -924,8 +1026,19 @@ def is_bounded_01(metric_col: str) -> bool:
 
 
 def higher_is_better(metric_col: str) -> bool:
+    """Determine if higher values are better for a metric.
+    
+    EXPLICITLY handles both raw and prefixed metric names.
+    - True for: IoU, dice_coef, normalized_surface_distance
+    - False for: mean_epistemic_uncertainty, mean_aleatoric_uncertainty
+    """
     m = base_metric_name(metric_col)
-    return m in MAXIMIZE_METRICS
+    if m in {"IoU", "dice_coef", "normalized_surface_distance"}:
+        return True
+    elif m in {"mean_epistemic_uncertainty", "mean_aleatoric_uncertainty"}:
+        return False
+    else:
+        raise ValueError(f"Unknown metric direction for '{m}'. Please add explicit handling.")
 
 
 def _inv_logit(x):
@@ -943,14 +1056,43 @@ def _inv_exp(x):
 def transform_y(
     y: np.ndarray,
     metric_col: str,
-    eps: float = 1e-6,
+    eps_logit: float = 1e-6,
+    eps_log: float = 1e-12,
 ) -> Tuple[np.ndarray, Callable, str]:
     if is_bounded_01(metric_col):
-        y_clip = np.clip(y, eps, 1 - eps)
+        y_clip = np.clip(y, eps_logit, 1 - eps_logit)
         y_t = np.log(y_clip / (1 - y_clip))
         return y_t, _inv_logit, "logit"
 
-    y_clip = np.clip(y, eps, None)
+    # Log transform for unbounded metrics (uncertainties)
+    y_arr = np.asarray(y, dtype=float)
+    
+    # Check for negative values and handle appropriately
+    y_min = np.min(y_arr)
+    if y_min < 0:
+        if y_min >= -1e-6:
+            # Clamp tiny negative numerical noise to zero
+            y_arr = np.maximum(y_arr, 0.0)
+            warnings.warn(
+                f"Metric '{metric_col}' has small negative values (min={y_min:.2e}). "
+                "Clamping to 0.0."
+            )
+        else:
+            # Truly invalid for log transform
+            raise ValueError(
+                f"Metric '{metric_col}' has negative values (min={y_min:.2e} < -1e-6), "
+                "invalid for log transform"
+            )
+    
+    # Clip with eps_log and warn if many values are clipped
+    y_clip = np.clip(y_arr, eps_log, None)
+    frac_clipped = np.mean(y_arr <= eps_log)
+    if frac_clipped > 0.5:
+        warnings.warn(
+            f"Metric '{metric_col}': {frac_clipped*100:.1f}% of values clipped to eps_log={eps_log}"
+        )
+    
+    # Take log
     y_t = np.log(y_clip)
     return y_t, _inv_exp, "log"
 
@@ -1008,21 +1150,24 @@ def fit_group_model_with_ranking(
     y_t, inv, tname = transform_y(y_raw, metric_col)
     coords = {"group": groups}
 
+    # Data-informed prior center for log metrics
+    mu0_loc = float(np.median(y_t))
+
     with pm.Model(coords=coords) as model:
         g = pm.Data("g", g_idx)
         y_obs = pm.Data("y_obs", y_t)
 
         # Hierarchical mean structure
-        mu0 = pm.Normal("mu0", 0.0, 1.5)
+        mu0 = pm.Normal("mu0", mu0_loc, 1.0)
         tau = pm.HalfNormal("tau", 1.0)
         mu = pm.Normal("mu", mu0, tau, dims="group")
 
-        # Likelihood with simple sigma prior
-        sigma = pm.HalfNormal("sigma", 1.0)
+        # Hierarchical variance structure: each group has its own sigma
+        sigma0 = pm.HalfNormal("sigma0", 1.0)
+        sigma = pm.HalfNormal("sigma", sigma0, dims="group")
 
-        # Robust likelihood
-        nu = pm.Exponential("nu", 1 / 30) + 1
-        pm.StudentT("y", nu=nu, mu=mu[g], sigma=sigma, observed=y_obs)
+        # Normal likelihood (low values pull the posterior mean, not down-weighted)
+        pm.Normal("y", mu=mu[g], sigma=sigma[g], observed=y_obs)
 
         # Deterministic: group means on original scale
         mu_orig = pm.Deterministic("mu_orig", inv(mu), dims="group")
@@ -1084,12 +1229,28 @@ def fit_group_model_with_ranking(
         .reset_index(drop=True)
     )
 
+    # Extract sigma (group-specific residual SD) summary and merge into perf_table
+    sigma_summ = az.summary(idata, var_names=["sigma"], hdi_prob=HDI_PROB).reset_index()
+    sigma_summ = sigma_summ.rename(columns={"index": "param"})
+    hdi_lo_col_s, hdi_hi_col_s = _pick_hdi_columns(sigma_summ)
+    sigma_summ["group"] = sigma_summ["param"].str.replace(r"sigma\[|\]", "", regex=True)
+
+    sigma_view = sigma_summ[["group", "mean", "sd", hdi_lo_col_s, hdi_hi_col_s]].copy()
+    sigma_view = sigma_view.rename(columns={
+        "mean": "sigma_mean",
+        "sd": "sigma_sd",
+        hdi_lo_col_s: "sigma_hdi_lo",
+        hdi_hi_col_s: "sigma_hdi_hi",
+    })
+
+    perf_table = perf_table.merge(sigma_view, on="group", how="left")
+
     post_p = perf_table["Pr(best)"].to_numpy()
     prior_p = perf_table["Pr(best)_prior"].to_numpy()
     bf_best = _odds(post_p) / _odds(prior_p)
     perf_table["BF_best"] = bf_best
 
-    return idata, perf_table, post_rank_table, post_mu_draws, tname, groups, post_pred
+    return idata, perf_table, post_rank_table, post_mu_draws, tname, groups, post_pred, prior_mu_draws
 
 
 # =============================================================================
@@ -1098,6 +1259,7 @@ def fit_group_model_with_ranking(
 
 def compute_pairwise_bf10_consecutive(
     mu_draws: np.ndarray,
+    prior_mu_draws: np.ndarray,
     rank_table: pd.DataFrame,
     group_names: Sequence[str],
     higher_better: bool,
@@ -1110,6 +1272,8 @@ def compute_pairwise_bf10_consecutive(
     -----------
     mu_draws : np.ndarray
         Posterior draws of group means, shape (samples, groups)
+    prior_mu_draws : np.ndarray
+        Prior draws of group means, shape (samples, groups)
     rank_table : pd.DataFrame
         Ranking table with 'group' and 'E[rank]' columns
     group_names : Sequence[str]
@@ -1121,7 +1285,7 @@ def compute_pairwise_bf10_consecutive(
     
     Returns:
     --------
-    pd.DataFrame with columns: rank, group, next_group, BF10_better, interpretation
+    pd.DataFrame with columns: rank, group, next_group, BF10_diff, interpretation
     """
     # Sort by expected rank
     sorted_ranks = rank_table.sort_values("E[rank]").reset_index(drop=True)
@@ -1138,29 +1302,24 @@ def compute_pairwise_bf10_consecutive(
         
         # Compute difference (higher rank should be better)
         if higher_better:
-            delta = mu_draws[:, idx_i] - mu_draws[:, idx_j]  # positive = i is better
+            delta_post = mu_draws[:, idx_i] - mu_draws[:, idx_j]  # positive = i is better
+            delta_prior = prior_mu_draws[:, idx_i] - prior_mu_draws[:, idx_j]
         else:
-            delta = mu_draws[:, idx_j] - mu_draws[:, idx_i]  # positive = i is better (lower values)
+            delta_post = mu_draws[:, idx_j] - mu_draws[:, idx_i]  # positive = i is better (lower values)
+            delta_prior = prior_mu_draws[:, idx_j] - prior_mu_draws[:, idx_i]
         
-        # Prior: delta ~ Normal(0, something) centered at 0
-        # For BF10 testing "i is better than j" vs "no difference"
-        # We use Savage-Dickey: density at 0 under prior / density at 0 under posterior
-        
-        # Prior draws for delta (assuming independence, approximate as difference of priors)
-        # This is a simplification - ideally we'd sample from the actual prior
-        prior_delta = np.random.normal(0, mu_draws.std(), len(delta))
-        
-        bf10 = _bf10_from_prior_posterior(prior_delta, delta, bw=bw)
+        # Use actual prior draws for BF
+        bf10 = _bf10_from_prior_posterior(delta_prior, delta_post, bw=bw)
         
         # Also compute Pr(i > j)
-        pr_better = float((delta > 0).mean())
+        pr_better = float((delta_post > 0).mean())
         
         rows.append({
             "rank": rank_i,
             "group": group_i,
             "next_rank_group": group_j,
             "Pr(better)": pr_better,
-            "BF10_better": bf10,
+            "BF10_diff": bf10,
             "BF10_interpretation": interpret_bf10(bf10),
         })
     
@@ -1173,7 +1332,7 @@ COLGUIDE_CONSECUTIVE_BF = {
     "group": "Group name.",
     "next_rank_group": "Next lower-ranked group.",
     "Pr(better)": "Posterior probability this group is better than the next-ranked group.",
-    "BF10_better": "Bayes factor for 'this group is better' vs 'no difference'.",
+    "BF10_diff": "Bayes factor for Δ != 0 vs Δ = 0 (evidence for a difference).",
     "BF10_interpretation": "Qualitative interpretation of BF10.",
 }
 
@@ -1181,6 +1340,7 @@ COLGUIDE_CONSECUTIVE_BF = {
 def add_consecutive_bf_analysis(
     report: HtmlReport,
     mu_draws: np.ndarray,
+    prior_mu_draws: np.ndarray,
     perf_table: pd.DataFrame,
     group_names: Sequence[str],
     metric: str,
@@ -1194,13 +1354,14 @@ def add_consecutive_bf_analysis(
     for bw in SD_KDE_BANDWIDTHS:
         bf_df = compute_pairwise_bf10_consecutive(
             mu_draws=mu_draws,
+            prior_mu_draws=prior_mu_draws,
             rank_table=perf_table,
             group_names=group_names,
             higher_better=higher_better,
             bw=bw,
         )
         bw_str = bw if isinstance(bw, str) else f"{bw:.1f}"
-        bf_df[f"BF10_bw_{bw_str}"] = bf_df["BF10_better"]
+        bf_df[f"BF10_bw_{bw_str}"] = bf_df["BF10_diff"]
         bf_results.append(bf_df)
     
     # Merge all bandwidth results
@@ -1520,6 +1681,9 @@ def fit_factorial_model_with_bf(
     y_t, inv, tname = transform_y(y_raw, metric_col)
     effect_sd = PRIOR_SD_LOGIT if tname == "logit" else PRIOR_SD_LOG
 
+    # Data-informed prior center for intercept
+    intercept_loc = float(np.median(y_t))
+
     coords = {
         "dataset_effect": list(dcat.categories)[:-1],
         "arch_effect": list(acat.categories)[:-1],
@@ -1536,7 +1700,7 @@ def fit_factorial_model_with_bf(
         da = pm.Data("DA", da_mat)
 
         # Priors
-        intercept = pm.Normal("intercept", 0.0, 1.5)
+        intercept = pm.Normal("intercept", intercept_loc, 1.0)
         beta_dataset = pm.Normal("beta_dataset", 0.0, effect_sd, dims="dataset_effect")
         beta_arch = pm.Normal("beta_arch", 0.0, effect_sd, dims="arch_effect")
         beta_interaction = pm.Normal(
@@ -1550,8 +1714,8 @@ def fit_factorial_model_with_bf(
         # Single sigma
         sigma = pm.HalfNormal("sigma", sigma=1.0)
 
-        nu = pm.Exponential("nu", 1 / 30) + 1
-        pm.StudentT("y", nu=nu, mu=mu, sigma=sigma, observed=y_t)
+        # Normal likelihood (low values pull the posterior, not down-weighted)
+        pm.Normal("y", mu=mu, sigma=sigma, observed=y_t)
 
         idata = pm.sample(
             draws=draws,
@@ -1826,12 +1990,81 @@ def fit_factorial_model_with_bf(
 # =============================================================================
 
 
+def _compute_ranks_per_draw(score_matrix: np.ndarray) -> np.ndarray:
+    """Compute ranks for each draw (row) across groups (columns).
+    
+    Args:
+        score_matrix: (samples, groups) - higher is better
+    
+    Returns:
+        ranks: (samples, groups) - rank 1 is best
+    """
+    n_samples, n_groups = score_matrix.shape
+    order = np.argsort(-score_matrix, axis=1)  # descending order
+    ranks = np.empty_like(order)
+    for s in range(n_samples):
+        ranks[s, order[s]] = np.arange(1, n_groups + 1)
+    return ranks
+
+
+def _robust_zscore_rows(matrix: np.ndarray, clip_range: Tuple[float, float] = (-8.0, 8.0)) -> np.ndarray:
+    """Compute robust z-scores per row using MAD.
+    
+    Args:
+        matrix: (samples, groups)
+        clip_range: optional clipping range for extreme values
+    
+    Returns:
+        z_scores: (samples, groups) - standardized values
+    """
+    center = np.median(matrix, axis=1, keepdims=True)
+    mad = np.median(np.abs(matrix - center), axis=1, keepdims=True)
+    scale = 1.4826 * mad + 1e-12  # MAD to SD conversion
+    z = (matrix - center) / scale
+    if clip_range is not None:
+        z = np.clip(z, clip_range[0], clip_range[1])
+    return z
+
+
+def _standard_zscore_rows(matrix: np.ndarray, clip_range: Tuple[float, float] = (-8.0, 8.0)) -> np.ndarray:
+    """Compute standard z-scores per row.
+    
+    Args:
+        matrix: (samples, groups)
+        clip_range: optional clipping range for extreme values
+    
+    Returns:
+        z_scores: (samples, groups) - standardized values
+    """
+    mean_per_draw = matrix.mean(axis=1, keepdims=True)
+    sd_per_draw = matrix.std(axis=1, keepdims=True)
+    z = (matrix - mean_per_draw) / (sd_per_draw + 1e-12)
+    if clip_range is not None:
+        z = np.clip(z, clip_range[0], clip_range[1])
+    return z
+
+
 def overall_ranking_across_metrics(
     mu_draws_by_metric: Dict[str, np.ndarray],
     higher_is_better_by_metric: Dict[str, bool],
     group_names: Sequence[str],
     weights: Optional[Dict[str, float]] = None,
+    mode: str = "rank",
 ):
+    """Compute overall ranking across multiple metrics.
+    
+    Args:
+        mu_draws_by_metric: dict mapping metric -> (samples, groups) posterior draws on ORIGINAL scale
+        higher_is_better_by_metric: dict mapping metric -> bool (direction)
+        group_names: list of group names matching column order
+        weights: optional dict metric -> weight (normalized internally)
+        mode: scoring mode - "rank", "robust_z", or "z"
+    
+    Returns:
+        composite_draws: (samples, groups) combined utility scores
+        overall_rank_table: DataFrame with ranking probabilities
+        used_weights: normalized weights dict
+    """
     metric_list = list(mu_draws_by_metric.keys())
 
     if weights is None:
@@ -1845,27 +2078,130 @@ def overall_ranking_across_metrics(
 
     composite = np.zeros((s_count, g_count), dtype=float)
 
-    for m in metric_list:
-        mu = mu_draws_by_metric[m][:s_count, :]  # (samples, groups)
+    if mode == "rank":
+        # MODE: rank-based utility (most robust)
+        # For each metric, compute ranks per draw, convert to utility (best=G, worst=1)
+        for m in metric_list:
+            mu = mu_draws_by_metric[m][:s_count, :]  # (samples, groups)
+            score = mu if higher_is_better_by_metric[m] else -mu  # higher is better
+            ranks = _compute_ranks_per_draw(score)  # 1=best, G=worst
+            utility = (g_count + 1) - ranks  # best gets G, worst gets 1
+            composite += weights[m] * utility
 
-        # Make "higher is better" for scoring
-        score = mu if higher_is_better_by_metric[m] else -mu
+    elif mode == "robust_z":
+        # MODE: robust z-scores using MAD
+        for m in metric_list:
+            mu = mu_draws_by_metric[m][:s_count, :]
+            score = mu if higher_is_better_by_metric[m] else -mu
+            z = _robust_zscore_rows(score, clip_range=(-8.0, 8.0))
+            composite += weights[m] * z
 
-        # TRUE z-score per draw across groups:
-        # - center across groups at each posterior draw
-        # - scale by std across groups at each posterior draw
-        mean_per_draw = score.mean(axis=1, keepdims=True)
-        sd_per_draw = score.std(axis=1, keepdims=True)
+    elif mode == "z":
+        # MODE: standard z-scores (current behavior, stabilized)
+        for m in metric_list:
+            mu = mu_draws_by_metric[m][:s_count, :]
+            score = mu if higher_is_better_by_metric[m] else -mu
+            z = _standard_zscore_rows(score, clip_range=(-8.0, 8.0))
+            composite += weights[m] * z
 
-        z = (score - mean_per_draw) / (sd_per_draw + 1e-12)
+    else:
+        raise ValueError(f"Unknown scoring mode: {mode}. Use 'rank', 'robust_z', or 'z'.")
 
-        composite += weights[m] * z
-
+    # Overall ranking: composite is always "higher is better"
     overall_rank_table = rank_probabilities_from_draws(
         composite, group_names, higher_better=True
     )
 
     return composite, overall_rank_table, weights
+
+
+def add_overall_draw_diagnostics(
+    overall_rank_table: pd.DataFrame,
+    composite: np.ndarray,
+    group_names: Sequence[str],
+    tie_eps: float = 0.1,
+    ci: Tuple[float, float] = (0.05, 0.95),
+    topk: int = 2,
+) -> pd.DataFrame:
+    """Add draw/tie diagnostics to overall ranking table.
+    
+    Args:
+        overall_rank_table: DataFrame with group, E[rank], Pr(best), etc.
+        composite: (samples, groups) composite utility/score draws (higher is better)
+        group_names: list of group names matching column order
+        tie_eps: threshold for considering a tie (in composite score units)
+        ci: credible interval quantiles for rank CI
+        topk: number of top groups to consider for Pr(topK)
+    
+    Returns:
+        Enhanced DataFrame with additional diagnostic columns
+    """
+    df = overall_rank_table.copy()
+    n_samples, n_groups = composite.shape
+    
+    # Compute ranks per draw (higher composite is better, so rank 1 = best)
+    ranks = _compute_ranks_per_draw(composite)  # (samples, groups), 1=best
+    
+    # Map group names to column indices
+    group_to_idx = {g: i for i, g in enumerate(group_names)}
+    
+    # Add Pr(top2)
+    pr_topk = np.zeros(n_groups)
+    for j in range(n_groups):
+        pr_topk[j] = (ranks[:, j] <= topk).mean()
+    df["Pr(top2)"] = [pr_topk[group_to_idx[g]] for g in df["group"]]
+    
+    # Add rank_ci90
+    rank_ci_strs = []
+    for g in df["group"]:
+        j = group_to_idx[g]
+        q_lo = np.quantile(ranks[:, j], ci[0])
+        q_hi = np.quantile(ranks[:, j], ci[1])
+        rank_ci_strs.append(f"[{q_lo:.1f}, {q_hi:.1f}]")
+    df["rank_ci90"] = rank_ci_strs
+    
+    # Add entropy_rank
+    entropy = np.zeros(n_groups)
+    for j in range(n_groups):
+        # Compute rank probabilities
+        rank_probs = np.array([(ranks[:, j] == k).mean() for k in range(1, n_groups + 1)])
+        # Filter out zeros to avoid log(0)
+        rank_probs_nz = rank_probs[rank_probs > 0]
+        entropy[j] = -np.sum(rank_probs_nz * np.log(rank_probs_nz))
+    df["entropy_rank"] = [entropy[group_to_idx[g]] for g in df["group"]]
+    
+    # Add N_eff_winners (same value for all rows)
+    pr_best_vals = df["Pr(best)"].values
+    pr_best_nz = pr_best_vals[pr_best_vals > 1e-12]
+    n_eff = 1.0 / np.sum(pr_best_nz ** 2) if len(pr_best_nz) > 0 else np.nan
+    df["N_eff_winners"] = n_eff
+    
+    # Add top-1 vs runner-up diagnostics (only for top group)
+    df["runner_up"] = ""
+    df["Pr(win_vs_runnerup)"] = np.nan
+    df["Pr(tie_vs_runnerup)"] = np.nan
+    df["draw_index"] = np.nan
+    
+    if len(df) >= 2:
+        top_group = df.iloc[0]["group"]
+        runner_up_group = df.iloc[1]["group"]
+        
+        i1 = group_to_idx[top_group]
+        i2 = group_to_idx[runner_up_group]
+        
+        delta = composite[:, i1] - composite[:, i2]
+        pr_win = (delta > 0).mean()
+        pr_tie = (np.abs(delta) < tie_eps).mean()
+        draw_idx = 2.0 * np.abs(pr_win - 0.5)
+        
+        mask = df["group"].astype(str) == str(top_group)
+        df.loc[mask, "runner_up"] = runner_up_group
+        df.loc[mask, "Pr(win_vs_runnerup)"] = pr_win
+        df.loc[mask, "Pr(tie_vs_runnerup)"] = pr_tie
+        df.loc[mask, "draw_index"] = draw_idx
+
+    
+    return df
 
 
 # =============================================================================
@@ -2141,19 +2477,6 @@ def plot_factorial_effects(
 ) -> None:
     df = effects_report.copy()
 
-    if df["scale"].iloc[0] == "log":
-        df = df.dropna(subset=["Abs_Δ_mean"])
-        x = df["Abs_Δ_mean"].to_numpy()
-        lo = df["Abs_Δ_lo"].to_numpy()
-        hi = df["Abs_Δ_hi"].to_numpy()
-        xlabel = f"Absolute change in {pretty_metric(metric)} (vs grand mean)"
-    else:
-        df = df.dropna(subset=["Δp_mean"])
-        x = df["Δp_mean"].to_numpy()
-        lo = df["Δp_lo"].to_numpy()
-        hi = df["Δp_hi"].to_numpy()
-        xlabel = "Δ on original scale (vs grand mean)"
-
     def _etype(p: str) -> str:
         p = str(p)
         if p.startswith("beta_dataset["):
@@ -2169,6 +2492,23 @@ def plot_factorial_effects(
 
     etype_order = {"Dataset": 0, "Architecture": 1, "Interaction": 2, "Other": 3}
     df = df.sort_values(["etype"], key=lambda s: s.map(etype_order)).reset_index(drop=True)
+
+    # Drop NaNs and extract x/lo/hi values AFTER sorting
+    if df["scale"].iloc[0] == "log":
+        df = df.dropna(subset=["Abs_Δ_mean"])
+        x = df["Abs_Δ_mean"].to_numpy()
+        lo = df["Abs_Δ_lo"].to_numpy()
+        hi = df["Abs_Δ_hi"].to_numpy()
+        xlabel = f"Absolute change in {pretty_metric(metric)} (vs grand mean)"
+    else:
+        df = df.dropna(subset=["Δp_mean"])
+        x = df["Δp_mean"].to_numpy()
+        lo = df["Δp_lo"].to_numpy()
+        hi = df["Δp_hi"].to_numpy()
+        xlabel = "Δ on original scale (vs grand mean)"
+
+    # Reset index after dropna to ensure y indices align
+    df = df.reset_index(drop=True)
 
     y = np.arange(len(df))
     xerr_lo = x - lo
@@ -2202,6 +2542,60 @@ def plot_overall_pr_best(
     ax.set_xlabel("Pr(best) overall")
     ax.set_title("Overall multi-metric: Pr(best)")
     ax.grid(True, axis="x", alpha=0.2)
+    _save_fig(fig, out_path)
+
+
+def plot_overall_draw_top2(
+    overall_rank_table: pd.DataFrame,
+    out_path: Path,
+) -> None:
+    """Plot draw/tie diagnostics for top-ranked group vs runner-up."""
+    if len(overall_rank_table) < 2:
+        # Not enough groups to plot
+        return
+    
+    top_row = overall_rank_table.iloc[0]
+    if pd.isna(top_row.get("Pr(win_vs_runnerup)")):
+        # Diagnostics not computed
+        return
+    
+    top_group = top_row["group"]
+    runner_up = top_row["runner_up"]
+    pr_win = top_row["Pr(win_vs_runnerup)"]
+    pr_tie = top_row["Pr(tie_vs_runnerup)"]
+    draw_idx = top_row["draw_index"]
+    
+    fig, ax = plt.subplots(figsize=(8, 3.5))
+    
+    metrics = ["Pr(win)", "Pr(tie)", "Draw index"]
+    values = [pr_win, pr_tie, draw_idx]
+    colors = ["#4CAF50", "#FFC107", "#2196F3"]
+    
+    y_pos = np.arange(len(metrics))
+    bars = ax.barh(y_pos, values, color=colors, alpha=0.7, edgecolor="black", linewidth=1)
+    
+    # Add value labels on bars
+    for i, (bar, val) in enumerate(zip(bars, values)):
+        ax.text(val + 0.02, bar.get_y() + bar.get_height() / 2,
+                f"{val:.3f}", va="center", fontsize=10, fontweight="bold")
+    
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(metrics)
+    ax.set_xlim(0, 1.15)
+    ax.set_xlabel("Probability / Index")
+    ax.set_title(
+        f"Top-2 Draw Diagnostics\n{top_group} vs {runner_up}",
+        fontsize=11,
+        fontweight="bold"
+    )
+    ax.grid(True, axis="x", alpha=0.2)
+    ax.axvline(0.5, color="red", linestyle="--", linewidth=1, alpha=0.5, label="Threshold (0.5)")
+    
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
+    
+    ax.legend(loc="lower right", fontsize=9)
+    
     _save_fig(fig, out_path)
 
 
@@ -2558,9 +2952,57 @@ def main():
             report.close_tab_content()
             continue
 
+        # Degeneracy guard: check if metric is nearly constant
+        metric_std = data[metric].dropna().std()
+        if metric_std < 1e-12:
+            report.add_card_start()
+            report.add_paragraph(
+                f"The metric <strong>{metric}</strong> is nearly constant across all observations "
+                f"(std = {metric_std:.2e}). This provides no information for model comparison. "
+                "Skipping Bayesian analysis for this metric."
+            )
+            report.add_card_end()
+            report.close_tab_content()
+            continue
+
         # Get transformation info for prior predictive
         y_raw = data[metric].to_numpy()
         y_t, inv, tname = transform_y(y_raw, metric)
+
+        # Safeguard: check for non-finite or degenerate transformed values
+        if not np.all(np.isfinite(y_t)):
+            report.add_card_start()
+            report.add_paragraph(
+                f"The metric <strong>{metric}</strong> produced non-finite transformed values. "
+                "Skipping analysis."
+            )
+            report.add_card_end()
+            report.close_tab_content()
+            continue
+
+        if np.std(y_t) < 1e-12:
+            report.add_card_start()
+            report.add_paragraph(
+                f"The metric <strong>{metric}</strong> has near-zero transformed variance (std={np.std(y_t):.2e}). "
+                "Skipping analysis."
+            )
+            report.add_card_end()
+            report.close_tab_content()
+            continue
+
+        # For log metrics, check if >98% of original values are below clipping threshold
+        if tname == "log":
+            clip_frac = np.mean(y_raw <= 1e-12)
+            if clip_frac >= 0.98:
+                report.add_card_start()
+                report.add_paragraph(
+                    f"The metric <strong>{metric}</strong> has {clip_frac*100:.1f}% of values below "
+                    "the log-scale clipping threshold (1e-12). This metric is essentially all zeros "
+                    "and provides no information. Skipping analysis."
+                )
+                report.add_card_end()
+                report.close_tab_content()
+                continue
 
         # Prior predictive check
         prior_pred_name = f"prior_pred_{_safe_slug(metric)}.png"
@@ -2576,7 +3018,7 @@ def main():
         report.add_card_end()
 
         # Hierarchical group model
-        idata, perf_table, _, mu_draws, scale_name, groups_this, post_pred = (
+        idata, perf_table, _, mu_draws, scale_name, groups_this, post_pred, prior_mu_draws = (
             fit_group_model_with_ranking(
                 data, group_col="group", metric_col=metric
             )
@@ -2653,6 +3095,7 @@ def main():
         add_consecutive_bf_analysis(
             report=report,
             mu_draws=mu_draws,
+            prior_mu_draws=prior_mu_draws,
             perf_table=perf_table,
             group_names=groups_this,
             metric=metric,
@@ -2887,29 +3330,91 @@ def main():
         else:
             group_names = [g for g in GROUP_ORDER if g in common_groups]
 
+            # SAFETY: Print and verify metric directions
+            print("\n=== METRIC DIRECTIONS ===")
+            for m in METRICS:
+                if m in hib_by_metric:
+                    direction = "↑ higher is better" if hib_by_metric[m] else "↓ lower is better"
+                    print(f"  {m}: {direction}")
+            print()
+
+            # Align draws to common group ordering with runtime checks
             aligned_draws: Dict[str, np.ndarray] = {}
             for m in METRICS:
                 if m not in mu_draws_by_metric:
                     continue
                 cols = list(groups_by_metric[m])
+                
+                # Runtime check: ensure all common groups are present
+                missing = set(group_names) - set(cols)
+                if missing:
+                    raise RuntimeError(
+                        f"Metric '{m}' is missing groups {missing}. "
+                        f"Expected {group_names}, got {cols}"
+                    )
+                
+                # Reorder columns to match group_names
                 idx = [cols.index(g) for g in group_names]
                 aligned_draws[m] = mu_draws_by_metric[m][:, idx]
-
-            _, overall_rank_table, used_weights = overall_ranking_across_metrics(
+            
+            print(f"Using scoring mode: {OVERALL_SCORING_MODE}")
+            composite, overall_rank_table, used_weights = overall_ranking_across_metrics(
                 mu_draws_by_metric=aligned_draws,
                 higher_is_better_by_metric=hib_by_metric,
                 group_names=group_names,
                 weights=METRIC_WEIGHTS,
+                mode=OVERALL_SCORING_MODE,
+            )
+
+            # Add draw/tie diagnostics
+            overall_rank_table = add_overall_draw_diagnostics(
+                overall_rank_table=overall_rank_table,
+                composite=composite,
+                group_names=group_names,
+                tie_eps=0.1,
+                ci=(0.05, 0.95),
+                topk=2,
             )
 
             overall_plot_name = "overall_prbest.png"
             plot_overall_pr_best(overall_rank_table, assets_dir / overall_plot_name)
+            
+            overall_draw_plot_name = "overall_draw_top2.png"
+            plot_overall_draw_top2(overall_rank_table, assets_dir / overall_draw_plot_name)
 
             report.add_card_start()
             report.add_h2("Overall multi-metric ranking")
+            
+            # Explain scoring mode
+            mode_explanation = {
+                "rank": (
+                    "Rank-based utility scoring (ROBUST): For each posterior draw, converts metric values "
+                    "to ranks (1=best), then to utility scores where best=G, worst=1. Aggregates utilities "
+                    "across metrics. This mode is highly robust to outliers and scale differences, and ensures "
+                    "the overall winner reflects consistent high rankings across metrics."
+                ),
+                "robust_z": (
+                    "Robust z-score standardization: Uses median and MAD (median absolute deviation) for "
+                    "centering and scaling per draw. More robust to outliers than standard z-scores. "
+                    "Extreme z-values are clipped to [-8, 8]."
+                ),
+                "z": (
+                    "Standard z-score standardization: Uses mean and standard deviation per draw. "
+                    "Extreme z-values are clipped to [-8, 8] for stability."
+                ),
+            }
+            
             report.add_paragraph(
-                "Composite ranking across all metrics using z-score standardization. "
-                "This depends on your utility function (weights). Default: equal weights."
+                f"<b>Scoring mode:</b> {OVERALL_SCORING_MODE}. "
+                f"{mode_explanation.get(OVERALL_SCORING_MODE, 'Unknown mode.')}"
+            )
+            report.add_paragraph(
+                "<b>Metric directions:</b> Uncertainties (epistemic, aleatoric) are treated as lower-is-better "
+                "(sign flipped before aggregation). Performance metrics (IoU, Dice, NSD) are higher-is-better. "
+                "This ensures all metrics contribute consistently to the overall ranking."
+            )
+            report.add_paragraph(
+                "<b>Weights:</b> Default is equal weighting across metrics. You can adjust via METRIC_WEIGHTS."
             )
             report.add_h3("Ranking table")
             add_table_with_column_guide(report, overall_rank_table, COLGUIDE_OVERALL_RANK)
@@ -2918,6 +3423,18 @@ def main():
             report.add_image(
                 f"{assets_dir.name}/{overall_plot_name}",
                 alt="Overall Pr(best) plot",
+            )
+
+            report.add_h3("Top-2 draw diagnostics")
+            report.add_paragraph(
+                "Draw diagnostics compare the top-ranked group against the runner-up. "
+                "<b>Pr(win)</b> is the probability the top group has higher composite score. "
+                "<b>Pr(tie)</b> is the probability of a near-draw (|difference| < 0.1). "
+                "<b>Draw index</b> measures decisiveness: 1.0 = clear winner, 0.0 = coin flip."
+            )
+            report.add_image(
+                f"{assets_dir.name}/{overall_draw_plot_name}",
+                alt="Top-2 draw diagnostics",
             )
 
             report.add_h3("Weights used")
