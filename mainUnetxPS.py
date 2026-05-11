@@ -21,7 +21,7 @@ import evaluation
 if __name__ == "__main__":
     
     # PREPROCESSING
-    #preprocessing.preprocess_all(config)
+    preprocessing.preprocess_all(config)
 
     # HYPERPARAMETER TUNING
     #best = tuning.tune_UNet(config)
@@ -32,4 +32,4 @@ if __name__ == "__main__":
      #  print(f"\n =========== Starting training iteration {i+1}/10  ===========\n")
       # training.train_UNet(config)
     # EVLAUATION
-    evaluation.evaluate_unet(config)
+    #evaluation.evaluate_unet(config)

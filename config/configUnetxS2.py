@@ -26,7 +26,7 @@ class Configuration:
             f"/isipd/projects/p_planetdw/data/methods_test/training/{self.modality}"
         )
         self.training_area_fn = "training_areas.gpkg"
-        self.training_polygon_fn = f"labels_{self.modality}.gpkg"
+        self.training_polygon_fn = f"labels_{self.modality}_exp.gpkg"
         self.focus_areas = f"focus_areas_{self.modality}.gpkg"
 
         self.training_image_dir = (

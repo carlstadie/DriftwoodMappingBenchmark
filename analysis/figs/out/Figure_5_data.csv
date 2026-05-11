@@ -1,0 +1,81 @@
+scope,contrast,mean_original,hdi_lo_original,hdi_hi_original,Pr(Δ>ROPE),Pr(|Δ|<ROPE),Pr(Δ<-ROPE),Pr(>0),contrast_clean,param_clean,metric,panel,dataset,Δ_mean,Δ_lo,Δ_hi,arch,contrast_arrow
+Overall (avg over datasets),Swin − U-Net,0.1162,0.1032,0.1293,1.0,0.0,0.0,1.0,Swin,U-Net→Swin,IoU,arch_marginal,,,,,,
+Overall (avg over datasets),Terramind − U-Net,0.05693,0.04363,0.07008,1.0,0.0,0.0,1.0,TM,U-Net→TM,IoU,arch_marginal,,,,,,
+Overall (avg over arch),PS − AE,-0.1683,-0.1818,-0.1554,0.0,0.0,1.0,0.0,PS - AE,AE→PS,IoU,dataset_marginal,,,,,,
+Overall (avg over arch),S2 − AE,-0.4087,-0.4216,-0.3967,0.0,0.0,1.0,0.0,S2 - AE,AE→S2,IoU,dataset_marginal,,,,,,
+,Swin − U-Net,,,,0.000125,0.007375,0.9925,0.00075,Swin,AE: U-Net→Swin,IoU,arch_within,AE,-0.03222,-0.05076,-0.0126,,
+,Terramind − U-Net,,,,0.0,0.00025,0.9998,0.0,TM,AE: U-Net→TM,IoU,arch_within,AE,-0.0452,-0.06538,-0.026,,
+,Swin − U-Net,,,,0.0,0.01375,0.9862,0.00075,Swin,PS: U-Net→Swin,IoU,arch_within,PS,-0.04102,-0.06669,-0.01475,,
+,Terramind − U-Net,,,,0.0,0.0,1.0,0.0,TM,PS: U-Net→TM,IoU,arch_within,PS,-0.07292,-0.1001,-0.04626,,
+,Swin − U-Net,,,,1.0,0.0,0.0,1.0,Swin,S2: U-Net→Swin,IoU,arch_within,S2,0.4218,0.4015,0.4441,,
+,Terramind − U-Net,,,,1.0,0.0,0.0,1.0,TM,S2: U-Net→TM,IoU,arch_within,S2,0.2889,0.2677,0.3101,,
+,PS − AE,,,,0.0,0.0,1.0,0.0,PS - AE,U-Net: AE→PS,IoU,dataset_within,,-0.1561,-0.1787,-0.134,U-Net,AE→PS
+,S2 − AE,,,,0.0,0.0,1.0,0.0,S2 - AE,U-Net: AE→S2,IoU,dataset_within,,-0.6715,-0.6869,-0.6559,U-Net,AE→S2
+,PS − AE,,,,0.0,0.0,1.0,0.0,PS - AE,Swin: AE→PS,IoU,dataset_within,,-0.1649,-0.1879,-0.1409,Swin,AE→PS
+,S2 − AE,,,,0.0,0.0,1.0,0.0,S2 - AE,Swin: AE→S2,IoU,dataset_within,,-0.2174,-0.2409,-0.1929,Swin,AE→S2
+,PS − AE,,,,0.0,0.0,1.0,0.0,PS - AE,TM: AE→PS,IoU,dataset_within,,-0.1838,-0.2083,-0.1594,TM,AE→PS
+,S2 − AE,,,,0.0,0.0,1.0,0.0,S2 - AE,TM: AE→S2,IoU,dataset_within,,-0.3374,-0.3626,-0.3143,TM,AE→S2
+Overall (avg over datasets),Swin − U-Net,0.1442,0.1337,0.155,1.0,0.0,0.0,1.0,Swin,U-Net→Swin,Dice,arch_marginal,,,,,,
+Overall (avg over datasets),Terramind − U-Net,0.09229,0.08112,0.1038,1.0,0.0,0.0,1.0,TM,U-Net→TM,Dice,arch_marginal,,,,,,
+Overall (avg over arch),PS − AE,-0.1186,-0.1283,-0.1086,0.0,0.0,1.0,0.0,PS - AE,AE→PS,Dice,dataset_marginal,,,,,,
+Overall (avg over arch),S2 − AE,-0.3649,-0.3766,-0.3543,0.0,0.0,1.0,0.0,S2 - AE,AE→S2,Dice,dataset_marginal,,,,,,
+,Swin − U-Net,,,,0.000125,0.0095,0.9904,0.001125,Swin,AE: U-Net→Swin,Dice,arch_within,AE,-0.02055,-0.03251,-0.008257,,
+,Terramind − U-Net,,,,0.0,0.000375,0.9996,0.000125,TM,AE: U-Net→TM,Dice,arch_within,AE,-0.02885,-0.04156,-0.0164,,
+,Swin − U-Net,,,,0.0,0.01613,0.9839,0.000875,Swin,PS: U-Net→Swin,Dice,arch_within,PS,-0.03096,-0.05125,-0.01109,,
+,Terramind − U-Net,,,,0.0,0.0,1.0,0.0,TM,PS: U-Net→TM,Dice,arch_within,PS,-0.0567,-0.07706,-0.03557,,
+,Swin − U-Net,,,,1.0,0.0,0.0,1.0,Swin,S2: U-Net→Swin,Dice,arch_within,S2,0.484,0.4633,0.5058,,
+,Terramind − U-Net,,,,1.0,0.0,0.0,1.0,TM,S2: U-Net→TM,Dice,arch_within,S2,0.3624,0.3395,0.3864,,
+,PS − AE,,,,0.0,0.0,1.0,0.0,PS - AE,U-Net: AE→PS,Dice,dataset_within,,-0.1059,-0.1208,-0.08959,U-Net,AE→PS
+,S2 − AE,,,,0.0,0.0,1.0,0.0,S2 - AE,U-Net: AE→S2,Dice,dataset_within,,-0.6635,-0.6797,-0.6479,U-Net,AE→S2
+,PS − AE,,,,0.0,0.0,1.0,0.0,PS - AE,Swin: AE→PS,Dice,dataset_within,,-0.1163,-0.1341,-0.09852,Swin,AE→PS
+,S2 − AE,,,,0.0,0.0,1.0,0.0,S2 - AE,Swin: AE→S2,Dice,dataset_within,,-0.159,-0.1769,-0.1392,Swin,AE→S2
+,PS − AE,,,,0.0,0.0,1.0,0.0,PS - AE,TM: AE→PS,Dice,dataset_within,,-0.1337,-0.1527,-0.1159,TM,AE→PS
+,S2 − AE,,,,0.0,0.0,1.0,0.0,S2 - AE,TM: AE→S2,Dice,dataset_within,,-0.2723,-0.294,-0.2509,TM,AE→S2
+Overall (avg over datasets),Swin − U-Net,0.003628,-0.01275,0.0207,0.142,0.8211,0.03687,0.6305,Swin,U-Net→Swin,NSD,arch_marginal,,,,,,
+Overall (avg over datasets),Terramind − U-Net,-0.1226,-0.1394,-0.106,0.0,0.0,1.0,0.0,TM,U-Net→TM,NSD,arch_marginal,,,,,,
+Overall (avg over arch),PS − AE,0.1429,0.1264,0.1587,1.0,0.0,0.0,1.0,PS - AE,AE→PS,NSD,dataset_marginal,,,,,,
+Overall (avg over arch),S2 − AE,0.2168,0.2008,0.233,1.0,0.0,0.0,1.0,S2 - AE,AE→S2,NSD,dataset_marginal,,,,,,
+,Swin − U-Net,,,,0.03825,0.398,0.5637,0.1643,Swin,AE: U-Net→Swin,NSD,arch_within,AE,-0.01416,-0.04371,0.01439,,
+,Terramind − U-Net,,,,0.0,0.0,1.0,0.0,TM,AE: U-Net→TM,NSD,arch_within,AE,-0.1609,-0.186,-0.1353,,
+,Swin − U-Net,,,,1.0,0.0,0.0,1.0,Swin,PS: U-Net→Swin,NSD,arch_within,PS,0.0824,0.05372,0.1134,,
+,Terramind − U-Net,,,,0.0,0.0,1.0,0.0,TM,PS: U-Net→TM,NSD,arch_within,PS,-0.1004,-0.1298,-0.07144,,
+,Swin − U-Net,,,,0.0,0.00125,0.9988,0.0,Swin,S2: U-Net→Swin,NSD,arch_within,S2,-0.05736,-0.08748,-0.02791,,
+,Terramind − U-Net,,,,0.0,0.0,1.0,0.0,TM,S2: U-Net→TM,NSD,arch_within,S2,-0.1064,-0.1364,-0.07535,,
+,PS − AE,,,,1.0,0.0,0.0,1.0,PS - AE,U-Net: AE→PS,NSD,dataset_within,,0.09059,0.06252,0.1225,U-Net,AE→PS
+,S2 − AE,,,,1.0,0.0,0.0,1.0,S2 - AE,U-Net: AE→S2,NSD,dataset_within,,0.2131,0.1826,0.2407,U-Net,AE→S2
+,PS − AE,,,,1.0,0.0,0.0,1.0,PS - AE,Swin: AE→PS,NSD,dataset_within,,0.1871,0.1564,0.2146,Swin,AE→PS
+,S2 − AE,,,,1.0,0.0,0.0,1.0,S2 - AE,Swin: AE→S2,NSD,dataset_within,,0.1699,0.1412,0.1994,Swin,AE→S2
+,PS − AE,,,,1.0,0.0,0.0,1.0,PS - AE,TM: AE→PS,NSD,dataset_within,,0.1511,0.1268,0.1774,TM,AE→PS
+,S2 − AE,,,,1.0,0.0,0.0,1.0,S2 - AE,TM: AE→S2,NSD,dataset_within,,0.2676,0.2405,0.2937,TM,AE→S2
+Overall (avg over datasets),Swin − U-Net,0.000933,0.0006455,0.001224,1.0,0.0,0.0,1.0,Swin,U-Net→Swin,Epistemic,arch_marginal,,,,,,
+Overall (avg over datasets),Terramind − U-Net,-0.0006668,-0.0007863,-0.0005523,0.0,0.0,1.0,0.0,TM,U-Net→TM,Epistemic,arch_marginal,,,,,,
+Overall (avg over arch),PS − AE,-0.0002168,-0.0004777,1.31e-05,0.8756,0.1021,0.02225,0.9444,PS - AE,AE→PS,Epistemic,dataset_marginal,,,,,,
+Overall (avg over arch),S2 − AE,-0.0001184,-0.0003678,0.0001479,0.9871,0.01188,0.001,0.996,S2 - AE,AE→S2,Epistemic,dataset_marginal,,,,,,
+,Swin − U-Net,,,,1.0,0.0,0.0,1.0,Swin,AE: U-Net→Swin,Epistemic,arch_within,AE,0.002172,0.001588,0.002866,,
+,Terramind − U-Net,,,,0.0,0.0,1.0,0.0,TM,AE: U-Net→TM,Epistemic,arch_within,AE,-0.000215,-0.0002712,-0.0001577,,
+,Swin − U-Net,,,,0.9991,0.00075,0.000125,0.9996,Swin,PS: U-Net→Swin,Epistemic,arch_within,PS,0.0005821,0.0002125,0.0009664,,
+,Terramind − U-Net,,,,0.0,0.0,1.0,0.0,TM,PS: U-Net→TM,Epistemic,arch_within,PS,-0.0006847,-0.0008688,-0.0005106,,
+,Swin − U-Net,,,,0.4774,0.2062,0.3164,0.5861,Swin,S2: U-Net→Swin,Epistemic,arch_within,S2,4.5e-05,-0.0003911,0.0004434,,
+,Terramind − U-Net,,,,0.0,0.0,1.0,0.0,TM,S2: U-Net→TM,Epistemic,arch_within,S2,-0.001101,-0.001409,-0.0008319,,
+,PS − AE,,,,1.0,0.0,0.0,1.0,PS - AE,U-Net: AE→PS,Epistemic,dataset_within,,0.0004697,0.000285,0.0006667,U-Net,AE→PS
+,S2 − AE,,,,1.0,0.0,0.0,1.0,S2 - AE,U-Net: AE→S2,Epistemic,dataset_within,,0.0008859,0.0006028,0.001192,U-Net,AE→S2
+,PS − AE,,,,0.0,0.001375,0.9986,0.000375,PS - AE,Swin: AE→PS,Epistemic,dataset_within,,-0.00112,-0.001889,-0.0004458,Swin,AE→PS
+,S2 − AE,,,,0.000125,0.0,0.9999,0.000125,S2 - AE,Swin: AE→S2,Epistemic,dataset_within,,-0.001241,-0.001948,-0.0005457,Swin,AE→S2
+,PS − AE,,,,0.396,0.2039,0.4001,0.4961,PS - AE,TM: AE→PS,Epistemic,dataset_within,,-2.53e-16,-4.37e-13,4.41e-13,TM,AE→PS
+,S2 − AE,,,,0.3957,0.1989,0.4054,0.4944,S2 - AE,TM: AE→S2,Epistemic,dataset_within,,-1.45e-15,-4.5e-13,4.36e-13,TM,AE→S2
+Overall (avg over datasets),Swin − U-Net,-5.01e-05,-9.11e-05,-1.05e-05,0.5553,0.2976,0.1471,0.7251,Swin,U-Net→Swin,Aleatoric,arch_marginal,,,,,,
+Overall (avg over datasets),Terramind − U-Net,0.0008319,0.0006541,0.001027,1.0,0.0,0.0,1.0,TM,U-Net→TM,Aleatoric,arch_marginal,,,,,,
+Overall (avg over arch),PS − AE,6.31e-06,-6.32e-05,7.29e-05,0.945,0.04963,0.005375,0.9791,PS - AE,AE→PS,Aleatoric,dataset_marginal,,,,,,
+Overall (avg over arch),S2 − AE,0.0006274,0.0004483,0.0008197,1.0,0.0,0.0,1.0,S2 - AE,AE→S2,Aleatoric,dataset_marginal,,,,,,
+,Swin − U-Net,,,,1.0,0.0,0.0,1.0,Swin,AE: U-Net→Swin,Aleatoric,arch_within,AE,4.44e-05,2.01e-05,6.76e-05,,
+,Terramind − U-Net,,,,1.0,0.0,0.0,1.0,TM,AE: U-Net→TM,Aleatoric,arch_within,AE,0.000497,0.0003605,0.0006448,,
+,Swin − U-Net,,,,0.7284,0.1399,0.1318,0.8061,Swin,PS: U-Net→Swin,Aleatoric,arch_within,PS,1.26e-05,-1.71e-05,4.21e-05,,
+,Terramind − U-Net,,,,1.0,0.0,0.0,1.0,TM,PS: U-Net→TM,Aleatoric,arch_within,PS,0.0004406,0.00031,0.0005855,,
+,Swin − U-Net,,,,0.0,0.000125,0.9999,0.0,Swin,S2: U-Net→Swin,Aleatoric,arch_within,S2,-0.0002073,-0.0003172,-9.49e-05,,
+,Terramind − U-Net,,,,1.0,0.0,0.0,1.0,TM,S2: U-Net→TM,Aleatoric,arch_within,S2,0.001558,0.001057,0.002106,,
+,PS − AE,,,,0.9995,0.0005,0.0,0.9998,PS - AE,U-Net: AE→PS,Aleatoric,dataset_within,,3.57e-05,1.42e-05,5.77e-05,U-Net,AE→PS
+,S2 − AE,,,,1.0,0.0,0.0,1.0,S2 - AE,U-Net: AE→S2,Aleatoric,dataset_within,,0.0003576,0.0002573,0.0004635,U-Net,AE→S2
+,PS − AE,,,,0.4915,0.206,0.3025,0.5992,PS - AE,Swin: AE→PS,Aleatoric,dataset_within,,3.88e-06,-2.67e-05,3.58e-05,Swin,AE→PS
+,S2 − AE,,,,0.9999,0.000125,0.0,1.0,S2 - AE,Swin: AE→S2,Aleatoric,dataset_within,,0.0001058,5.49e-05,0.0001633,Swin,AE→S2
+,PS − AE,,,,0.324,0.1926,0.4834,0.4168,PS - AE,TM: AE→PS,Aleatoric,dataset_within,,-2.07e-05,-0.0002169,0.0001832,TM,AE→PS
+,S2 − AE,,,,1.0,0.0,0.0,1.0,S2 - AE,TM: AE→S2,Aleatoric,dataset_within,,0.001419,0.0008996,0.001985,TM,AE→S2

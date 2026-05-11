@@ -38,7 +38,7 @@ class Configuration:
             f"/isipd/projects/p_planetdw/data/methods_test/training_data/{self.modality}"
         )
         self.preprocessed_dir = (
-            "/isipd/projects/p_planetdw/data/methods_test/preprocessed/"
+            "/isipd/projects/p_planetdw/data/methods_test/training_data/"
             "20260108-1335_UNETxS2"
         )
 

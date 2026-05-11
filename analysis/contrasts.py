@@ -1,13 +1,46 @@
-"""
-Contrast computation for factorial designs.
-"""
+# contrasts.py
+from __future__ import annotations
 
-from typing import Sequence
-
+from typing import Dict, Sequence
 import numpy as np
 import pandas as pd
 
-from statistical_utils import summarize_contrast
+from bayes_utils import summarize_draws
+
+
+def summarize_contrast(
+    delta_transformed: np.ndarray,
+    delta_original: np.ndarray,
+    rope_transformed: float,
+    hdi_prob: float,
+) -> Dict[str, float]:
+    """
+    Summarize contrasts on both transformed and original scales.
+    ROPE is applied on transformed scale for consistency with model.
+    """
+    s_t = summarize_draws(delta_transformed, hdi_prob=hdi_prob)
+    s_o = summarize_draws(delta_original, hdi_prob=hdi_prob)
+
+    dt = np.asarray(delta_transformed).ravel()
+    pr_gt0 = float((dt > 0).mean())
+    pr_lt0 = float((dt < 0).mean())
+    pr_in_rope = float((np.abs(dt) < rope_transformed).mean())
+    pr_gt_rope = float((dt > rope_transformed).mean())
+    pr_lt_minus_rope = float((dt < -rope_transformed).mean())
+
+    return {
+        "mean_transformed": s_t["mean"],
+        "hdi_lo_transformed": s_t["hdi_lo"],
+        "hdi_hi_transformed": s_t["hdi_hi"],
+        "mean_original": s_o["mean"],
+        "hdi_lo_original": s_o["hdi_lo"],
+        "hdi_hi_original": s_o["hdi_hi"],
+        "Pr(>0)": pr_gt0,
+        "Pr(<0)": pr_lt0,
+        "Pr(Δ>ROPE)": pr_gt_rope,
+        "Pr(Δ<-ROPE)": pr_lt_minus_rope,
+        "Pr(|Δ|<ROPE)": pr_in_rope,
+    }
 
 
 def contrasts_within_each_dataset(
@@ -20,29 +53,7 @@ def contrasts_within_each_dataset(
     hdi_prob: float,
 ) -> pd.DataFrame:
     """
-    Compute architecture contrasts within each dataset.
-    
-    Parameters
-    ----------
-    pred_draws_transformed : np.ndarray
-        Predicted values on transformed scale, shape (samples, datasets, archs)
-    pred_draws_original : np.ndarray
-        Predicted values on original scale, shape (samples, datasets, archs)
-    datasets : Sequence[str]
-        Dataset names
-    archs : Sequence[str]
-        Architecture names
-    baseline_arch : str
-        Baseline architecture for contrasts
-    rope_transformed : float
-        ROPE threshold on transformed scale
-    hdi_prob : float
-        HDI probability
-    
-    Returns
-    -------
-    pd.DataFrame
-        Contrast results
+    Architecture contrasts within each dataset (baseline_arch within each dataset).
     """
     if baseline_arch not in archs:
         baseline_arch = archs[0]
@@ -72,29 +83,7 @@ def contrasts_within_each_architecture(
     hdi_prob: float,
 ) -> pd.DataFrame:
     """
-    Compute dataset contrasts within each architecture.
-    
-    Parameters
-    ----------
-    pred_draws_transformed : np.ndarray
-        Predicted values on transformed scale, shape (samples, datasets, archs)
-    pred_draws_original : np.ndarray
-        Predicted values on original scale, shape (samples, datasets, archs)
-    datasets : Sequence[str]
-        Dataset names
-    archs : Sequence[str]
-        Architecture names
-    baseline_dataset : str
-        Baseline dataset for contrasts
-    rope_transformed : float
-        ROPE threshold on transformed scale
-    hdi_prob : float
-        HDI probability
-    
-    Returns
-    -------
-    pd.DataFrame
-        Contrast results
+    Dataset contrasts within each architecture (baseline_dataset within each architecture).
     """
     if baseline_dataset not in datasets:
         baseline_dataset = datasets[0]
@@ -123,27 +112,7 @@ def contrasts_arch_overall(
     hdi_prob: float,
 ) -> pd.DataFrame:
     """
-    Compute overall architecture contrasts (marginalized over datasets).
-    
-    Parameters
-    ----------
-    pred_draws_transformed : np.ndarray
-        Predicted values on transformed scale, shape (samples, datasets, archs)
-    pred_draws_original : np.ndarray
-        Predicted values on original scale, shape (samples, datasets, archs)
-    archs : Sequence[str]
-        Architecture names
-    baseline_arch : str
-        Baseline architecture
-    rope_transformed : float
-        ROPE threshold
-    hdi_prob : float
-        HDI probability
-    
-    Returns
-    -------
-    pd.DataFrame
-        Overall contrasts
+    Overall architecture contrasts (marginalized over datasets).
     """
     if baseline_arch not in archs:
         baseline_arch = archs[0]
@@ -162,11 +131,9 @@ def contrasts_arch_overall(
         delta_t = marg_t[:, ai] - base_t
         delta_o = marg_o[:, ai] - base_o
         stats = summarize_contrast(delta_t, delta_o, rope_transformed, hdi_prob)
-        rows.append({
-            "scope": "Overall (avg over datasets)",
-            "contrast": f"{a} − {baseline_arch}",
-            **stats
-        })
+        rows.append(
+            {"scope": "Overall (avg over datasets)", "contrast": f"{a} − {baseline_arch}", **stats}
+        )
     return pd.DataFrame(rows)
 
 
@@ -179,27 +146,7 @@ def contrasts_dataset_overall(
     hdi_prob: float,
 ) -> pd.DataFrame:
     """
-    Compute overall dataset contrasts (marginalized over architectures).
-    
-    Parameters
-    ----------
-    pred_draws_transformed : np.ndarray
-        Predicted values on transformed scale, shape (samples, datasets, archs)
-    pred_draws_original : np.ndarray
-        Predicted values on original scale, shape (samples, datasets, archs)
-    datasets : Sequence[str]
-        Dataset names
-    baseline_dataset : str
-        Baseline dataset
-    rope_transformed : float
-        ROPE threshold
-    hdi_prob : float
-        HDI probability
-    
-    Returns
-    -------
-    pd.DataFrame
-        Overall contrasts
+    Overall dataset contrasts (marginalized over architectures).
     """
     if baseline_dataset not in datasets:
         baseline_dataset = datasets[0]
@@ -218,9 +165,7 @@ def contrasts_dataset_overall(
         delta_t = marg_t[:, di] - base_t
         delta_o = marg_o[:, di] - base_o
         stats = summarize_contrast(delta_t, delta_o, rope_transformed, hdi_prob)
-        rows.append({
-            "scope": "Overall (avg over arch)",
-            "contrast": f"{d} − {baseline_dataset}",
-            **stats
-        })
+        rows.append(
+            {"scope": "Overall (avg over arch)", "contrast": f"{d} − {baseline_dataset}", **stats}
+        )
     return pd.DataFrame(rows)

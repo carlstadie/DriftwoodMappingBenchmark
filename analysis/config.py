@@ -1,54 +1,123 @@
-"""
-Configuration and constants for Bayesian benchmark statistics analysis.
-"""
+# config.py
+from __future__ import annotations
 
-from pathlib import Path
 from typing import Dict, Optional
+import numpy as np
 
 # =============================================================================
-# PATHS
+# CONFIGURATION CONSTANTS
 # =============================================================================
 
+EVAL_LEVEL = "dataset"   # "frames" or "dataset"
+
+# paths
 UNET_AE_METRICS = (
-    r"N:\isipd\projects\p_planetdw\data\methods_test\results\UNET\AE"
-    r"\evaluation_unet.csv"
+    "/isipd/projects/p_planetdw/data/methods_test/results/UNET/AE/metrics_20260206-082747"
+    f"/UNETxAE_{EVAL_LEVEL}_metrics.csv"
 )
 SWIN_AE_METRICS = (
-    r"N:\isipd\projects\p_planetdw\data\methods_test\results\SWIN\AE"
-    r"\evaluation_swin.csv"
+    "/isipd/projects/p_planetdw/data/methods_test/results/SWIN/AE/metrics_20260206-082747"
+    f"/SWINxAE_{EVAL_LEVEL}_metrics.csv"
 )
 TERRAMIND_AE_METRICS = (
-    r"N:\isipd\projects\p_planetdw\data\methods_test\results\Terramind\AE"
-    r"\evaluation_tm.csv"
+    "/isipd/projects/p_planetdw/data/methods_test/results/TERRAMIND/AE/metrics_20260206-082747"
+    f"/TERRAMINDxAE_{EVAL_LEVEL}_metrics.csv"
 )
 
 UNET_PS_METRICS = (
-    r"N:\isipd\projects\p_planetdw\data\methods_test\results\UNET\PS"
-    r"\evaluation_unet.csv"
+    "/isipd/projects/p_planetdw/data/methods_test/results/UNET/PS/metrics_20260206-082747"
+    f"/UNETxPS_{EVAL_LEVEL}_metrics.csv"
 )
 SWIN_PS_METRICS = (
-    r"N:\isipd\projects\p_planetdw\data\methods_test\results\SWIN\PS"
-    r"\evaluation_swin.csv"
+    "/isipd/projects/p_planetdw/data/methods_test/results/SWIN/PS/metrics_20260206-082747"
+    f"/SWINxPS_{EVAL_LEVEL}_metrics.csv"
 )
 TERRAMIND_PS_METRICS = (
-    r"N:\isipd\projects\p_planetdw\data\methods_test\results\Terramind\PS"
-    r"\evaluation_tm.csv"
+    "/isipd/projects/p_planetdw/data/methods_test/results/TERRAMIND/PS/metrics_20260206-082747"
+    f"/TERRAMINDxPS_{EVAL_LEVEL}_metrics.csv"
 )
 
 UNET_S2_METRICS = (
-    r"N:\isipd\projects\p_planetdw\data\methods_test\results\UNET\S2"
-    r"\evaluation_unet.csv"
+    "/isipd/projects/p_planetdw/data/methods_test/results/UNET/S2/metrics_20260206-082747"
+    f"/UNETxS2_{EVAL_LEVEL}_metrics.csv"
 )
 SWIN_S2_METRICS = (
-    r"N:\isipd\projects\p_planetdw\data\methods_test\results\SWIN\S2"
-    r"\evaluation_swin.csv"
+    "/isipd/projects/p_planetdw/data/methods_test/results/SWIN/S2/metrics_20260206-082747"
+    f"/SWINxS2_{EVAL_LEVEL}_metrics.csv"
 )
 TERRAMIND_S2_METRICS = (
-    r"N:\isipd\projects\p_planetdw\data\methods_test\results\Terramind\S2"
-    r"\evaluation_tm.csv"
+    "/isipd/projects/p_planetdw/data/methods_test/results/TERRAMIND/S2/metrics_20260206-082747"
+    f"/TERRAMINDxS2_{EVAL_LEVEL}_metrics.csv"
 )
 
-# CSV specifications: (path, group_label, dataset, architecture)
+# metrics to analyse
+METRICS = [
+    "IoU",
+    "dice_coef",
+    "normalized_surface_distance",
+    "mean_epistemic_uncertainty",
+    "mean_aleatoric_uncertainty",
+]
+
+# which metrics are "higher is better"
+# NOTE: "normalized_surface_distance" is usually NSD (0..1), higher is better
+MAXIMIZE_METRICS = {"IoU", "dice_coef", "normalized_surface_distance"}
+
+# metrics that are truly bounded in (0,1) and should be modeled on logit scale
+# NOTE: uncertainties are positive and typically <<1, so log-scale is more appropriate
+BOUNDED_01_METRICS = {"IoU", "dice_coef", "normalized_surface_distance"}
+
+# priors for factorial effects (on transformed scale)
+PRIOR_SD_LOGIT = 0.5
+PRIOR_SD_LOG = 0.5
+
+TEST = False
+
+# sampling config
+DRAWS = 2000
+TUNE = 2000
+CHAINS = 4
+TARGET_ACCEPT = 0.9
+HDI_PROB = 0.95
+RANDOM_SEED = 1701
+
+# Savage–Dickey KDE bandwidths for sensitivity analysis
+SD_KDE_BANDWIDTHS = [0.1, 0.3, 0.5, "scott", "silverman"]
+
+# overall ranking weights across metrics
+METRIC_WEIGHTS: Optional[Dict[str, float]] = {
+    "IoU": 0.4,
+    "dice_coef": 0.15,
+    "normalized_surface_distance": 0.35,
+    "mean_epistemic_uncertainty": 0.05,
+    "mean_aleatoric_uncertainty": 0.05,
+}
+
+# Overall multi-metric scoring mode
+# Options: "rank" (robust, rank-based utility), "robust_z" (MAD-based z-score), "z" (standard z-score)
+OVERALL_SCORING_MODE = "z"
+
+# Stable ordering
+DATASET_ORDER = ["AE", "PS", "S2"]
+ARCH_ORDER = ["U-Net", "Swin", "Terramind"]
+
+# Contrast baselines
+BASELINE_ARCH = "U-Net"
+BASELINE_DATASET = "AE"  # for dataset-within-architecture contrasts
+
+# Baselines for interpreting factorial coefficients under EFFECTS CODING
+EFFECTS_BASELINE_DATASET = DATASET_ORDER[0]  # e.g., "AE"
+EFFECTS_BASELINE_ARCH = ARCH_ORDER[0]        # e.g., "U-Net"
+
+# Practical effect thresholds (ROPE) on TRANSFORMED scale for consistency
+ROPE_BY_METRIC_TRANSFORMED: Dict[str, float] = {
+    "IoU": 0.05,  # on logit scale
+    "dice_coef": 0.05,
+    "normalized_surface_distance": 0.05,
+    "mean_epistemic_uncertainty": np.log(1.05),  # 5% change on log scale
+    "mean_aleatoric_uncertainty": np.log(1.05),  # 5% change on log scale
+}
+
 CSV_SPECS = [
     (UNET_AE_METRICS, "U-Net | AE", "AE", "U-Net"),
     (SWIN_AE_METRICS, "Swin U-Net | AE", "AE", "Swin"),
@@ -60,62 +129,6 @@ CSV_SPECS = [
     (SWIN_S2_METRICS, "Swin U-Net | S2", "S2", "Swin"),
     (TERRAMIND_S2_METRICS, "Terramind | S2", "S2", "Terramind"),
 ]
-
-# =============================================================================
-# METRICS CONFIGURATION
-# =============================================================================
-
-METRICS = [
-    "IoU",
-    "dice_coef",
-    "normalized_surface_distance",
-    "mean_epistemic_uncertainty",
-    "mean_aleatoric_uncertainty",
-]
-
-# Metrics where higher values are better
-MAXIMIZE_METRICS = {"IoU", "dice_coef"}
-
-# Metrics bounded in (0,1) - use logit transformation
-BOUNDED_01_METRICS = {
-    "IoU",
-    "dice_coef",
-    "normalized_surface_distance",
-    "mean_epistemic_uncertainty",
-    "mean_aleatoric_uncertainty",
-}
-
-# =============================================================================
-# MODEL PRIORS
-# =============================================================================
-
-# Prior standard deviations for factorial effects
-PRIOR_SD_LOGIT = 0.5  # For logit-scale metrics
-PRIOR_SD_LOG = 0.2    # For log-scale metrics
-
-# =============================================================================
-# SAMPLING CONFIGURATION
-# =============================================================================
-
-TEST = True  # Enable test mode with synthetic data
-
-DRAWS = 2000
-TUNE = 2000
-CHAINS = 4
-TARGET_ACCEPT = 0.9
-HDI_PROB = 0.95
-RANDOM_SEED = 1701
-
-# Savage-Dickey KDE bandwidths for BF sensitivity analysis
-SD_KDE_BANDWIDTHS = [0.1, 0.3, 0.5, "scott", "silverman"]
-
-# =============================================================================
-# ORDERING AND BASELINES
-# =============================================================================
-
-# Stable ordering for consistent results
-DATASET_ORDER = ["AE", "PS", "S2"]
-ARCH_ORDER = ["U-Net", "Swin", "Terramind"]
 
 GROUP_ORDER = [
     "U-Net | AE",
@@ -129,84 +142,19 @@ GROUP_ORDER = [
     "Terramind | S2",
 ]
 
-# Baseline groups for contrasts
-BASELINE_ARCH = "U-Net"
-BASELINE_DATASET = "AE"
-
-# Baselines for effects coding interpretation
-EFFECTS_BASELINE_DATASET = DATASET_ORDER[0]
-EFFECTS_BASELINE_ARCH = ARCH_ORDER[0]
-
 # =============================================================================
-# ROPE (REGION OF PRACTICAL EQUIVALENCE)
+# PLOTS
 # =============================================================================
-
-# ROPE thresholds on transformed scale for consistency
-ROPE_BY_METRIC_TRANSFORMED: Dict[str, float] = {
-    "IoU": 0.05,
-    "dice_coef": 0.05,
-    "normalized_surface_distance": 0.05,
-    "mean_epistemic_uncertainty": 0.05,
-    "mean_aleatoric_uncertainty": 0.05,
+ARCH_COLORS = {
+    "U-Net": "#B58AE6",
+    "Swin": "#E9797A",
+    "Terramind": "#F2D06B",
 }
 
-# =============================================================================
-# OVERALL RANKING WEIGHTS
-# =============================================================================
-
-# Optional metric weights for overall ranking (None = equal weights)
-METRIC_WEIGHTS: Optional[Dict[str, float]] = None
-
-# =============================================================================
-# VISUAL STYLING (Enhanced color scheme)
-# =============================================================================
-
-# Color palettes for models (from reference)
-MODEL_COLORS = {
-    "U-Net": "#c27ba0",
-    "Swin": "#e06666",
-    "Terramind": "#ffd966",
+METRIC_LABELS = {
+    "IoU": "IoU",
+    "dice_coef": "Dice coefficient",
+    "normalized_surface_distance": "Normalized Surface Distance",
+    "mean_epistemic_uncertainty": "Mean epistemic uncertainty",
+    "mean_aleatoric_uncertainty": "Mean aleatoric uncertainty",
 }
-
-# Dataset color palettes
-DATASET_COLORS = {
-    "AE": "#7986CB",    # Indigo
-    "PS": "#81C784",    # Green  
-    "S2": "#FFB74D",    # Orange
-}
-
-# Matplotlib styling parameters
-PLOT_STYLE = {
-    "figure.dpi": 300,
-    "font.size": 8,
-    "axes.titlesize": 9,
-    "axes.labelsize": 8,
-    "xtick.labelsize": 6.5,
-    "ytick.labelsize": 7,
-    "axes.linewidth": 0.8,
-    "axes.titleweight": "bold",
-    "axes.titlepad": 8,
-    "grid.alpha": 0.25,
-    "grid.linestyle": "--",
-    "grid.linewidth": 0.4,
-    "pdf.fonttype": 42,
-    "ps.fonttype": 42,
-}
-
-# =============================================================================
-# OUTPUT PATHS
-# =============================================================================
-
-def get_output_paths(base_dir: Path = None):
-    """Get output directory paths."""
-    if base_dir is None:
-        base_dir = Path(__file__).resolve().parent
-    
-    assets_dir = base_dir / "stats_report_assets"
-    report_path = base_dir / "stats_report.html"
-    
-    return {
-        "base_dir": base_dir,
-        "assets_dir": assets_dir,
-        "report_path": report_path,
-    }

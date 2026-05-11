@@ -1,55 +1,232 @@
 [workspace]
-name = "DriftwoodMappingBenchmark"
+name = "combined-env"
+version = "0.1.0"
+description = "Combined environment from env1 (PyTorch/ML) and env2 (PyMC/Geo)"
 channels = ["pytorch", "nvidia", "conda-forge"]
 platforms = ["linux-64"]
 
-[system-requirements]
-cuda = "12.1"
-
 [dependencies]
-# Core Python
+# Python
 python = "3.11.*"
 
-# PyTorch + CUDA stack
-pytorch = "2.5.*"
-torchvision = "0.20.*"
-torchaudio = "2.5.*"
+# BLAS / Linear Algebra
+blas = { version = "*", build = "*mkl*" }
+mkl = "*"
+mkl-devel = "*"
+mkl-include = "*"
 
-# Core scientific stack (let pixi pick versions)
+# Core scientific stack
 numpy = "*"
 scipy = "*"
 pandas = "*"
-scikit-learn = "*"
 matplotlib-base = "*"
-tensorboard = "*"
-tensorboard-data-server = "*"
 
-# Geospatial stack (conda-forge)
+# ML / Deep Learning (conda packages)
+# PyTorch pinned to a specific CUDA 12.1 build to ensure GPU compatibility
+# NOTE: install separately on stable connection with:
+#   pixi add --channel pytorch --channel nvidia pytorch torchvision torchaudio "pytorch-cuda=12.1.*" pytorch-mutex torchtriton ffmpeg
+# pytorch = { version = ">=2.5.1", channel = "pytorch" }
+# torchvision = { channel = "pytorch" }
+# torchaudio = { channel = "pytorch" }
+# pytorch-cuda = { version = "12.1.*", channel = "pytorch" }
+# pytorch-mutex = { version = "*", build = "cuda", channel = "pytorch" }
+# torchtriton = { channel = "pytorch" }
+# ffmpeg = { channel = "pytorch" }
+
+# CUDA (nvidia channel) - versions resolved by pixi to match pytorch-cuda
+# cuda-cudart = { channel = "nvidia" }
+# cuda-cupti = { channel = "nvidia" }
+# cuda-libraries = { channel = "nvidia" }
+# cuda-nvrtc = { channel = "nvidia" }
+# cuda-nvtx = { channel = "nvidia" }
+# cuda-runtime = { channel = "nvidia" }
+# libcublas = { channel = "nvidia" }
+# libcufft = { channel = "nvidia" }
+# libcurand = { channel = "nvidia" }
+# libcusolver = { channel = "nvidia" }
+# libcusparse = { channel = "nvidia" }
+
+# Geospatial (conda)
 gdal = "*"
 geopandas = "*"
-geopandas-base = "*"
+fiona = "*"
 rasterio = "*"
-pyproj = "*"
-rtree = "*"
 shapely = "*"
+pyproj = "*"
+geos = "*"
+proj = "*"
+rtree = "*"
+
+# Other conda packages
+scikit-learn = "*"
+joblib = "*"
+networkx = "*"
+pyyaml = "*"
+jinja2 = "*"
+markupsafe = "*"
+requests = "*"
+tqdm = "*"
+click = "*"
+grpcio = "*"
+tensorboard = "*"
+tensorboard-data-server = "*"
+threadpoolctl = "*"
+contourpy = "*"
+cycler = "*"
+fonttools = "*"
+kiwisolver = "*"
+pyparsing = "*"
+python-dateutil = "*"
+pytz = "*"
+six = "*"
+importlib-metadata = "*"
+zipp = "*"
+packaging = "*"
+colorama = "*"
 folium = "*"
+branca = "*"
 mapclassify = "*"
 xyzservices = "*"
+munch = "*"
+snuggs = "*"
+cligj = "*"
+click-plugins = "*"
+werkzeug = "*"
+markdown = "*"
+qhull = "*"
+snappy = "*"
+mpmath = "*"
+gmpy2 = "*"
+pillow = "*"
 
-# Networking / HTTP basics (conda)
-requests = "*"
-urllib3 = "*"
-charset-normalizer = "*"
-idna = "*"
-pysocks = "*"
+[pypi-dependencies]
+# PyTorch ecosystem (PyPI)
+torchmetrics = "*"
+pytorch-lightning = "*"
+lightning = "*"
+lightning-utilities = "*"
+einops = "*"
+timm = "*"
+kornia = "*"
+kornia-rs = "*"
+safetensors = "*"
+bitsandbytes = "*"
+huggingface-hub = "*"
+hf-xet = "*"
+transformers = "*"
 
-# Misc useful libs (conda)
-absl-py = "*"
-tqdm = "*"
-typing_extensions = "*"
-jinja2 = "*"
-click = "*"
+# GeoML / Remote sensing
+torchgeo = "*"
+rioxarray = "*"
+terratorch = "*"
+lightly = "*"
+lightly-utils = "*"
 
-# Development Tools
+# Segmentation / Vision
+segmentation-models-pytorch = "*"
+# efficientnet-pytorch and pretrainedmodels removed - abandoned packages that
+# require building from source against torch. Use timm instead:
+#   timm.create_model('efficientnet_b0', pretrained=True)
+albumentations = "*"
+albucore = "*"
+opencv-python-headless = "*"
+scikit-image = "*"
+imageio = "*"
+tifffile = "*"
+lazy-loader = "*"
+pycocotools = "*"
+
+# Data / IO
+xarray = "*"
+h5py = "*"
+h5netcdf = "*"
+hdf5plugin = "*"
+pyarrow = "*"
+fsspec = "*"
+rsa = "*"
+
+# MLOps
+mlflow = "*"
+mlflow-skinny = "*"
+mlflow-tracing = "*"
+wandb = "*"
+optuna = "*"
+hydra-core = "*"
+omegaconf = "*"
+antlr4-python3-runtime = "*"
+
+# API / Web
+fastapi = "*"
+uvicorn = "*"
+starlette = "*"
+flask = "*"
+flask-cors = "*"
+gunicorn = "*"
+httpx = "*"
+httpcore = "*"
+aiohttp = "*"
+anyio = "*"
+
+# Database / Storage
+sqlalchemy = "*"
+alembic = "*"
+greenlet = "*"
+sqlparse = "*"
+databricks-sdk = "*"
+
+# Utilities
+pydantic = "*"
+pydantic-core = "*"
+python-dotenv = "*"
+rich = "*"
+colorlog = "*"
+python-box = "*"
+gitpython = "*"
+docker = "*"
+cryptography = "*"
+google-auth = "*"
+cachetools = "*"
+numba = "*"
+llvmlite = "*"
+sympy = "*"
+filelock = "*"
+platformdirs = "*"
 pytest = "*"
 pytest-sugar = "*"
+cloudpickle = "*"
+sentry-sdk = "*"
+
+# Graphene / GraphQL
+graphene = "*"
+graphql-core = "*"
+graphql-relay = "*"
+
+# OpenTelemetry
+opentelemetry-api = "*"
+opentelemetry-proto = "*"
+opentelemetry-sdk = "*"
+opentelemetry-semantic-conventions = "*"
+
+# Misc
+typer-slim = "*"
+jsonargparse = "*"
+docstring-parser = "*"
+annotated-doc = "*"
+aenum = "*"
+mako = "*"
+termcolor = "*"
+tensorboardx = "*"
+
+[tasks]
+# run model training and evaluation
+"U-NetxAE" = "python ./mainUnetxAE.py"
+"U-NetxPS" = "python ./mainUnetxPS.py"
+"U-NetxS2" = "python ./mainUnetxS2.py"
+"Swin-U-NetxAE" = "python ./mainSwinUnetxAE.py"
+"Swin-U-NetxPS" = "python ./mainSwinUnetxPS.py"
+"Swin-U-NetxS2" = "python ./mainSwinUnetxS2.py"
+"TerramindxAE" = "python ./mainTerraMindxAE.py"
+"TerramindxPS" = "python ./mainTerraMindxPS.py"
+"TerramindxS2" = "python ./mainTerraMindxS2.py"
+# run analysis
+analyse = "python ./analysis/main.py"
